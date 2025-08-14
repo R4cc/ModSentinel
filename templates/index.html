@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>ModSentinel</title>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head>
+<body>
+<h1>ModSentinel</h1>
+<form hx-post="/mods" hx-target="#mod-list" hx-swap="outerHTML">
+    <input type="text" name="url" placeholder="Modrinth URL" required>
+    <input type="text" name="game_version" placeholder="Game Version" required>
+    <input type="text" name="loader" placeholder="Loader" required>
+    <select name="channel">
+        <option value="release">release</option>
+        <option value="beta">beta</option>
+        <option value="alpha">alpha</option>
+    </select>
+    <button type="submit">Add</button>
+</form>
+<div id="mod-list">
+    {{template "mod_list.html" .}}
+</div>
+</body>
+</html>
