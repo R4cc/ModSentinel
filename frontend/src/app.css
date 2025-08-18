@@ -65,3 +65,66 @@ button:focus-visible {
 a {
   color: var(--color-purple-primary);
 }
+main {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+h1 {
+  text-align: center;
+  color: var(--color-purple-deep);
+}
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+.mods-section h2 {
+  color: var(--color-purple-deep);
+  margin: 0 0 0.5rem 0;
+}
+.table-card {
+  background: var(--color-bg-surface);
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  padding: 1.5rem;
+}
+.mod-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.mod-table th,
+.mod-table td {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+.mod-table th {
+  background-color: var(--color-bg-surface);
+}
+.icon {
+  width: 32px;
+  height: 32px;
+}
+.status {
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+}
+.status.up-to-date {
+  background-color: #2b8a3e;
+  color: #fff;
+}
+.status.update-available {
+  background-color: #b58900;
+  color: #fff;
+}
+.download {
+  background-color: var(--color-purple-primary);
+  color: #fff;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  text-decoration: none;
+}
+.empty-state {
+  color: var(--color-text-secondary);
+}
