@@ -73,7 +73,7 @@
           </tbody>
         </table>
       {:else}
-        <p>No mods tracked.</p>
+        <p class="empty-state">Nothing tracked yet. Paste a Modrinth or CurseForge link to get started. For example, try <a href="https://modrinth.com/mod/distant-horizons" target="_blank" rel="noreferrer">Distant Horizons</a>.</p>
       {/if}
       </div>
     </section>
@@ -140,5 +140,8 @@
     padding: 0.25rem 0.5rem;
     border-radius: 4px;
     text-decoration: none;
+  }
+  .empty-state {
+    color: var(--color-text-secondary);
   }
 </style>
