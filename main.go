@@ -171,19 +171,34 @@ func main() {
 
 func initDB(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS mods (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        icon_url TEXT,
-        url TEXT NOT NULL,
-        game_version TEXT,
-        loader TEXT,
-        channel TEXT,
-        current_version TEXT,
-        available_version TEXT,
-        available_channel TEXT,
-        download_url TEXT
-    )`)
-	return err
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       name TEXT,
+       icon_url TEXT,
+       url TEXT NOT NULL,
+       game_version TEXT,
+       loader TEXT,
+       channel TEXT,
+       current_version TEXT,
+       available_version TEXT,
+       available_channel TEXT,
+       download_url TEXT
+   )`)
+	if err != nil {
+		return err
+	}
+
+	// ensure "name" column exists for databases created before it was added
+	var n int
+	err = db.QueryRow(`SELECT 1 FROM pragma_table_info('mods') WHERE name='name'`).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err = db.Exec(`ALTER TABLE mods ADD COLUMN name TEXT`); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func insertMod(db *sql.DB, m *Mod) error {
