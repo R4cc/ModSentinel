@@ -24,7 +24,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-//go:embed frontend/dist/*
+//go:embed frontend/dist/* favicon.ico
 var distFS embed.FS
 
 type Mod struct {
@@ -89,6 +89,16 @@ func main() {
 	scheduler.StartAsync()
 
 	r := chi.NewRouter()
+
+	r.Get("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		data, err := fs.ReadFile(distFS, "favicon.ico")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "image/x-icon")
+		http.ServeContent(w, r, "favicon.ico", time.Now(), bytes.NewReader(data))
+	})
 
 	r.Get("/api/mods", func(w http.ResponseWriter, r *http.Request) {
 		mods, err := listMods(db)
@@ -187,25 +197,43 @@ func initDB(db *sql.DB) error {
 		return err
 	}
 
-	// ensure "name" column exists for databases created before it was added
-	var n int
-	err = db.QueryRow(`SELECT 1 FROM pragma_table_info('mods') WHERE name='name'`).Scan(&n)
-	if errors.Is(err, sql.ErrNoRows) {
-		if _, err = db.Exec(`ALTER TABLE mods ADD COLUMN name TEXT`); err != nil {
+	columns := map[string]string{
+		"name":              "TEXT",
+		"icon_url":          "TEXT",
+		"game_version":      "TEXT",
+		"loader":            "TEXT",
+		"channel":           "TEXT",
+		"current_version":   "TEXT",
+		"available_version": "TEXT",
+		"available_channel": "TEXT",
+		"download_url":      "TEXT",
+	}
+
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('mods')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	existing := make(map[string]struct{})
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
 			return err
 		}
-	} else if err != nil {
+		existing[n] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
 		return err
 	}
 
-	// ensure "icon_url" column exists for databases created before it was added
-	err = db.QueryRow(`SELECT 1 FROM pragma_table_info('mods') WHERE name='icon_url'`).Scan(&n)
-	if errors.Is(err, sql.ErrNoRows) {
-		if _, err = db.Exec(`ALTER TABLE mods ADD COLUMN icon_url TEXT`); err != nil {
-			return err
+	for col, typ := range columns {
+		if _, ok := existing[col]; !ok {
+			stmt := fmt.Sprintf(`ALTER TABLE mods ADD COLUMN %s %s`, col, typ)
+			if _, err := db.Exec(stmt); err != nil {
+				return fmt.Errorf("add column %s: %w", col, err)
+			}
 		}
-	} else if err != nil {
-		return err
 	}
 
 	return nil
@@ -236,6 +264,9 @@ func listMods(db *sql.DB) ([]Mod, error) {
 			return nil, err
 		}
 		mods = append(mods, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return mods, nil
 }
