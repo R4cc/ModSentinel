@@ -88,9 +88,9 @@ export default function AddEntry({ onAdded }) {
     });
     const options = Array.from(set).sort((a,b) => b.localeCompare(a));
     setGameVersionOptions(options);
-    const gv = options[0] || '';
-    setGameVersion(gv);
-    handleGameVersion(gv, ld);
+    setGameVersion('');
+    setVersionOptions([]);
+    setSelectedVersion(null);
   }
 
   function selectLoader(ld) {
@@ -106,7 +106,6 @@ export default function AddEntry({ onAdded }) {
       .sort((a,b) => new Date(b.date_published || b.date || 0) - new Date(a.date_published || a.date || 0));
     setVersionOptions(versions);
     setSelectedVersion(versions[0] || null);
-    setStep(3);
   }
 
   function selectVersion(v) {
@@ -155,7 +154,7 @@ export default function AddEntry({ onAdded }) {
         <h2>Add Entry</h2>
       </header>
 
-      <div className={`card ${metadata ? 'with-preview' : ''}`}>
+      <div className="card">
         <div className="stepper">
           {steps.map((label, i) => (
             <button
@@ -177,15 +176,14 @@ export default function AddEntry({ onAdded }) {
             <section>
               <h3>Enter URL</h3>
               <div className="url-bar">
-                <span className="icon" aria-hidden="true">🔗</span>
                 <input
                   type="url"
                   value={url}
                   placeholder="Paste URL"
-                  onChange={e => { const val = e.target.value; setUrl(val); validate(val); setUrlTouched(true); }}
+                  onChange={e => { const val = e.target.value; setUrl(val); validate(val); }}
                   onKeyDown={e => { if (e.key === 'Enter') { validate(); loadMetadata(); } }}
                   onPaste={() => { setTimeout(() => { validate(); loadMetadata(); }, 0); }}
-                  onBlur={() => validate()}
+                  onBlur={() => { setUrlTouched(true); validate(); }}
                   aria-invalid={!urlValid && urlTouched}
                   disabled={urlLocked}
                 />
@@ -197,7 +195,6 @@ export default function AddEntry({ onAdded }) {
               {fetchErrorMsg && <p className="error state"><span className="tiny">😿</span> {fetchErrorMsg}</p>}
               {loadingMeta && <p className="status"><span className="spinner" aria-hidden="true"></span> Fetching mod info…</p>}
               <button type="button" className="continue" onClick={loadMetadata} disabled={!urlValid || loadingMeta}>Continue</button>
-              <small className="help"><a href="/docs/supported-links">Supported links</a></small>
             </section>
           )}
 
@@ -226,12 +223,26 @@ export default function AddEntry({ onAdded }) {
             <section>
               <h3>Select Minecraft version</h3>
               <fieldset>
-                <select value={gameVersion} onChange={e => { setGameVersion(e.target.value); handleGameVersion(e.target.value); }}>
+                <input
+                  list="mc-versions"
+                  value={gameVersion}
+                  onChange={e => setGameVersion(e.target.value)}
+                  placeholder="Search versions"
+                />
+                <datalist id="mc-versions">
                   {gameVersionOptions.map(gv => (
-                    <option key={gv} value={gv}>{gv}</option>
+                    <option key={gv} value={gv} />
                   ))}
-                </select>
+                </datalist>
               </fieldset>
+              <button
+                type="button"
+                className="continue"
+                onClick={() => { handleGameVersion(); setStep(3); }}
+                disabled={!gameVersion}
+              >
+                Continue
+              </button>
             </section>
           )}
 
@@ -295,25 +306,25 @@ export default function AddEntry({ onAdded }) {
             </>
           )}
         </form>
-
-        {(metadata || loadingMeta) && (
-          <aside className="preview">
-            {loadingMeta ? (
-              <div className="skeleton preview-skel"></div>
-            ) : (
-              <>
-                <h3>Preview</h3>
-                <ul>
-                  <li className="url-preview">{urlValid && <img src={new URL(url).origin + '/favicon.ico'} alt="" className="favicon" />}<span>{url || '-'}</span></li>
-                  <li>Loader: {loader || '-'}</li>
-                  <li>MC: {gameVersion || '-'}</li>
-                  <li>Selected build: {selectedVersion ? `${selectedVersion.version_number} (${selectedVersion.version_type.toUpperCase()})` : '-'}</li>
-                </ul>
-              </>
-            )}
-          </aside>
-        )}
       </div>
+
+      {(metadata || loadingMeta) && (
+        <aside className="preview">
+          {loadingMeta ? (
+            <div className="skeleton preview-skel"></div>
+          ) : (
+            <>
+              <h3>Preview</h3>
+              <ul>
+                <li className="url-preview">{urlValid && <img src={new URL(url).origin + '/favicon.ico'} alt="" className="favicon" />}<span>{url || '-'}</span></li>
+                <li>Loader: {loader || '-'}</li>
+                <li>MC: {gameVersion || '-'}</li>
+                <li>Selected build: {selectedVersion ? `${selectedVersion.version_number} (${selectedVersion.version_type.toUpperCase()})` : '-'}</li>
+              </ul>
+            </>
+          )}
+        </aside>
+      )}
 
       {showToastFlag && <div className="toast" role="status">{toastMsg}</div>}
     </div>
