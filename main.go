@@ -1,12 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
+	"io/fs"
 	"net/http"
 	urlpkg "net/url"
 	"os"
@@ -22,10 +23,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-//go:embed templates/*
-var templateFS embed.FS
-
-var templates = template.Must(template.ParseFS(templateFS, "templates/index.html", "templates/mod_list.html"))
+//go:embed frontend/dist/*
+var distFS embed.FS
 
 type Mod struct {
 	ID            int
@@ -84,26 +83,22 @@ func main() {
 	scheduler.StartAsync()
 
 	r := chi.NewRouter()
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+
+	r.Get("/api/mods", func(w http.ResponseWriter, r *http.Request) {
 		mods, err := listMods(db)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := templates.ExecuteTemplate(w, "index.html", mods); err != nil {
-			log.Error().Err(err).Msg("render index")
-		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(mods)
 	})
-	r.Post("/mods", func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
+
+	r.Post("/api/mods", func(w http.ResponseWriter, r *http.Request) {
+		var m Mod
+		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
-		}
-		m := Mod{
-			URL:         r.FormValue("url"),
-			GameVersion: r.FormValue("game_version"),
-			Loader:      r.FormValue("loader"),
-			Channel:     r.FormValue("channel"),
 		}
 		v, err := fetchLatestVersion(m)
 		if err == nil {
@@ -118,13 +113,22 @@ func main() {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if r.Header.Get("HX-Request") != "" {
-			if err := templates.ExecuteTemplate(w, "mod_list.html", mods); err != nil {
-				log.Error().Err(err).Msg("render list")
-			}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(mods)
+	})
+
+	static, _ := fs.Sub(distFS, "frontend/dist")
+	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if path == "/" {
+			path = "/index.html"
+		}
+		data, err := fs.ReadFile(static, strings.TrimPrefix(path, "/"))
+		if err != nil {
+			http.NotFound(w, r)
 			return
 		}
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.ServeContent(w, r, path, time.Now(), bytes.NewReader(data))
 	})
 
 	log.Info().Msg("starting server on :8080")
