@@ -252,7 +252,7 @@ func insertMod(db *sql.DB, m *Mod) error {
 }
 
 func listMods(db *sql.DB) ([]Mod, error) {
-	rows, err := db.Query(`SELECT id, name, icon_url, url, game_version, loader, channel, current_version, available_version, available_channel, download_url FROM mods ORDER BY id DESC`)
+	rows, err := db.Query(`SELECT id, IFNULL(name, ''), IFNULL(icon_url, ''), url, IFNULL(game_version, ''), IFNULL(loader, ''), IFNULL(channel, ''), IFNULL(current_version, ''), IFNULL(available_version, ''), IFNULL(available_channel, ''), IFNULL(download_url, '') FROM mods ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
