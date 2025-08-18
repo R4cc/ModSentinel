@@ -1,4 +1,4 @@
 # ModSentinel Frontend
 
-Svelte-based interface for ModSentinel.
+React-based interface for ModSentinel built with Vite and React.
 
