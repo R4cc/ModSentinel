@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import './AddEntry.css';
 
 const loaderMeta = {
@@ -8,7 +8,7 @@ const loaderMeta = {
   neoforge: { icon: '🔧', desc: 'NeoForge' }
 };
 
-export default function AddEntry({ onAdded }) {
+export default function AddEntry({ onAdded, editingMod, onEditDone }) {
   const steps = ['URL', 'Loader', 'MC version', 'Mod version', 'Confirm'];
   const [step, setStep] = useState(0);
 
@@ -35,12 +35,57 @@ export default function AddEntry({ onAdded }) {
 
   const [toastMsg, setToastMsg] = useState('');
   const [showToastFlag, setShowToastFlag] = useState(false);
+  const [editingId, setEditingId] = useState(null);
 
   function showToast(msg) {
     setToastMsg(msg);
     setShowToastFlag(true);
     setTimeout(() => setShowToastFlag(false), 3500);
   }
+
+  useEffect(() => {
+    if (editingMod) {
+      (async () => {
+        setEditingId(editingMod.id);
+        setUrl(editingMod.url);
+        setUrlValid(true);
+        setUrlTouched(true);
+        setUrlLocked(false);
+        setChannelFilter(editingMod.channel);
+        setLoadingMeta(true);
+        const res = await fetch('/api/mods/metadata', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: editingMod.url })
+        });
+        setLoadingMeta(false);
+        if (res.ok) {
+          const data = await res.json();
+          setMetadata(data);
+          setLoaderOptions(data.loaders || []);
+          setLoader(editingMod.loader);
+          const gvSet = new Set();
+          data.versions.forEach(v => {
+            if (v.loaders.includes(editingMod.loader)) {
+              v.game_versions.forEach(gv => gvSet.add(gv));
+            }
+          });
+          const gvOptions = Array.from(gvSet).sort((a, b) => b.localeCompare(a));
+          setGameVersionOptions(gvOptions);
+          setGameVersion(editingMod.game_version);
+          const versions = data.versions
+            .filter(v => v.loaders.includes(editingMod.loader) && v.game_versions.includes(editingMod.game_version))
+            .sort((a, b) => new Date(b.date_published || b.date || 0) - new Date(a.date_published || a.date || 0));
+          setVersionOptions(versions);
+          const sel = versions.find(v => v.version_number === editingMod.current_version && v.version_type === editingMod.channel);
+          setSelectedVersion(sel || versions[0] || null);
+          setStep(4);
+        } else {
+          setFetchErrorMsg(`Couldn't fetch mod data (HTTP ${res.status})`);
+        }
+      })();
+    }
+  }, [editingMod]);
 
   function validate(value = url) {
     try {
@@ -126,32 +171,40 @@ export default function AddEntry({ onAdded }) {
     setGameVersionOptions([]);
     setVersionOptions([]);
     setChannelFilter('release');
+    setLoadingMeta(false);
+    setFetchErrorMsg('');
+    setFormError('');
     setStep(0);
+    setShowToastFlag(false);
+    setEditingId(null);
+    onEditDone && onEditDone();
   }
 
   async function addMod(e) {
     e.preventDefault();
     if (!selectedVersion) return;
     const channel = selectedVersion.version_type;
-    const res = await fetch('/api/mods', {
-      method: 'POST',
+    const endpoint = editingId ? `/api/mods/${editingId}` : '/api/mods';
+    const method = editingId ? 'PUT' : 'POST';
+    const res = await fetch(endpoint, {
+      method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, game_version: gameVersion, loader, channel })
     });
     if (res.ok) {
       onAdded && onAdded();
-      showToast('Entry added');
+      showToast(editingId ? 'Entry updated' : 'Entry added');
       cancel();
       setFormError('');
     } else {
-      setFormError('Failed to add mod.');
+      setFormError(`Failed to ${editingId ? 'update' : 'add'} mod.`);
     }
   }
 
   return (
     <div className="add-entry">
       <header className="page-header">
-        <h2>Add Entry</h2>
+        <h2>{editingId ? 'Edit Entry' : 'Add Entry'}</h2>
       </header>
 
       <div className="card">
@@ -304,7 +357,7 @@ export default function AddEntry({ onAdded }) {
                   <li>{gameVersion ? '✔' : '✖'} MC</li>
                   <li>{selectedVersion ? '✔' : '✖'} Mod version</li>
                 </ul>
-                <button type="submit" className="primary" disabled={!selectedVersion}>Add Entry</button>
+                <button type="submit" className="primary" disabled={!selectedVersion}>{editingId ? 'Update Entry' : 'Add Entry'}</button>
                 <button type="button" className="secondary" onClick={cancel}>Cancel</button>
               </div>
             </>
