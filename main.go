@@ -198,6 +198,16 @@ func initDB(db *sql.DB) error {
 		return err
 	}
 
+	// ensure "icon_url" column exists for databases created before it was added
+	err = db.QueryRow(`SELECT 1 FROM pragma_table_info('mods') WHERE name='icon_url'`).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err = db.Exec(`ALTER TABLE mods ADD COLUMN icon_url TEXT`); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+
 	return nil
 }
 
