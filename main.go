@@ -10,6 +10,7 @@ import (
 	"net/http"
 	urlpkg "net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,10 +36,40 @@ type Mod struct {
 	LatestVersion string
 }
 
+func resolveDBPath(p string) string {
+	info, err := os.Stat(p)
+	if err == nil && info.IsDir() {
+		return filepath.Join(p, "mods.db")
+	}
+	return p
+}
+
+func ensureFile(p string) error {
+	info, err := os.Stat(p)
+	if err == nil {
+		if info.IsDir() {
+			return fmt.Errorf("%s is a directory", p)
+		}
+		return nil
+	}
+	if os.IsNotExist(err) {
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0666)
+		if err != nil {
+			return err
+		}
+		return f.Close()
+	}
+	return err
+}
+
 func main() {
 	log.Logger = log.Output(zerolog.New(os.Stdout).With().Timestamp().Logger())
+	path := resolveDBPath("mods.db")
+	if err := ensureFile(path); err != nil {
+		log.Fatal().Err(err).Str("path", path).Msg("create db file")
+	}
 
-	db, err := sql.Open("sqlite", "file:mods.db?_busy_timeout=5000&_pragma=foreign_keys(1)")
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_busy_timeout=5000&_pragma=foreign_keys(1)", path))
 	if err != nil {
 		log.Fatal().Err(err).Msg("open db")
 	}
