@@ -1,5 +1,6 @@
 <script>
   import { createEventDispatcher } from 'svelte';
+  import { fade, fly } from 'svelte/transition';
 
   const dispatch = createEventDispatcher();
 
@@ -16,9 +17,26 @@
   let loaderOptions = [];
   let gameVersionOptions = [];
   let versionOptions = [];
+  let loadingMeta = false;
+  let fetchError = false;
+  let formError = '';
+
+  const loaderMeta = {
+    forge: { icon: '🛠️', desc: 'Forge' },
+    fabric: { icon: '🧵', desc: 'Fabric' },
+    quilt: { icon: '🪡', desc: 'Quilt' },
+    neoforge: { icon: '🔧', desc: 'NeoForge' }
+  };
 
   let gameVersionFilter = '';
   $: filteredGameVersions = gameVersionOptions.filter(gv => gv.toLowerCase().includes(gameVersionFilter.toLowerCase()));
+
+  function badge(gv) {
+    if (gameVersionOptions[0] === gv) return 'Latest';
+    if (/lts/i.test(gv)) return 'LTS';
+    if (/beta|snapshot|pre|rc/i.test(gv)) return 'Beta';
+    return '';
+  }
 
   function validate() {
     try {
@@ -32,11 +50,14 @@
   async function loadMetadata() {
     if (urlLocked) return;
     urlLocked = true;
+    loadingMeta = true;
+    fetchError = false;
     const res = await fetch('/api/mods/metadata', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url })
     });
+    loadingMeta = false;
     if (res.ok) {
       metadata = await res.json();
       loaderOptions = metadata.loaders || [];
@@ -47,6 +68,7 @@
       versionOptions = [];
     } else {
       urlLocked = false;
+      fetchError = true;
     }
   }
 
@@ -108,6 +130,9 @@
       dispatch('added');
       showToast('Entry added');
       cancel();
+      formError = '';
+    } else {
+      formError = 'Something went wrong. Please try again.';
     }
   }
 
@@ -128,39 +153,57 @@
   </header>
   <div class="card">
     <form on:submit|preventDefault={addMod} aria-live="polite">
-      <section>
+      {#if formError}
+        <div class="form-error" role="alert">{formError}</div>
+      {/if}
+      <section in:fly={{y:16,duration:200,delay:0}}>
         <h3>Enter URL</h3>
         <div class="url-bar">
+          <span class="icon" aria-hidden="true">🔗</span>
           <input type="url" bind:value={url} placeholder="Paste URL…" on:input={() => { validate(); urlTouched = true; }} on:blur={validate} aria-invalid={!urlValid && urlTouched} disabled={urlLocked} />
           <button type="button" class="next" on:click={loadMetadata} disabled={!urlValid || urlLocked}>Next</button>
         </div>
         {#if urlTouched && !urlValid}
           <p class="error">Please enter a valid URL.</p>
         {/if}
+        {#if fetchError}
+          <p class="error state"><span class="tiny">😿</span> Unable to fetch metadata. <button type="button" on:click={loadMetadata}>Retry</button></p>
+        {/if}
       </section>
 
-      <section>
+      <section in:fly={{y:16,duration:200,delay:30}}>
         <h3>Select your loader</h3>
+        {#if loadingMeta}
+          <div class="loader-pills skeleton"></div>
+        {:else}
         <fieldset disabled={!metadata} class="loader-pills">
           {#each loaderOptions as ld}
-            <button type="button" class="pill {loader === ld ? 'selected' : ''}" on:click={() => selectLoader(ld)}>{ld}</button>
+            <button type="button" class="pill {loader === ld ? 'selected' : ''}" on:click={() => selectLoader(ld)}>
+              <span class="pill-icon">{loaderMeta[ld]?.icon}</span>
+              <span class="pill-desc">{loaderMeta[ld]?.desc || ld}</span>
+            </button>
           {/each}
         </fieldset>
+        {/if}
       </section>
 
-      <section>
+      <section in:fly={{y:16,duration:200,delay:60}}>
         <h3>Select Minecraft version</h3>
+        {#if loadingMeta}
+          <div class="skeleton dropdown"></div>
+        {:else}
         <fieldset disabled={!(metadata && loader)}>
           <input class="mc-search" type="text" placeholder="Search…" bind:value={gameVersionFilter} disabled={!(metadata && loader)} />
           <select bind:value={game_version} on:change={handleGameVersion} disabled={!(metadata && loader)}>
             {#each filteredGameVersions as gv}
-              <option value={gv}>{gv}</option>
+              <option value={gv}>{gv}{badge(gv) ? ` (${badge(gv)})` : ''}</option>
             {/each}
           </select>
         </fieldset>
+        {/if}
       </section>
 
-      <section>
+      <section in:fly={{y:16,duration:200,delay:90}}>
         <h3>Select mod version</h3>
         <fieldset disabled={!(metadata && loader && game_version)}>
           {#if versionOptions.length}
@@ -177,7 +220,7 @@
               {/each}
             </ul>
           {:else}
-            <p class="empty">No versions available.</p>
+            <p class="empty"><span class="tiny">🌌</span> No versions available.</p>
           {/if}
         </fieldset>
       </section>
@@ -212,7 +255,7 @@
     margin-bottom: 1rem;
   }
   .page-header h2 {
-    color: var(--color-purple-primary);
+    color: var(--color-purple-deep);
     margin: 0;
   }
   .page-header .sub {
@@ -250,12 +293,16 @@
   }
   h3 {
     margin: 0;
-    color: var(--color-purple-primary);
+    color: var(--color-purple-deep);
     font-size: 1rem;
   }
   .url-bar {
     display: flex;
     gap: 0.5rem;
+    align-items: center;
+  }
+  .url-bar .icon {
+    padding: 0 0 0 0.5rem;
   }
   .url-bar input {
     flex: 1;
@@ -264,9 +311,6 @@
     border: 1px solid var(--color-border);
     background: var(--color-bg-page);
     color: var(--color-text-primary);
-  }
-  .url-bar input:focus {
-    outline: 2px solid var(--color-purple-primary);
   }
   .url-bar .next {
     border: none;
@@ -288,16 +332,34 @@
     flex-wrap: wrap;
     gap: 0.5rem;
   }
+  .loader-pills.skeleton {
+    height: 2rem;
+    background: var(--color-border);
+    border-radius: 999px;
+    animation: pulse 1.2s infinite ease-in-out;
+  }
   .pill {
     padding: 0.5rem 1rem;
     border-radius: 999px;
     border: 1px solid var(--color-border);
     background: var(--color-bg-page);
     color: var(--color-text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
   }
   .pill.selected {
     background: var(--color-purple-primary);
     border-color: var(--color-purple-primary);
+  }
+  .pill-icon {
+    font-size: 0.9rem;
+  }
+  .skeleton.dropdown {
+    height: 2.5rem;
+    background: var(--color-border);
+    border-radius: 8px;
+    animation: pulse 1.2s infinite ease-in-out;
   }
   .mc-search {
     padding: 0.5rem;
@@ -341,6 +403,25 @@
   .badge.release { background: var(--color-orange-accent); color: var(--color-bg-page); }
   .badge.beta { background: var(--color-purple-primary); }
   .badge.alpha { background: var(--color-purple-deep); }
+
+  @keyframes pulse {
+    0% { opacity: 0.4; }
+    50% { opacity: 0.8; }
+    100% { opacity: 0.4; }
+  }
+
+  .tiny {
+    margin-right: 0.25rem;
+  }
+
+  .error.state button {
+    background: none;
+    border: 1px solid var(--color-border);
+    color: var(--color-text-primary);
+    border-radius: 999px;
+    padding: 0.1rem 0.5rem;
+    margin-left: 0.25rem;
+  }
 
   .action-bar {
     position: sticky;
@@ -403,5 +484,12 @@
   .error {
     color: var(--color-orange-accent);
     font-size: 0.875rem;
+  }
+  .form-error {
+    background: var(--color-orange-accent);
+    color: var(--color-bg-page);
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
   }
 </style>
