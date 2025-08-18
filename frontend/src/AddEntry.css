@@ -149,6 +149,38 @@ select {
   border-bottom: 1px solid var(--color-border);
   text-align: left;
 }
+
+@media (max-width: 600px) {
+  .version-table,
+  .version-table thead,
+  .version-table tbody,
+  .version-table th,
+  .version-table tr,
+  .version-table td {
+    display: block;
+  }
+  .version-table thead {
+    display: none;
+  }
+  .version-table tr {
+    margin-bottom: 1rem;
+  }
+  .version-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .version-table td::before {
+    content: attr(data-label);
+    font-weight: bold;
+    margin-right: 1rem;
+  }
+  .version-table td:last-child {
+    border-bottom: none;
+  }
+}
 .badge {
   border-radius: 4px;
   padding: 0.1rem 0.25rem;
