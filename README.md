@@ -27,3 +27,18 @@ The server listens on `:8080`.
 docker build -t modsentinel .
 docker run -p 8080:8080 modsentinel
 ```
+
+### Docker Compose
+
+```yaml
+services:
+  modsentinel:
+    image: nl2109/modsentinel:latest
+    container_name: modsentinel
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    # Uncomment to persist the database on the host
+    # volumes:
+    #   - ./mods.db:/mods.db
+```
