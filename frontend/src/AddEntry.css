@@ -1,5 +1,7 @@
 .add-entry {
   color: var(--color-text-primary);
+  display: flex;
+  flex-direction: column;
 }
 .page-header {
   text-align: left;
