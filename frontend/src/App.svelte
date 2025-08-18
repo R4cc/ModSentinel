@@ -3,13 +3,13 @@
 
   let mods = []
   let url = ''
-  let game_version = ''
   let loader = ''
-  let channel = 'release'
-  let gameVersions = []
-  let loaders = []
-  let channels = []
-  let metadataLoaded = false
+  let game_version = ''
+  let channel = ''
+  let metadata = null
+  let loaderOptions = []
+  let gameVersionOptions = []
+  let channelOptions = []
 
   async function loadMods() {
     const res = await fetch('/api/mods')
@@ -25,15 +25,40 @@
       body: JSON.stringify({ url })
     })
     if (res.ok) {
-      const data = await res.json()
-      gameVersions = data.game_versions
-      loaders = data.loaders
-      channels = data.channels
-      game_version = gameVersions[0] || ''
-      loader = loaders[0] || ''
-      channel = channels[0] || 'release'
-      metadataLoaded = true
+      metadata = await res.json()
+      loaderOptions = metadata.loaders
+      loader = ''
+      game_version = ''
+      channel = ''
+      gameVersionOptions = []
+      channelOptions = []
     }
+  }
+
+  function handleLoader() {
+    if (!metadata || !loader) return
+    const set = new Set()
+    metadata.versions.forEach(v => {
+      if (v.loaders.includes(loader)) {
+        v.game_versions.forEach(gv => set.add(gv))
+      }
+    })
+    gameVersionOptions = Array.from(set).sort((a, b) => b.localeCompare(a))
+    game_version = gameVersionOptions[0] || ''
+    handleGameVersion()
+  }
+
+  function handleGameVersion() {
+    if (!metadata || !loader || !game_version) return
+    const set = new Set()
+    metadata.versions.forEach(v => {
+      if (v.loaders.includes(loader) && v.game_versions.includes(game_version)) {
+        set.add(v.version_type)
+      }
+    })
+    const order = ['release', 'beta', 'alpha']
+    channelOptions = Array.from(set).sort((a, b) => order.indexOf(a) - order.indexOf(b))
+    channel = channelOptions[0] || ''
   }
 
   async function addMod() {
@@ -45,40 +70,55 @@
     if (res.ok) {
       mods = await res.json()
       url = ''
-      game_version = ''
       loader = ''
-      channel = 'release'
-      gameVersions = []
-      loaders = []
-      channels = []
-      metadataLoaded = false
+      game_version = ''
+      channel = ''
+      metadata = null
+      loaderOptions = []
+      gameVersionOptions = []
+      channelOptions = []
     }
   }
 </script>
 
 <main>
   <h1>ModSentinel</h1>
-  <form class="mod-form" on:submit|preventDefault={metadataLoaded ? addMod : loadMetadata}>
-    <input bind:value={url} placeholder="Modrinth URL" required />
-    {#if metadataLoaded}
-      <select bind:value={game_version} required>
-        {#each gameVersions as gv}
-          <option value={gv}>{gv}</option>
-        {/each}
-      </select>
-      <select bind:value={loader} required>
-        {#each loaders as ld}
-          <option value={ld}>{ld}</option>
-        {/each}
-      </select>
-      <select bind:value={channel}>
-        {#each channels as ch}
-          <option value={ch}>{ch}</option>
-        {/each}
-      </select>
-      <button type="submit">Add</button>
-    {:else}
-      <button type="submit">Load</button>
+  <form class="mod-form" on:submit|preventDefault={addMod}>
+    <div class="url-step">
+      <input class="search-bar" bind:value={url} placeholder="Modrinth URL" required />
+      <button type="button" on:click={loadMetadata} disabled={!url}>Next</button>
+    </div>
+    {#if metadata}
+      <div class="step">
+        <p>Select your loader</p>
+        <select bind:value={loader} on:change={handleLoader} required>
+          <option value="" disabled selected>Select loader</option>
+          {#each loaderOptions as ld}
+            <option value={ld}>{ld}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
+    {#if metadata && loader}
+      <div class="step">
+        <p>Select your Minecraft version</p>
+        <select bind:value={game_version} on:change={handleGameVersion} required>
+          {#each gameVersionOptions as gv}
+            <option value={gv}>{gv}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
+    {#if metadata && loader && game_version}
+      <div class="step">
+        <p>Select mod version</p>
+        <select bind:value={channel} required>
+          {#each channelOptions as ch}
+            <option value={ch}>{ch}</option>
+          {/each}
+        </select>
+        <button type="submit">Add</button>
+      </div>
     {/if}
   </form>
   <div class="mod-list">
@@ -109,11 +149,23 @@
   }
   .mod-form {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
     margin-bottom: 2rem;
   }
-  .mod-form input,
+  .url-step {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+    gap: 0.5rem;
+  }
+  .url-step .search-bar {
+    flex: 1;
+    padding: 0.5rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+  }
   .mod-form select,
   .mod-form button {
     padding: 0.5rem;
@@ -126,8 +178,18 @@
     cursor: pointer;
     transition: background-color 0.3s;
   }
-  .mod-form button:hover {
+  .mod-form button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .mod-form button:hover:enabled {
     background-color: #45a049;
+  }
+  .step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
   }
   .mod-list {
     display: flex;

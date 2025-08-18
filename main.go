@@ -215,10 +215,17 @@ func checkUpdates(db *sql.DB) {
 	}
 }
 
-type ModMetadata struct {
+type ModVersion struct {
 	GameVersions []string `json:"game_versions"`
 	Loaders      []string `json:"loaders"`
-	Channels     []string `json:"channels"`
+	VersionType  string   `json:"version_type"`
+}
+
+type ModMetadata struct {
+	GameVersions []string     `json:"game_versions"`
+	Loaders      []string     `json:"loaders"`
+	Channels     []string     `json:"channels"`
+	Versions     []ModVersion `json:"versions"`
 }
 
 func fetchModMetadata(rawURL string) (*ModMetadata, error) {
@@ -235,27 +242,29 @@ func fetchModMetadata(rawURL string) (*ModMetadata, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("modrinth status: %s", resp.Status)
 	}
-	var versions []struct {
-		GameVersions []string `json:"game_versions"`
-		Loaders      []string `json:"loaders"`
-		VersionType  string   `json:"version_type"`
-	}
+	var versions []ModVersion
 	if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
 		return nil, err
 	}
 	gvSet := map[string]struct{}{}
 	ldSet := map[string]struct{}{}
 	chSet := map[string]struct{}{}
+	meta := &ModMetadata{}
 	for _, v := range versions {
+		mv := ModVersion{
+			GameVersions: v.GameVersions,
+			Loaders:      v.Loaders,
+			VersionType:  strings.ToLower(v.VersionType),
+		}
+		meta.Versions = append(meta.Versions, mv)
 		for _, gv := range v.GameVersions {
 			gvSet[gv] = struct{}{}
 		}
 		for _, ld := range v.Loaders {
 			ldSet[ld] = struct{}{}
 		}
-		chSet[strings.ToLower(v.VersionType)] = struct{}{}
+		chSet[mv.VersionType] = struct{}{}
 	}
-	meta := &ModMetadata{}
 	for gv := range gvSet {
 		meta.GameVersions = append(meta.GameVersions, gv)
 	}
