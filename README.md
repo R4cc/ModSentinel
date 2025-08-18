@@ -11,6 +11,7 @@ watch for updates.
 - SQLite storage via `modernc.org/sqlite` for CGO-free builds
 - Periodic update checks with `gocron`
 - Structured logging with `zerolog`
+- Automatically creates the SQLite database file on startup
 
 ## Development
 
@@ -38,7 +39,7 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-    # Uncomment to persist the database on the host
+    # Persist the database on the host (file is created automatically)
     # volumes:
     #   - ./mods.db:/mods.db
 ```
