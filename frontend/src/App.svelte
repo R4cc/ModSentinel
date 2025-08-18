@@ -16,7 +16,9 @@
   <h1>ModSentinel</h1>
   <div class="content">
     <AddEntry on:added={loadMods} />
-    <div class="mod-table-container">
+    <section class="mods-section">
+      <h2>Tracked Mods</h2>
+      <div class="table-card">
       {#if mods.length}
         <table class="mod-table">
           <thead>
@@ -73,7 +75,8 @@
       {:else}
         <p>No mods tracked.</p>
       {/if}
-    </div>
+      </div>
+    </section>
   </div>
 </main>
 
@@ -91,6 +94,16 @@
     display: flex;
     flex-direction: column;
     gap: 2rem;
+  }
+  .mods-section h2 {
+    color: var(--color-purple-primary);
+    margin: 0 0 0.5rem 0;
+  }
+  .table-card {
+    background: var(--color-bg-surface);
+    border-radius: 14px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+    padding: 1.5rem;
   }
   .mod-table {
     width: 100%;
