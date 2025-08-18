@@ -320,22 +320,22 @@ export default function AddEntry({ onAdded, editingMod, onEditDone }) {
               </div>
               <fieldset>
                 {filteredVersions.length ? (
-                  <table className="version-table">
-                    <thead>
-                      <tr><th></th><th>Version</th><th>Release channel</th><th>Published</th><th>File size</th></tr>
-                    </thead>
-                    <tbody>
-                      {filteredVersions.map(v => (
-                        <tr key={v.id}>
-                          <td><input type="radio" name="modVersion" value={v.id} checked={selectedVersion === v} onChange={() => selectVersion(v)} /></td>
-                          <td>{v.version_number}</td>
-                          <td><span className={`badge ${v.version_type}`} title={v.version_type !== 'release' ? 'Pre-release build; may be unstable.' : ''}>{v.version_type}</span></td>
-                          <td>{(v.date_published || v.date || '').slice(0,10)}</td>
-                          <td>{(v.files && v.files[0] && (v.files[0].size/1024/1024).toFixed(2)) || '-'} MB</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                    <table className="version-table">
+                      <thead>
+                        <tr><th></th><th>Version</th><th>Release channel</th><th>Published</th><th>File size</th></tr>
+                      </thead>
+                      <tbody>
+                        {filteredVersions.map(v => (
+                          <tr key={v.id}>
+                            <td data-label="Select"><input type="radio" name="modVersion" value={v.id} checked={selectedVersion === v} onChange={() => selectVersion(v)} /></td>
+                            <td data-label="Version">{v.version_number}</td>
+                            <td data-label="Release channel"><span className={`badge ${v.version_type}`} title={v.version_type !== 'release' ? 'Pre-release build; may be unstable.' : ''}>{v.version_type}</span></td>
+                            <td data-label="Published">{(v.date_published || v.date || '').slice(0,10)}</td>
+                            <td data-label="File size">{(v.files && v.files[0] && (v.files[0].size/1024/1024).toFixed(2)) || '-'} MB</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                 ) : (
                   <p className="empty"><span className="tiny">🌌</span> No versions available.</p>
                 )}

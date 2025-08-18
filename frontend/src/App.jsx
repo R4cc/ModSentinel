@@ -49,38 +49,38 @@ export default function App() {
                 <tbody>
                   {mods.map(mod => (
                     <tr key={mod.id}>
-                      <td><img src={mod.icon_url} alt={mod.name} className="icon" /></td>
-                      <td>{mod.name}</td>
-                      <td><a href={mod.url} target="_blank" rel="noreferrer">link</a></td>
-                      <td>{mod.loader}</td>
-                      <td>{mod.game_version}</td>
-                      <td>
+                      <td data-label="Icon"><img src={mod.icon_url} alt={mod.name} className="icon" /></td>
+                      <td data-label="Name">{mod.name}</td>
+                      <td data-label="URL"><a href={mod.url} target="_blank" rel="noreferrer">link</a></td>
+                      <td data-label="Loader">{mod.loader}</td>
+                      <td data-label="MC Version">{mod.game_version}</td>
+                      <td data-label="Version">
                         {mod.current_version === mod.available_version ? (
                           mod.current_version
                         ) : (
                           `${mod.current_version} → ${mod.available_version}`
                         )}
                       </td>
-                      <td>
+                      <td data-label="Release">
                         {mod.channel === mod.available_channel ? (
                           mod.channel
                         ) : (
                           `${mod.channel} → ${mod.available_channel}`
                         )}
                       </td>
-                      <td>
+                      <td data-label="Status">
                         {mod.current_version === mod.available_version && mod.channel === mod.available_channel ? (
                           <span className="status up-to-date">Up to date</span>
                         ) : (
                           <span className="status update-available">Update available</span>
                         )}
                       </td>
-                      <td>
+                      <td data-label="Download">
                         {(mod.current_version !== mod.available_version || mod.channel !== mod.available_channel) && (
                           <a className="download" href={mod.download_url} target="_blank" rel="noreferrer">Download</a>
                         )}
                       </td>
-                      <td>
+                      <td data-label="Actions">
                         <div className="actions">
                           <button type="button" onClick={() => setEditingMod(mod)}>Edit</button>
                           <button type="button" className="delete" onClick={() => setDeleteTarget(mod)}>Delete</button>
