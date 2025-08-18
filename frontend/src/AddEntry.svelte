@@ -1,12 +1,12 @@
 <script>
   import { createEventDispatcher } from 'svelte';
-  import { fade, slide } from 'svelte/transition';
 
   const dispatch = createEventDispatcher();
 
   let url = '';
   let urlValid = false;
   let urlTouched = false;
+  let urlLocked = false;
 
   let loader = '';
   let game_version = '';
@@ -30,6 +30,8 @@
   }
 
   async function loadMetadata() {
+    if (urlLocked) return;
+    urlLocked = true;
     const res = await fetch('/api/mods/metadata', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -43,6 +45,8 @@
       selectedVersion = null;
       gameVersionOptions = [];
       versionOptions = [];
+    } else {
+      urlLocked = false;
     }
   }
 
@@ -81,6 +85,7 @@
     url = '';
     urlValid = false;
     urlTouched = false;
+    urlLocked = false;
     loader = '';
     game_version = '';
     selectedVersion = null;
@@ -126,46 +131,44 @@
       <section>
         <h3>Enter URL</h3>
         <div class="url-bar">
-          <input type="url" bind:value={url} placeholder="Paste URL…" on:input={() => { validate(); urlTouched = true; }} on:blur={validate} aria-invalid={!urlValid && urlTouched} />
-          <button type="button" class="next" on:click={loadMetadata} disabled={!urlValid}>Next</button>
+          <input type="url" bind:value={url} placeholder="Paste URL…" on:input={() => { validate(); urlTouched = true; }} on:blur={validate} aria-invalid={!urlValid && urlTouched} disabled={urlLocked} />
+          <button type="button" class="next" on:click={loadMetadata} disabled={!urlValid || urlLocked}>Next</button>
         </div>
         {#if urlTouched && !urlValid}
           <p class="error">Please enter a valid URL.</p>
         {/if}
       </section>
 
-      {#if metadata}
-        <section in:slide={{duration:200}}>
-          <h3>Select your loader</h3>
-          <div class="loader-pills">
-            {#each loaderOptions as ld}
-              <button type="button" class="pill {loader === ld ? 'selected' : ''}" on:click={() => selectLoader(ld)}>{ld}</button>
-            {/each}
-          </div>
-        </section>
-      {/if}
+      <section>
+        <h3>Select your loader</h3>
+        <fieldset disabled={!metadata} class="loader-pills">
+          {#each loaderOptions as ld}
+            <button type="button" class="pill {loader === ld ? 'selected' : ''}" on:click={() => selectLoader(ld)}>{ld}</button>
+          {/each}
+        </fieldset>
+      </section>
 
-      {#if metadata && loader}
-        <section in:slide={{duration:200}}>
-          <h3>Select Minecraft version</h3>
-          <input class="mc-search" type="text" placeholder="Search…" bind:value={gameVersionFilter} />
-          <select bind:value={game_version} on:change={handleGameVersion}>
+      <section>
+        <h3>Select Minecraft version</h3>
+        <fieldset disabled={!(metadata && loader)}>
+          <input class="mc-search" type="text" placeholder="Search…" bind:value={gameVersionFilter} disabled={!(metadata && loader)} />
+          <select bind:value={game_version} on:change={handleGameVersion} disabled={!(metadata && loader)}>
             {#each filteredGameVersions as gv}
               <option value={gv}>{gv}</option>
             {/each}
           </select>
-        </section>
-      {/if}
+        </fieldset>
+      </section>
 
-      {#if metadata && loader && game_version}
-        <section in:slide={{duration:200}}>
-          <h3>Select mod version</h3>
+      <section>
+        <h3>Select mod version</h3>
+        <fieldset disabled={!(metadata && loader && game_version)}>
           {#if versionOptions.length}
             <ul class="version-list">
               {#each versionOptions as v}
                 <li>
                   <label>
-                    <input type="radio" name="modVersion" value={v.id} checked={selectedVersion === v} on:change={() => selectVersion(v)} />
+                    <input type="radio" name="modVersion" value={v.id} checked={selectedVersion === v} on:change={() => selectVersion(v)} disabled={!(metadata && loader && game_version)} />
                     <span class="version">{v.version_number}</span>
                     <span class="date">{(v.date_published || v.date || '').slice(0,10)}</span>
                     <span class="badge {v.version_type}">{v.version_type}</span>
@@ -176,8 +179,8 @@
           {:else}
             <p class="empty">No versions available.</p>
           {/if}
-        </section>
-      {/if}
+        </fieldset>
+      </section>
 
       <div class="action-bar">
         <button type="submit" class="primary" disabled={!selectedVersion}>Add Entry</button>
@@ -205,7 +208,7 @@
     color: var(--color-text-primary);
   }
   .page-header {
-    text-align: center;
+    text-align: left;
     margin-bottom: 1rem;
   }
   .page-header h2 {
@@ -274,6 +277,11 @@
   }
   .url-bar .next:hover:not(:disabled) {
     box-shadow: 0 0 6px var(--color-orange-accent);
+  }
+  fieldset {
+    border: none;
+    padding: 0;
+    margin: 0;
   }
   .loader-pills {
     display: flex;
