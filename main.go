@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -159,6 +160,65 @@ func main() {
 		json.NewEncoder(w).Encode(mods)
 	})
 
+	r.Put("/api/mods/{id}", func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		var m Mod
+		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		m.ID = id
+		slug, err := parseModrinthSlug(m.URL)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := populateProjectInfo(&m, slug); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := populateVersions(&m, slug); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := updateMod(db, &m); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		mods, err := listMods(db)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(mods)
+	})
+
+	r.Delete("/api/mods/{id}", func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		if err := deleteMod(db, id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		mods, err := listMods(db)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(mods)
+	})
+
 	static, _ := fs.Sub(distFS, "frontend/dist")
 	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -249,6 +309,16 @@ func insertMod(db *sql.DB, m *Mod) error {
 		m.ID = int(id)
 	}
 	return nil
+}
+
+func updateMod(db *sql.DB, m *Mod) error {
+	_, err := db.Exec(`UPDATE mods SET name=?, icon_url=?, url=?, game_version=?, loader=?, channel=?, current_version=?, available_version=?, available_channel=?, download_url=? WHERE id=?`, m.Name, m.IconURL, m.URL, m.GameVersion, m.Loader, m.Channel, m.CurrentVersion, m.AvailableVersion, m.AvailableChannel, m.DownloadURL, m.ID)
+	return err
+}
+
+func deleteMod(db *sql.DB, id int) error {
+	_, err := db.Exec(`DELETE FROM mods WHERE id=?`, id)
+	return err
 }
 
 func listMods(db *sql.DB) ([]Mod, error) {

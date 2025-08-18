@@ -3,6 +3,8 @@ import AddEntry from './AddEntry.jsx';
 
 export default function App() {
   const [mods, setMods] = useState([]);
+  const [editingMod, setEditingMod] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
 
   async function loadMods() {
     const res = await fetch('/api/mods');
@@ -13,11 +15,18 @@ export default function App() {
     loadMods();
   }, []);
 
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    await fetch(`/api/mods/${deleteTarget.id}`, { method: 'DELETE' });
+    setDeleteTarget(null);
+    loadMods();
+  }
+
   return (
     <main>
       <h1>ModSentinel</h1>
       <div className="content">
-        <AddEntry onAdded={loadMods} />
+        <AddEntry onAdded={loadMods} editingMod={editingMod} onEditDone={() => setEditingMod(null)} />
         <section className="mods-section">
           <h2>Tracked Mods</h2>
           <div className="table-card">
@@ -33,7 +42,8 @@ export default function App() {
                     <th>Version</th>
                     <th>Release</th>
                     <th>Status</th>
-                    <th></th>
+                    <th>Download</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -70,7 +80,13 @@ export default function App() {
                           <a className="download" href={mod.download_url} target="_blank" rel="noreferrer">Download</a>
                         )}
                       </td>
-                    </tr>
+                      <td>
+                        <div className="actions">
+                          <button type="button" onClick={() => setEditingMod(mod)}>Edit</button>
+                          <button type="button" className="delete" onClick={() => setDeleteTarget(mod)}>Delete</button>
+                        </div>
+                      </td>
+                  </tr>
                   ))}
                 </tbody>
               </table>
@@ -80,6 +96,17 @@ export default function App() {
           </div>
         </section>
       </div>
+      {deleteTarget && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <p>Delete {deleteTarget.name}?</p>
+            <div className="buttons">
+              <button type="button" className="secondary" onClick={() => setDeleteTarget(null)}>Cancel</button>
+              <button type="button" className="primary" onClick={confirmDelete}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
