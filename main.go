@@ -28,12 +28,17 @@ import (
 var distFS embed.FS
 
 type Mod struct {
-	ID            int
-	URL           string
-	GameVersion   string
-	Loader        string
-	Channel       string
-	LatestVersion string
+	ID               int    `json:"id"`
+	Name             string `json:"name"`
+	IconURL          string `json:"icon_url"`
+	URL              string `json:"url"`
+	GameVersion      string `json:"game_version"`
+	Loader           string `json:"loader"`
+	Channel          string `json:"channel"`
+	CurrentVersion   string `json:"current_version"`
+	AvailableVersion string `json:"available_version"`
+	AvailableChannel string `json:"available_channel"`
+	DownloadURL      string `json:"download_url"`
 }
 
 func resolveDBPath(p string) string {
@@ -118,9 +123,18 @@ func main() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		v, err := fetchLatestVersion(m)
-		if err == nil {
-			m.LatestVersion = v
+		slug, err := parseModrinthSlug(m.URL)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := populateProjectInfo(&m, slug); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := populateVersions(&m, slug); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 		if err := insertMod(db, &m); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -158,17 +172,22 @@ func main() {
 func initDB(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS mods (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        icon_url TEXT,
         url TEXT NOT NULL,
         game_version TEXT,
         loader TEXT,
         channel TEXT,
-        latest_version TEXT
+        current_version TEXT,
+        available_version TEXT,
+        available_channel TEXT,
+        download_url TEXT
     )`)
 	return err
 }
 
 func insertMod(db *sql.DB, m *Mod) error {
-	res, err := db.Exec(`INSERT INTO mods(url, game_version, loader, channel, latest_version) VALUES(?,?,?,?,?)`, m.URL, m.GameVersion, m.Loader, m.Channel, m.LatestVersion)
+	res, err := db.Exec(`INSERT INTO mods(name, icon_url, url, game_version, loader, channel, current_version, available_version, available_channel, download_url) VALUES(?,?,?,?,?,?,?,?,?,?)`, m.Name, m.IconURL, m.URL, m.GameVersion, m.Loader, m.Channel, m.CurrentVersion, m.AvailableVersion, m.AvailableChannel, m.DownloadURL)
 	if err != nil {
 		return err
 	}
@@ -180,7 +199,7 @@ func insertMod(db *sql.DB, m *Mod) error {
 }
 
 func listMods(db *sql.DB) ([]Mod, error) {
-	rows, err := db.Query(`SELECT id, url, game_version, loader, channel, latest_version FROM mods ORDER BY id DESC`)
+	rows, err := db.Query(`SELECT id, name, icon_url, url, game_version, loader, channel, current_version, available_version, available_channel, download_url FROM mods ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +207,7 @@ func listMods(db *sql.DB) ([]Mod, error) {
 	var mods []Mod
 	for rows.Next() {
 		var m Mod
-		if err := rows.Scan(&m.ID, &m.URL, &m.GameVersion, &m.Loader, &m.Channel, &m.LatestVersion); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.IconURL, &m.URL, &m.GameVersion, &m.Loader, &m.Channel, &m.CurrentVersion, &m.AvailableVersion, &m.AvailableChannel, &m.DownloadURL); err != nil {
 			return nil, err
 		}
 		mods = append(mods, m)
@@ -203,12 +222,14 @@ func checkUpdates(db *sql.DB) {
 		return
 	}
 	for _, m := range mods {
-		v, err := fetchLatestVersion(m)
-		if err != nil || v == "" || v == m.LatestVersion {
+		slug, err := parseModrinthSlug(m.URL)
+		if err != nil {
 			continue
 		}
-		log.Info().Str("mod", m.URL).Str("new", v).Msg("update found")
-		_, err = db.Exec(`UPDATE mods SET latest_version=? WHERE id=?`, v, m.ID)
+		if err := populateAvailableVersion(&m, slug); err != nil {
+			continue
+		}
+		_, err = db.Exec(`UPDATE mods SET available_version=?, available_channel=?, download_url=? WHERE id=?`, m.AvailableVersion, m.AvailableChannel, m.DownloadURL, m.ID)
 		if err != nil {
 			log.Error().Err(err).Msg("update version")
 		}
@@ -280,33 +301,108 @@ func fetchModMetadata(rawURL string) (*ModMetadata, error) {
 	return meta, nil
 }
 
-func fetchLatestVersion(m Mod) (string, error) {
-	slug, err := parseModrinthSlug(m.URL)
-	if err != nil {
-		return "", err
-	}
-	url := fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version?game_versions=[\"%s\"]&loaders=[\"%s\"]", slug, m.GameVersion, m.Loader)
+type projectInfo struct {
+	Title   string `json:"title"`
+	IconURL string `json:"icon_url"`
+}
+
+type modrinthVersion struct {
+	VersionNumber string `json:"version_number"`
+	VersionType   string `json:"version_type"`
+	Files         []struct {
+		URL string `json:"url"`
+	} `json:"files"`
+}
+
+func populateProjectInfo(m *Mod, slug string) error {
+	url := fmt.Sprintf("https://api.modrinth.com/v2/project/%s", slug)
 	resp, err := http.Get(url)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("modrinth status: %s", resp.Status)
+		return fmt.Errorf("modrinth status: %s", resp.Status)
 	}
-	var versions []struct {
-		VersionNumber string `json:"version_number"`
-		VersionType   string `json:"version_type"`
+	var info projectInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return err
 	}
+	m.Name = info.Title
+	m.IconURL = info.IconURL
+	return nil
+}
+
+func fetchVersions(slug, gameVersion, loader string) ([]modrinthVersion, error) {
+	url := fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version?game_versions=[\"%s\"]&loaders=[\"%s\"]", slug, gameVersion, loader)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("modrinth status: %s", resp.Status)
+	}
+	var versions []modrinthVersion
 	if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
-		return "", err
+		return nil, err
 	}
+	return versions, nil
+}
+
+func populateVersions(m *Mod, slug string) error {
+	versions, err := fetchVersions(slug, m.GameVersion, m.Loader)
+	if err != nil {
+		return err
+	}
+	var current modrinthVersion
+	found := false
 	for _, v := range versions {
 		if strings.EqualFold(v.VersionType, m.Channel) {
-			return v.VersionNumber, nil
+			current = v
+			found = true
+			break
 		}
 	}
-	return "", errors.New("no version found")
+	if !found {
+		return errors.New("no version found for channel")
+	}
+	m.CurrentVersion = current.VersionNumber
+	if len(current.Files) > 0 {
+		m.DownloadURL = current.Files[0].URL
+	}
+	// determine available version/channel
+	if err := populateAvailableVersion(m, slug); err != nil {
+		return err
+	}
+	return nil
+}
+
+func populateAvailableVersion(m *Mod, slug string) error {
+	versions, err := fetchVersions(slug, m.GameVersion, m.Loader)
+	if err != nil {
+		return err
+	}
+	order := []string{"release", "beta", "alpha"}
+	idx := map[string]int{"release": 0, "beta": 1, "alpha": 2}
+	start := idx[strings.ToLower(m.Channel)]
+	for i := 0; i <= start; i++ {
+		ch := order[i]
+		for _, v := range versions {
+			if strings.EqualFold(v.VersionType, ch) {
+				m.AvailableVersion = v.VersionNumber
+				m.AvailableChannel = ch
+				if len(v.Files) > 0 {
+					m.DownloadURL = v.Files[0].URL
+				}
+				return nil
+			}
+		}
+	}
+	// fallback to current
+	m.AvailableVersion = m.CurrentVersion
+	m.AvailableChannel = m.Channel
+	return nil
 }
 
 func parseModrinthSlug(raw string) (string, error) {

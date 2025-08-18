@@ -81,8 +81,9 @@
   }
 </script>
 
-<main>
+  <main>
   <h1>ModSentinel</h1>
+  <div class="content">
   <form class="mod-form" on:submit|preventDefault={addMod}>
     <div class="url-step">
       <input class="search-bar" bind:value={url} placeholder="Modrinth URL" required />
@@ -121,20 +122,66 @@
       </div>
     {/if}
   </form>
-  <div class="mod-list">
+  <div class="mod-table-container">
     {#if mods.length}
-      {#each mods as mod}
-        <div class="mod-item">
-          <a href={mod.URL} target="_blank" rel="noreferrer">{mod.URL}</a>
-          <span>{mod.GameVersion} {mod.Loader}</span>
-          <span class="version">{mod.LatestVersion}</span>
-        </div>
-      {/each}
+      <table class="mod-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>Name</th>
+            <th>URL</th>
+            <th>Loader</th>
+            <th>MC Version</th>
+            <th>Version</th>
+            <th>Release</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+        {#each mods as mod}
+          <tr>
+            <td><img src={mod.icon_url} alt="{mod.name}" class="icon" /></td>
+            <td>{mod.name}</td>
+            <td><a href={mod.url} target="_blank" rel="noreferrer">link</a></td>
+            <td>{mod.loader}</td>
+            <td>{mod.game_version}</td>
+            <td>
+              {#if mod.current_version === mod.available_version}
+                {mod.current_version}
+              {:else}
+                {mod.current_version} &rarr; {mod.available_version}
+              {/if}
+            </td>
+            <td>
+              {#if mod.channel === mod.available_channel}
+                {mod.channel}
+              {:else}
+                {mod.channel} &rarr; {mod.available_channel}
+              {/if}
+            </td>
+            <td>
+              {#if mod.current_version === mod.available_version && mod.channel === mod.available_channel}
+                <span class="status up-to-date">Up to date</span>
+              {:else}
+                <span class="status update-available">Update available</span>
+              {/if}
+            </td>
+            <td>
+              {#if mod.current_version !== mod.available_version || mod.channel !== mod.available_channel}
+                <a class="download" href={mod.download_url} target="_blank" rel="noreferrer">Download</a>
+              {/if}
+            </td>
+          </tr>
+        {/each}
+        </tbody>
+      </table>
     {:else}
       <p>No mods tracked.</p>
     {/if}
   </div>
-</main>
+  </div>
+  </main>
 
 <style>
   main {
@@ -152,7 +199,6 @@
     flex-direction: column;
     align-items: center;
     gap: 1rem;
-    margin-bottom: 2rem;
   }
   .url-step {
     display: flex;
@@ -191,25 +237,58 @@
     align-items: center;
     gap: 0.5rem;
   }
-  .mod-list {
+  .content {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 2rem;
   }
-  .mod-item {
-    padding: 0.75rem;
+  .mod-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .mod-table th,
+  .mod-table td {
+    padding: 0.5rem;
+    border-bottom: 1px solid #ddd;
+  }
+  .mod-table th {
+    background-color: #f0f0f0;
+  }
+  .icon {
+    width: 32px;
+    height: 32px;
+  }
+  .status {
+    padding: 0.25rem 0.5rem;
     border-radius: 4px;
-    background-color: #f5f5f5;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    font-size: 0.875rem;
   }
-  .mod-item a {
-    color: #3498db;
+  .status.up-to-date {
+    background-color: #c8e6c9;
+    color: #256029;
+  }
+  .status.update-available {
+    background-color: #ffe0b2;
+    color: #8a6d3b;
+  }
+  .download {
+    background-color: #3498db;
+    color: #fff;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
     text-decoration: none;
   }
-  .mod-item .version {
-    font-weight: bold;
+  @media (min-width: 768px) {
+    .content {
+      flex-direction: row;
+      align-items: flex-start;
+    }
+    .mod-form {
+      width: 40%;
+    }
+    .mod-table-container {
+      width: 60%;
+    }
   }
 </style>
 
