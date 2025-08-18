@@ -5,6 +5,15 @@ Paste in a Modrinth or CurseForge link, select the target Minecraft version,
 loader (Fabric, Forge, Quilt, etc.) and release channel, and ModSentinel will
 watch for updates.
 
+## Disclaimer
+
+This project is almost exclusively **vibe-coded**.  
+It has not been thoroughly reviewed, tested, or hardened.  
+
+**Do not expose this application directly to the internet.**  
+It is intended for local use, experimentation, or personal setups only.  
+Use at your own risk.
+
 ## Features
 
 - Server-rendered Go app using chi, templates and [htmx](https://htmx.org)
