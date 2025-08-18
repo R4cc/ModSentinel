@@ -182,7 +182,11 @@ export default function AddEntry({ onAdded }) {
                   placeholder="Paste URL"
                   onChange={e => { const val = e.target.value; setUrl(val); validate(val); }}
                   onKeyDown={e => { if (e.key === 'Enter') { validate(); loadMetadata(); } }}
-                  onPaste={() => { setTimeout(() => { validate(); loadMetadata(); }, 0); }}
+                  onPaste={e => {
+                    const pasted = e.clipboardData.getData('text');
+                    validate(pasted);
+                    setTimeout(loadMetadata, 0);
+                  }}
                   onBlur={() => { setUrlTouched(true); validate(); }}
                   aria-invalid={!urlValid && urlTouched}
                   disabled={urlLocked}
