@@ -6,6 +6,10 @@
   let game_version = ''
   let loader = ''
   let channel = 'release'
+  let gameVersions = []
+  let loaders = []
+  let channels = []
+  let metadataLoaded = false
 
   async function loadMods() {
     const res = await fetch('/api/mods')
@@ -13,6 +17,24 @@
   }
 
   onMount(loadMods)
+
+  async function loadMetadata() {
+    const res = await fetch('/api/mods/metadata', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    })
+    if (res.ok) {
+      const data = await res.json()
+      gameVersions = data.game_versions
+      loaders = data.loaders
+      channels = data.channels
+      game_version = gameVersions[0] || ''
+      loader = loaders[0] || ''
+      channel = channels[0] || 'release'
+      metadataLoaded = true
+    }
+  }
 
   async function addMod() {
     const res = await fetch('/api/mods', {
@@ -26,22 +48,38 @@
       game_version = ''
       loader = ''
       channel = 'release'
+      gameVersions = []
+      loaders = []
+      channels = []
+      metadataLoaded = false
     }
   }
 </script>
 
 <main>
   <h1>ModSentinel</h1>
-  <form class="mod-form" on:submit|preventDefault={addMod}>
+  <form class="mod-form" on:submit|preventDefault={metadataLoaded ? addMod : loadMetadata}>
     <input bind:value={url} placeholder="Modrinth URL" required />
-    <input bind:value={game_version} placeholder="Game Version" required />
-    <input bind:value={loader} placeholder="Loader" required />
-    <select bind:value={channel}>
-      <option value="release">Release</option>
-      <option value="beta">Beta</option>
-      <option value="alpha">Alpha</option>
-    </select>
-    <button type="submit">Add</button>
+    {#if metadataLoaded}
+      <select bind:value={game_version} required>
+        {#each gameVersions as gv}
+          <option value={gv}>{gv}</option>
+        {/each}
+      </select>
+      <select bind:value={loader} required>
+        {#each loaders as ld}
+          <option value={ld}>{ld}</option>
+        {/each}
+      </select>
+      <select bind:value={channel}>
+        {#each channels as ch}
+          <option value={ch}>{ch}</option>
+        {/each}
+      </select>
+      <button type="submit">Add</button>
+    {:else}
+      <button type="submit">Load</button>
+    {/if}
   </form>
   <div class="mod-list">
     {#if mods.length}
@@ -70,8 +108,8 @@
     color: #2c3e50;
   }
   .mod-form {
-    display: grid;
-    grid-template-columns: 2fr 1fr 1fr 1fr auto;
+    display: flex;
+    flex-wrap: wrap;
     gap: 0.5rem;
     margin-bottom: 2rem;
   }

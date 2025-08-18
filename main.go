@@ -12,6 +12,7 @@ import (
 	urlpkg "net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -92,6 +93,23 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(mods)
+	})
+
+	r.Post("/api/mods/metadata", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		meta, err := fetchModMetadata(req.URL)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(meta)
 	})
 
 	r.Post("/api/mods", func(w http.ResponseWriter, r *http.Request) {
@@ -195,6 +213,62 @@ func checkUpdates(db *sql.DB) {
 			log.Error().Err(err).Msg("update version")
 		}
 	}
+}
+
+type ModMetadata struct {
+	GameVersions []string `json:"game_versions"`
+	Loaders      []string `json:"loaders"`
+	Channels     []string `json:"channels"`
+}
+
+func fetchModMetadata(rawURL string) (*ModMetadata, error) {
+	slug, err := parseModrinthSlug(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version", slug)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("modrinth status: %s", resp.Status)
+	}
+	var versions []struct {
+		GameVersions []string `json:"game_versions"`
+		Loaders      []string `json:"loaders"`
+		VersionType  string   `json:"version_type"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
+		return nil, err
+	}
+	gvSet := map[string]struct{}{}
+	ldSet := map[string]struct{}{}
+	chSet := map[string]struct{}{}
+	for _, v := range versions {
+		for _, gv := range v.GameVersions {
+			gvSet[gv] = struct{}{}
+		}
+		for _, ld := range v.Loaders {
+			ldSet[ld] = struct{}{}
+		}
+		chSet[strings.ToLower(v.VersionType)] = struct{}{}
+	}
+	meta := &ModMetadata{}
+	for gv := range gvSet {
+		meta.GameVersions = append(meta.GameVersions, gv)
+	}
+	for ld := range ldSet {
+		meta.Loaders = append(meta.Loaders, ld)
+	}
+	for ch := range chSet {
+		meta.Channels = append(meta.Channels, ch)
+	}
+	sort.Strings(meta.GameVersions)
+	sort.Strings(meta.Loaders)
+	sort.Strings(meta.Channels)
+	return meta, nil
 }
 
 func fetchLatestVersion(m Mod) (string, error) {
