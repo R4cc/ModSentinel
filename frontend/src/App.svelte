@@ -88,7 +88,7 @@
   }
   h1 {
     text-align: center;
-    color: var(--color-purple-primary);
+    color: var(--color-purple-deep);
   }
   .content {
     display: flex;
@@ -96,7 +96,7 @@
     gap: 2rem;
   }
   .mods-section h2 {
-    color: var(--color-purple-primary);
+    color: var(--color-purple-deep);
     margin: 0 0 0.5rem 0;
   }
   .table-card {

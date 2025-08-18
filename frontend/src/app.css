@@ -13,8 +13,8 @@
 
 @media (prefers-color-scheme: light) {
   :root {
-    --color-bg-page: #EDECF5;
-    --color-bg-surface: #FFFFFF;
+    --color-bg-page: #FFFFFF;
+    --color-bg-surface: #EDECF5;
     --color-text-primary: #1A1A24;
     --color-text-secondary: #4F4F5B;
   }
@@ -35,9 +35,33 @@ body {
 
 button {
   cursor: pointer;
+  transition: background 120ms ease, box-shadow 120ms ease, transform 120ms ease;
 }
 
 button:disabled {
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+input,
+select,
+textarea {
+  transition: box-shadow 120ms ease, transform 120ms ease;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-purple-primary);
+  outline-offset: 2px;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 2px var(--color-purple-primary);
+}
+
+a {
+  color: var(--color-purple-primary);
 }
