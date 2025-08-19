@@ -26,7 +26,7 @@ function UpdatesCard({ data, loading, error }) {
     return <p className='text-destructive'>{error}</p>;
   }
 
-  if (!data || data.recent_updates.length === 0) {
+  if (!data?.recent_updates?.length) {
     return <p className='text-muted-foreground'>No updates.</p>;
   }
 
