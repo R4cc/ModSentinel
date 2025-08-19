@@ -4,6 +4,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+RUN apk add --no-cache nodejs npm
+RUN (cd frontend && npm ci && npm run build)
 RUN CGO_ENABLED=0 go build -o modsentinel
 
 # Final stage
