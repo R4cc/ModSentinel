@@ -43,3 +43,10 @@
     @apply min-h-screen bg-background text-foreground antialiased;
   }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

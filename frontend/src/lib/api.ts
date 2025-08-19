@@ -26,6 +26,24 @@ export interface ModMetadata {
   versions: ModVersion[];
 }
 
+export interface DashboardData {
+  tracked: number;
+  up_to_date: number;
+  outdated: number;
+  outdated_mods: Mod[];
+  recent_updates: ModUpdate[];
+  last_sync: number;
+  latency_p50: number;
+  latency_p95: number;
+}
+
+export interface ModUpdate {
+  id: number;
+  name: string;
+  version: string;
+  updated_at: string;
+}
+
 export async function getModMetadata(url: string): Promise<ModMetadata> {
   const res = await fetch("/api/mods/metadata", {
     method: "POST",
@@ -72,9 +90,23 @@ export async function refreshMod(id: number, payload: NewMod): Promise<Mod[]> {
   return res.json();
 }
 
+export async function updateModVersion(id: number): Promise<Mod> {
+  const res = await fetch(`/api/mods/${id}/update`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to update mod');
+  return res.json();
+}
+
 export async function deleteMod(id: number): Promise<Mod[]> {
   const res = await fetch(`/api/mods/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error("Failed to delete mod");
+  return res.json();
+}
+
+export async function getDashboard(): Promise<DashboardData> {
+  const res = await fetch('/api/dashboard');
+  if (res.status === 401) throw new Error('token required');
+  if (res.status === 429) throw new Error('rate limited');
+  if (!res.ok) throw new Error('Failed to fetch dashboard');
   return res.json();
 }
 
