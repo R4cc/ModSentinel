@@ -81,7 +81,7 @@ h3 {
   border: none;
   padding: 0.5rem 1.25rem;
   border-radius: 999px;
-  align-self: flex-start;
+  align-self: flex-end;
 }
 .continue:disabled {
   opacity: 0.5;
