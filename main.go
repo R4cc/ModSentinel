@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/go-co-op/gocron"
@@ -15,6 +19,7 @@ import (
 
 	dbpkg "modsentinel/internal/db"
 	"modsentinel/internal/handlers"
+	"modsentinel/internal/httpx"
 
 	_ "modernc.org/sqlite"
 )
@@ -65,14 +70,49 @@ func main() {
 		log.Fatal().Err(err).Msg("init db")
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	scheduler := gocron.NewScheduler(time.UTC)
-	scheduler.Every(1).Hour().Do(func() { handlers.CheckUpdates(db) })
+	scheduler.Every(1).Hour().Do(func() { handlers.CheckUpdates(ctx, db) })
 	scheduler.StartAsync()
 
 	r := handlers.New(db, distFS)
+	var shuttingDown atomic.Bool
+	handler := withShutdown(r, &shuttingDown)
+
+	srv := &http.Server{
+		Addr:         ":8080",
+		Handler:      handler,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+		shuttingDown.Store(true)
+		scheduler.Stop()
+		time.Sleep(200 * time.Millisecond)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Error().Err(err).Msg("server shutdown")
+		}
+	}()
 
 	log.Info().Msg("starting server on :8080")
-	if err := http.ListenAndServe(":8080", r); err != nil {
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal().Err(err).Msg("server failed")
 	}
+}
+
+func withShutdown(next http.Handler, flag *atomic.Bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if flag.Load() {
+			httpx.Write(w, r, httpx.Unavailable("server shutting down"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

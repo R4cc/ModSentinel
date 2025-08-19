@@ -10,7 +10,7 @@ type Mod struct {
 	ID               int    `json:"id"`
 	Name             string `json:"name"`
 	IconURL          string `json:"icon_url"`
-	URL              string `json:"url"`
+	URL              string `json:"url" validate:"required,url"`
 	GameVersion      string `json:"game_version"`
 	Loader           string `json:"loader"`
 	Channel          string `json:"channel"`
