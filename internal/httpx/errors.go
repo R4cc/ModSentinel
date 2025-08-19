@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+
+	"modsentinel/internal/telemetry"
 )
 
 // Error represents a JSON API error response.
@@ -38,6 +41,11 @@ func BadRequest(msg string) *HTTPError {
 	return &HTTPError{status: http.StatusBadRequest, code: "bad_request", message: msg}
 }
 
+// Unauthorized returns a 401 HTTPError.
+func Unauthorized(msg string) *HTTPError {
+	return &HTTPError{status: http.StatusUnauthorized, code: "token_required", message: msg}
+}
+
 // Unavailable returns a 503 HTTPError.
 func Unavailable(msg string) *HTTPError {
 	return &HTTPError{status: http.StatusServiceUnavailable, code: "service_unavailable", message: msg}
@@ -65,6 +73,7 @@ func Write(w http.ResponseWriter, r *http.Request, err error) {
 func write(w http.ResponseWriter, r *http.Request, status int, code, msg string, fields map[string]string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
+	telemetry.Event("api_error", map[string]string{"status": strconv.Itoa(status), "code": code})
 	json.NewEncoder(w).Encode(Error{
 		Code:      code,
 		Message:   msg,

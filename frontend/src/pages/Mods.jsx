@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/Table.jsx';
 import { Skeleton } from '@/components/ui/Skeleton.jsx';
 import { EmptyState } from '@/components/ui/EmptyState.jsx';
-import { getMods, refreshMod, deleteMod } from '@/lib/api.ts';
+import { getMods, refreshMod, deleteMod, getToken } from '@/lib/api.ts';
 import { toast } from 'sonner';
 import { useConfirm } from '@/hooks/useConfirm.jsx';
 
@@ -26,6 +26,13 @@ export default function Mods() {
   const [page, setPage] = useState(1);
   const perPage = 10;
   const { confirm, ConfirmModal } = useConfirm();
+  const [hasToken, setHasToken] = useState(true);
+
+  useEffect(() => {
+    getToken()
+      .then((t) => setHasToken(!!t))
+      .catch(() => setHasToken(false));
+  }, []);
 
   useEffect(() => {
     fetchMods();
@@ -74,8 +81,12 @@ export default function Mods() {
       } else {
         toast.success('Mod is up to date');
       }
-    } catch {
-      toast.error('Failed to check updates');
+    } catch (err) {
+      if (err instanceof Error && err.message === 'token required') {
+        toast.error('Modrinth token required');
+      } else {
+        toast.error('Failed to check updates');
+      }
     }
   }
 
@@ -126,6 +137,12 @@ export default function Mods() {
           </Select>
         </div>
       </div>
+
+      {!hasToken && (
+        <p className="text-sm text-muted-foreground">
+          Set a Modrinth token in settings to enable update checks.
+        </p>
+      )}
 
       {loading && (
         <Table>
@@ -213,6 +230,7 @@ export default function Mods() {
                       onClick={() => handleCheck(m)}
                       aria-label="Check for updates"
                       className="h-8 px-sm"
+                      disabled={!hasToken}
                     >
                       <RefreshCw className="h-4 w-4" />
                     </Button>

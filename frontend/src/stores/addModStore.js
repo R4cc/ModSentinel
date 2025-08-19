@@ -1,15 +1,16 @@
-import { create } from 'zustand';
-import { toast } from 'sonner';
-import { getMinecraftVersions, getModVersions, slugFromUrl } from '@/lib/api.ts';
+import { create } from "zustand";
+import { toast } from "sonner";
+import { getModMetadata } from "@/lib/api.ts";
 
 export const useAddModStore = create((set, get) => ({
   step: 0,
-  url: '',
-  urlError: '',
-  loader: '',
-  mcVersion: '',
+  url: "",
+  urlError: "",
+  loader: "",
+  mcVersion: "",
   versions: [],
   loadingVersions: false,
+  allModVersions: [],
   modVersions: [],
   loadingModVersions: false,
   includePre: false,
@@ -18,9 +19,9 @@ export const useAddModStore = create((set, get) => ({
   validateUrl: (value) => {
     try {
       new URL(value);
-      set({ urlError: '' });
+      set({ urlError: "" });
     } catch {
-      set({ urlError: 'Enter a valid URL' });
+      set({ urlError: "Enter a valid URL" });
     }
   },
   setLoader: (loader) => set({ loader }),
@@ -30,32 +31,32 @@ export const useAddModStore = create((set, get) => ({
   nextStep: () => set((s) => ({ step: Math.min(3, s.step + 1) })),
   prevStep: () => set((s) => ({ step: Math.max(0, s.step - 1) })),
   fetchVersions: async () => {
+    const { url } = get();
     set({ loadingVersions: true });
     try {
-      const versions = await getMinecraftVersions();
-      set({ versions });
-    } catch {
-      toast.error('Failed to load versions');
+      const meta = await getModMetadata(url);
+      set({ versions: meta.game_versions, allModVersions: meta.versions });
+    } catch (err) {
+      if (err instanceof Error && err.message === "token required") {
+        toast.error("Modrinth token required");
+      } else {
+        toast.error("Failed to load versions");
+      }
     } finally {
       set({ loadingVersions: false });
     }
   },
   fetchModVersions: async () => {
-    const { url, loader, mcVersion } = get();
-    const slug = slugFromUrl(url);
-    if (!slug) {
-      toast.error('Cannot parse mod URL');
-      return;
-    }
+    const { loader, mcVersion, allModVersions } = get();
     set({ loadingModVersions: true });
     try {
-      const mods = await getModVersions(slug, loader, mcVersion);
+      const mods = allModVersions.filter(
+        (v) =>
+          v.loaders.includes(loader) && v.game_versions.includes(mcVersion),
+      );
       set({ modVersions: mods });
-    } catch {
-      toast.error('Failed to load mod versions');
     } finally {
       set({ loadingModVersions: false });
     }
   },
 }));
-
