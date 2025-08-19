@@ -327,7 +327,7 @@ func listMods(db *sql.DB) ([]Mod, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var mods []Mod
+	mods := []Mod{}
 	for rows.Next() {
 		var m Mod
 		if err := rows.Scan(&m.ID, &m.Name, &m.IconURL, &m.URL, &m.GameVersion, &m.Loader, &m.Channel, &m.CurrentVersion, &m.AvailableVersion, &m.AvailableChannel, &m.DownloadURL); err != nil {
