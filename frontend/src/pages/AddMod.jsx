@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { Box, Cog, Gauge } from 'lucide-react';
@@ -9,7 +9,7 @@ import { Checkbox } from '@/components/ui/Checkbox.jsx';
 import { Badge } from '@/components/ui/Badge.jsx';
 import { Skeleton } from '@/components/ui/Skeleton.jsx';
 import { cn } from '@/lib/utils.js';
-import { addMod } from '@/lib/api.ts';
+import { addMod, getToken } from '@/lib/api.ts';
 import { useNavigate } from 'react-router-dom';
 import { useAddModStore } from '@/stores/addModStore.js';
 
@@ -62,6 +62,13 @@ export default function AddMod() {
 
   const refs = [useRef(null), useRef(null), useRef(null), useRef(null)];
 
+  const [hasToken, setHasToken] = useState(true);
+  useEffect(() => {
+    getToken()
+      .then((t) => setHasToken(!!t))
+      .catch(() => setHasToken(false));
+  }, []);
+
   useEffect(() => {
     refs[step]?.current?.focus();
   }, [step]);
@@ -110,14 +117,35 @@ export default function AddMod() {
       });
       toast.success('Mod added');
       navigate('/mods');
-    } catch {
-      toast.error('Failed to add mod');
+    } catch (err) {
+      if (err instanceof Error && err.message === 'token required') {
+        toast.error('Modrinth token required');
+      } else {
+        toast.error('Failed to add mod');
+      }
     }
   }
 
   const filteredModVersions = includePre
     ? modVersions
     : modVersions.filter((v) => v.version_type === 'release');
+
+  if (!hasToken) {
+    return (
+      <div className="p-md">
+        <Card className="mx-auto w-full max-w-md">
+          <CardHeader>
+            <CardTitle>Add Mod</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              Modrinth token required. Add your token in settings.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="p-md">

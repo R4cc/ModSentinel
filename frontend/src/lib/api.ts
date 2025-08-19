@@ -3,6 +3,8 @@ export interface ModVersion {
   version_number: string;
   version_type: string;
   date_published: string;
+  game_versions: string[];
+  loaders: string[];
 }
 
 export interface Mod {
@@ -19,29 +21,25 @@ export interface Mod {
   download_url: string;
 }
 
-export async function getMinecraftVersions(): Promise<string[]> {
-  const res = await fetch('https://launchermeta.mojang.com/mc/game/version_manifest.json');
-  if (!res.ok) throw new Error('Failed to fetch Minecraft versions');
-  const data: { versions: { id: string }[] } = await res.json();
-  const ids = data.versions.map((v) => v.id);
-  ids.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-  return ids;
+export interface ModMetadata {
+  game_versions: string[];
+  versions: ModVersion[];
 }
 
-export async function getModVersions(slug: string, loader: string, mcVersion: string): Promise<ModVersion[]> {
-  const params = new URLSearchParams({
-    loaders: JSON.stringify([loader]),
-    game_versions: JSON.stringify([mcVersion]),
+export async function getModMetadata(url: string): Promise<ModMetadata> {
+  const res = await fetch("/api/mods/metadata", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
   });
-  const res = await fetch(`https://api.modrinth.com/v2/project/${slug}/version?${params}`);
-  if (!res.ok) throw new Error('Failed to fetch mod versions');
-  const data: ModVersion[] = await res.json();
-  return data;
+  if (res.status === 401) throw new Error("token required");
+  if (!res.ok) throw new Error("Failed to fetch metadata");
+  return res.json();
 }
 
 export async function getMods(): Promise<Mod[]> {
-  const res = await fetch('/api/mods');
-  if (!res.ok) throw new Error('Failed to fetch mods');
+  const res = await fetch("/api/mods");
+  if (!res.ok) throw new Error("Failed to fetch mods");
   return res.json();
 }
 
@@ -53,42 +51,52 @@ export interface NewMod {
 }
 
 export async function addMod(payload: NewMod): Promise<Mod[]> {
-  const res = await fetch('/api/mods', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  const res = await fetch("/api/mods", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error('Failed to add mod');
+  if (res.status === 401) throw new Error("token required");
+  if (!res.ok) throw new Error("Failed to add mod");
   return res.json();
 }
 
 export async function refreshMod(id: number, payload: NewMod): Promise<Mod[]> {
   const res = await fetch(`/api/mods/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error('Failed to update mod');
+  if (res.status === 401) throw new Error("token required");
+  if (!res.ok) throw new Error("Failed to update mod");
   return res.json();
 }
 
 export async function deleteMod(id: number): Promise<Mod[]> {
-  const res = await fetch(`/api/mods/${id}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error('Failed to delete mod');
+  const res = await fetch(`/api/mods/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to delete mod");
   return res.json();
 }
 
-export function slugFromUrl(url: string): string | null {
-  try {
-    const u = new URL(url);
-    if (u.hostname.includes('modrinth.com')) {
-      const parts = u.pathname.split('/').filter(Boolean);
-      const idx = parts.findIndex((p) => p === 'mod');
-      return idx >= 0 ? parts[idx + 1] : null;
-    }
-  } catch {
-    return null;
-  }
-  return null;
+export async function getToken(): Promise<string> {
+  const res = await fetch("/api/token");
+  if (!res.ok) throw new Error("Failed to fetch token");
+  const data: { token: string } = await res.json();
+  return data.token;
 }
 
+export async function saveToken(token: string): Promise<void> {
+  const res = await fetch("/api/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) throw new Error("Failed to save token");
+  window.dispatchEvent(new Event("token-change"));
+}
+
+export async function clearToken(): Promise<void> {
+  const res = await fetch("/api/token", { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to clear token");
+  window.dispatchEvent(new Event("token-change"));
+}

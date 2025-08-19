@@ -7,7 +7,6 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
 	"net/http"
 	urlpkg "net/url"
@@ -22,11 +21,23 @@ import (
 
 	dbpkg "modsentinel/internal/db"
 	"modsentinel/internal/httpx"
+	mr "modsentinel/internal/modrinth"
+	"modsentinel/internal/telemetry"
+	tokenpkg "modsentinel/internal/token"
 )
 
 var validate = validator.New()
 
-var httpClient = &http.Client{Timeout: 10 * time.Second}
+var modClient = mr.NewClient()
+
+func writeModrinthError(w http.ResponseWriter, r *http.Request, err error) {
+	var me *mr.Error
+	if errors.As(err, &me) && (me.Status == http.StatusUnauthorized || me.Status == http.StatusForbidden) {
+		httpx.Write(w, r, httpx.Unauthorized("token required"))
+		return
+	}
+	httpx.Write(w, r, httpx.BadRequest(err.Error()))
+}
 
 type metadataRequest struct {
 	URL string `json:"url" validate:"required,url"`
@@ -57,6 +68,9 @@ func New(db *sql.DB, dist embed.FS) http.Handler {
 	r.Post("/api/mods", createModHandler(db))
 	r.Put("/api/mods/{id}", updateModHandler(db))
 	r.Delete("/api/mods/{id}", deleteModHandler(db))
+	r.Get("/api/token", getTokenHandler())
+	r.Post("/api/token", setTokenHandler())
+	r.Delete("/api/token", clearTokenHandler())
 
 	static, _ := fs.Sub(dist, "frontend/dist")
 	r.Get("/*", serveStatic(static))
@@ -101,7 +115,7 @@ func metadataHandler() http.HandlerFunc {
 		}
 		meta, err := fetchModMetadata(r.Context(), req.URL)
 		if err != nil {
-			httpx.Write(w, r, httpx.BadRequest(err.Error()))
+			writeModrinthError(w, r, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -126,11 +140,11 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		if err := populateProjectInfo(r.Context(), &m, slug); err != nil {
-			httpx.Write(w, r, httpx.BadRequest(err.Error()))
+			writeModrinthError(w, r, err)
 			return
 		}
 		if err := populateVersions(r.Context(), &m, slug); err != nil {
-			httpx.Write(w, r, httpx.BadRequest(err.Error()))
+			writeModrinthError(w, r, err)
 			return
 		}
 		if err := dbpkg.InsertMod(db, &m); err != nil {
@@ -171,11 +185,11 @@ func updateModHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		if err := populateProjectInfo(r.Context(), &m, slug); err != nil {
-			httpx.Write(w, r, httpx.BadRequest(err.Error()))
+			writeModrinthError(w, r, err)
 			return
 		}
 		if err := populateVersions(r.Context(), &m, slug); err != nil {
-			httpx.Write(w, r, httpx.BadRequest(err.Error()))
+			writeModrinthError(w, r, err)
 			return
 		}
 		if err := dbpkg.UpdateMod(db, &m); err != nil {
@@ -211,6 +225,53 @@ func deleteModHandler(db *sql.DB) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(mods)
+	}
+}
+
+type tokenRequest struct {
+	Token string `json:"token" validate:"required"`
+}
+
+func getTokenHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tok, err := tokenpkg.GetToken()
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"token": tok})
+	}
+}
+
+func setTokenHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req tokenRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid json"))
+			return
+		}
+		if err := validatePayload(&req); err != nil {
+			httpx.Write(w, r, err)
+			return
+		}
+		if err := tokenpkg.SetToken(req.Token); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		telemetry.Event("token_set", nil)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func clearTokenHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := tokenpkg.ClearToken(); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		telemetry.Event("token_cleared", nil)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
@@ -251,25 +312,11 @@ func CheckUpdates(ctx context.Context, db *sql.DB) {
 	}
 }
 
-type modrinthVersion struct {
-	VersionNumber string `json:"version_number"`
-	VersionType   string `json:"version_type"`
-	Files         []struct {
-		URL string `json:"url"`
-	} `json:"files"`
-}
-
-type modVersion struct {
-	GameVersions []string `json:"game_versions"`
-	Loaders      []string `json:"loaders"`
-	VersionType  string   `json:"version_type"`
-}
-
 type modMetadata struct {
 	GameVersions []string     `json:"game_versions"`
 	Loaders      []string     `json:"loaders"`
 	Channels     []string     `json:"channels"`
-	Versions     []modVersion `json:"versions"`
+	Versions     []mr.Version `json:"versions"`
 }
 
 func fetchModMetadata(ctx context.Context, rawURL string) (*modMetadata, error) {
@@ -277,23 +324,8 @@ func fetchModMetadata(ctx context.Context, rawURL string) (*modMetadata, error) 
 	if err != nil {
 		return nil, err
 	}
-	url := fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version", slug)
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	versions, err := modClient.Versions(ctx, slug, "", "")
 	if err != nil {
-		return nil, err
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("modrinth status: %s", resp.Status)
-	}
-	var versions []modVersion
-	if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
 		return nil, err
 	}
 	meta := &modMetadata{}
@@ -301,19 +333,14 @@ func fetchModMetadata(ctx context.Context, rawURL string) (*modMetadata, error) 
 	ldSet := map[string]struct{}{}
 	chSet := map[string]struct{}{}
 	for _, v := range versions {
-		mv := modVersion{
-			GameVersions: v.GameVersions,
-			Loaders:      v.Loaders,
-			VersionType:  strings.ToLower(v.VersionType),
-		}
-		meta.Versions = append(meta.Versions, mv)
+		meta.Versions = append(meta.Versions, v)
 		for _, gv := range v.GameVersions {
 			gvSet[gv] = struct{}{}
 		}
 		for _, ld := range v.Loaders {
 			ldSet[ld] = struct{}{}
 		}
-		chSet[mv.VersionType] = struct{}{}
+		chSet[strings.ToLower(v.VersionType)] = struct{}{}
 	}
 	for gv := range gvSet {
 		meta.GameVersions = append(meta.GameVersions, gv)
@@ -330,29 +357,9 @@ func fetchModMetadata(ctx context.Context, rawURL string) (*modMetadata, error) 
 	return meta, nil
 }
 
-type projectInfo struct {
-	Title   string `json:"title"`
-	IconURL string `json:"icon_url"`
-}
-
 func populateProjectInfo(ctx context.Context, m *dbpkg.Mod, slug string) error {
-	url := fmt.Sprintf("https://api.modrinth.com/v2/project/%s", slug)
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	info, err := modClient.Project(ctx, slug)
 	if err != nil {
-		return err
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("modrinth status: %s", resp.Status)
-	}
-	var info projectInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return err
 	}
 	m.Name = info.Title
@@ -360,35 +367,12 @@ func populateProjectInfo(ctx context.Context, m *dbpkg.Mod, slug string) error {
 	return nil
 }
 
-func fetchVersions(ctx context.Context, slug, gameVersion, loader string) ([]modrinthVersion, error) {
-	url := fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version?game_versions=[\"%s\"]&loaders=[\"%s\"]", slug, gameVersion, loader)
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("modrinth status: %s", resp.Status)
-	}
-	var versions []modrinthVersion
-	if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
-		return nil, err
-	}
-	return versions, nil
-}
-
 func populateVersions(ctx context.Context, m *dbpkg.Mod, slug string) error {
-	versions, err := fetchVersions(ctx, slug, m.GameVersion, m.Loader)
+	versions, err := modClient.Versions(ctx, slug, m.GameVersion, m.Loader)
 	if err != nil {
 		return err
 	}
-	var current modrinthVersion
+	var current mr.Version
 	found := false
 	for _, v := range versions {
 		if strings.EqualFold(v.VersionType, m.Channel) {
@@ -411,7 +395,7 @@ func populateVersions(ctx context.Context, m *dbpkg.Mod, slug string) error {
 }
 
 func populateAvailableVersion(ctx context.Context, m *dbpkg.Mod, slug string) error {
-	versions, err := fetchVersions(ctx, slug, m.GameVersion, m.Loader)
+	versions, err := modClient.Versions(ctx, slug, m.GameVersion, m.Loader)
 	if err != nil {
 		return err
 	}
