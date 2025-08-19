@@ -42,7 +42,7 @@ function OutdatedCard({ data, loading, error }) {
     return <p className='text-destructive'>{error}</p>;
   }
 
-  if (!data || data.outdated_mods.length === 0) {
+  if (!data?.outdated_mods?.length) {
     return <p className='text-muted-foreground'>All mods up to date.</p>;
   }
 
