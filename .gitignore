@@ -1,3 +1,4 @@
 frontend/node_modules
-frontend/dist/
+frontend/dist/*
+!frontend/dist/index.html
 mods.db
