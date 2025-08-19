@@ -151,6 +151,7 @@ export default function AddEntry({ onAdded, editingMod, onEditDone }) {
       .sort((a,b) => new Date(b.date_published || b.date || 0) - new Date(a.date_published || a.date || 0));
     setVersionOptions(versions);
     setSelectedVersion(versions[0] || null);
+    setChannelFilter(versions[0]?.version_type || '');
   }
 
   function selectVersion(v) {
@@ -313,6 +314,7 @@ export default function AddEntry({ onAdded, editingMod, onEditDone }) {
                     key={c}
                     className={`chip ${channelFilter === c ? 'active' : ''}`}
                     onClick={() => setChannelFilter(c)}
+                    disabled={!versionOptions.some(v => v.version_type === c)}
                   >
                     {c[0].toUpperCase() + c.slice(1)}
                   </button>

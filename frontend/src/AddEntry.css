@@ -139,6 +139,10 @@ select {
   border-color: var(--color-purple-primary);
   color: var(--color-bg-page);
 }
+.chip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .version-table {
   width: 100%;
   border-collapse: collapse;
