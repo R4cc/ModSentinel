@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Package, RefreshCw, Trash2 } from 'lucide-react';
+import { useSearchParams, Link } from 'react-router-dom';
+import { Package, RefreshCw, Trash2, Plus } from 'lucide-react';
 import { Input } from '@/components/ui/Input.jsx';
 import { Select } from '@/components/ui/Select.jsx';
 import { Button } from '@/components/ui/Button.jsx';
@@ -15,6 +15,7 @@ import {
 import { Skeleton } from '@/components/ui/Skeleton.jsx';
 import { EmptyState } from '@/components/ui/EmptyState.jsx';
 import { getMods, refreshMod, deleteMod, getToken } from '@/lib/api.ts';
+import { cn } from '@/lib/utils.js';
 import { toast } from 'sonner';
 import { useConfirm } from '@/hooks/useConfirm.jsx';
 
@@ -117,34 +118,48 @@ export default function Mods() {
   return (
     <div className="space-y-md">
       {ConfirmModal}
-      <div className="flex flex-col gap-sm sm:flex-row sm:items-center">
-        <div className="flex flex-col">
-          <label htmlFor="filter" className="sr-only">
-            Filter mods
-          </label>
-          <Input
-            id="filter"
-            placeholder="Filter mods..."
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            className="sm:max-w-xs"
-          />
-        </div>
-        <div className="flex flex-col">
-          <label htmlFor="sort" className="sr-only">
-            Sort mods
-          </label>
-          <Select
-            id="sort"
-            value={sort}
-            onChange={(e) => setSort(e.target.value)}
-            className="sm:w-40"
+        <div className="flex flex-col gap-sm sm:flex-row sm:items-center">
+          <div className="flex flex-col">
+            <label htmlFor="filter" className="sr-only">
+              Filter mods
+            </label>
+            <Input
+              id="filter"
+              placeholder="Filter mods..."
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              className="sm:max-w-xs"
+            />
+          </div>
+          <div className="flex flex-col">
+            <label htmlFor="sort" className="sr-only">
+              Sort mods
+            </label>
+            <Select
+              id="sort"
+              value={sort}
+              onChange={(e) => setSort(e.target.value)}
+              className="sm:w-40"
+            >
+              <option value="name-asc">Name A–Z</option>
+              <option value="name-desc">Name Z–A</option>
+            </Select>
+          </div>
+          <Link
+            to="/mods/add"
+            className={cn(
+              'sm:ml-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2',
+              !hasToken && 'pointer-events-none opacity-50'
+            )}
+            aria-disabled={!hasToken}
+            title="Add Mod"
           >
-            <option value="name-asc">Name A–Z</option>
-            <option value="name-desc">Name Z–A</option>
-          </Select>
+            <Button className="w-full sm:w-auto gap-xs" disabled={!hasToken}>
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Add Mod
+            </Button>
+          </Link>
         </div>
-      </div>
 
       {!hasToken && (
         <p className="text-sm text-muted-foreground">
@@ -240,7 +255,7 @@ export default function Mods() {
                       className="h-8 px-sm"
                       disabled={!hasToken}
                     >
-                      <RefreshCw className="h-4 w-4" />
+                      <RefreshCw className="h-4 w-4" aria-hidden="true" />
                     </Button>
                     <Button
                       variant="outline"
@@ -248,7 +263,7 @@ export default function Mods() {
                       aria-label="Delete mod"
                       className="h-8 px-sm"
                     >
-                      <Trash2 className="h-4 w-4" />
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
                     </Button>
                   </TableCell>
                 </TableRow>

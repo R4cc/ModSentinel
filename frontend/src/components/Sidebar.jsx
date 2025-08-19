@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Home, Settings, Plus, Package, AlertTriangle } from 'lucide-react';
+import { Home, Settings, Package, AlertTriangle } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { cn } from '@/lib/utils.js';
 import { getToken } from '@/lib/api.ts';
@@ -7,7 +7,7 @@ import { getToken } from '@/lib/api.ts';
 export default function Sidebar({ open, onClose }) {
   const linkClass = ({ isActive }) =>
     cn(
-      'flex items-center gap-sm rounded-md p-sm text-sm font-medium hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2',
+      'flex flex-wrap items-center gap-sm md:gap-0 lg:gap-sm rounded-md p-sm text-sm font-medium hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 transition-transform motion-reduce:transition-none motion-safe:hover:translate-x-0.5 motion-safe:focus-visible:translate-x-0.5 justify-start md:justify-center lg:justify-start',
       isActive && 'bg-muted'
     );
   const [hasToken, setHasToken] = useState(true);
@@ -26,40 +26,59 @@ export default function Sidebar({ open, onClose }) {
     <>
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-20 w-64 transform bg-muted p-md transition-transform md:static md:translate-x-0',
+          'fixed inset-y-0 left-0 z-20 w-64 md:w-16 lg:w-64 transform bg-muted p-md transition-transform md:static md:translate-x-0',
           open ? 'translate-x-0' : '-translate-x-full'
         )}
       >
+        <NavLink
+          to="/"
+          end
+          onClick={onClose}
+          className="mb-md flex items-center gap-sm md:gap-0 lg:gap-sm rounded-md p-sm justify-start md:justify-center lg:justify-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+          aria-label="ModSentinel"
+          title="ModSentinel"
+        >
+          <img src="/favicon.ico" alt="ModSentinel" className="h-6 w-6" />
+          <span className="hidden text-lg font-bold lg:inline">ModSentinel</span>
+        </NavLink>
         <nav className="flex flex-col gap-xs">
-          {!hasToken && (
-            <NavLink
-              to="/settings"
-              onClick={onClose}
-              className="mb-xs inline-flex w-fit items-center gap-xs rounded-full bg-amber-500 px-sm py-xs text-xs font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-            >
-              <AlertTriangle className="h-3 w-3" />
-              Add token
-            </NavLink>
-          )}
-          <NavLink to="/" end className={linkClass} onClick={onClose}>
-            <Home className="h-4 w-4" />
-            Dashboard
-          </NavLink>
-          <NavLink to="/mods" end className={linkClass} onClick={onClose}>
-            <Package className="h-4 w-4" />
-            Mods
+          <NavLink
+            to="/"
+            end
+            className={linkClass}
+            onClick={onClose}
+            aria-label="Dashboard"
+            title="Dashboard"
+          >
+            <Home className="h-4 w-4" aria-hidden="true" />
+            <span className="md:hidden lg:inline">Dashboard</span>
           </NavLink>
           <NavLink
-            to="/mods/add"
-            className={(s) => cn(linkClass(s), !hasToken && 'pointer-events-none opacity-50')}
+            to="/mods"
+            end
+            className={linkClass}
             onClick={onClose}
+            aria-label="Mods"
+            title="Mods"
           >
-            <Plus className="h-4 w-4" />
-            Add Mod
+            <Package className="h-4 w-4" aria-hidden="true" />
+            <span className="md:hidden lg:inline">Mods</span>
           </NavLink>
-          <NavLink to="/settings" className={linkClass} onClick={onClose}>
-            <Settings className="h-4 w-4" />
-            Settings
+          <NavLink
+            to="/settings"
+            className={linkClass}
+            onClick={onClose}
+            aria-label="Settings"
+            title="Settings"
+          >
+            <Settings className="h-4 w-4" aria-hidden="true" />
+            <span className="md:hidden lg:inline">Settings</span>
+            {!hasToken && (
+              <span className="ml-auto inline-flex shrink-0 self-stretch items-center gap-xs rounded-md bg-amber-500 px-sm text-xs font-semibold text-white md:hidden lg:inline-flex">
+                <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                Add token
+              </span>
+            )}
           </NavLink>
         </nav>
       </aside>
