@@ -12,7 +12,7 @@ export default function Layout({ children }) {
     <div className="flex min-h-screen bg-background text-foreground">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:top-md focus:left-md focus:bg-background focus:p-sm"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-md focus:left-md focus:bg-background focus:p-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
       >
         Skip to content
       </a>

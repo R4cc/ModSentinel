@@ -63,7 +63,18 @@ export default function Sidebar({ open, onClose }) {
           </NavLink>
         </nav>
       </aside>
-      {open && <div className="fixed inset-0 z-10 bg-black/50 md:hidden" onClick={onClose} />}
+      {open && (
+        <div
+          className="fixed inset-0 z-10 bg-black/50 md:hidden"
+          onClick={onClose}
+          role="button"
+          tabIndex={0}
+          aria-label="Close menu"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') onClose();
+          }}
+        />
+      )}
     </>
   );
 }

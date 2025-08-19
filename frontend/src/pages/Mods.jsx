@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Package, RefreshCw, Trash2 } from 'lucide-react';
 import { Input } from '@/components/ui/Input.jsx';
 import { Select } from '@/components/ui/Select.jsx';
@@ -22,6 +23,8 @@ export default function Mods() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('');
+  const [searchParams] = useSearchParams();
+  const status = searchParams.get('status') || 'all';
   const [sort, setSort] = useState('name-asc');
   const [page, setPage] = useState(1);
   const perPage = 10;
@@ -53,12 +56,17 @@ export default function Mods() {
 
   useEffect(() => {
     setPage(1);
-  }, [filter, sort]);
+  }, [filter, sort, status]);
 
   const filtered = mods.filter((m) =>
     m.name.toLowerCase().includes(filter.toLowerCase())
   );
-  const sorted = [...filtered].sort((a, b) =>
+  const statusFiltered = filtered.filter((m) => {
+    if (status === 'up_to_date') return m.current_version === m.available_version;
+    if (status === 'outdated') return m.current_version !== m.available_version;
+    return true;
+  });
+  const sorted = [...statusFiltered].sort((a, b) =>
     sort === 'name-desc'
       ? b.name.localeCompare(a.name)
       : a.name.localeCompare(b.name)

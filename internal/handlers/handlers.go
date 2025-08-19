@@ -15,6 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"sync"
+	"sync/atomic"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
 	"github.com/rs/zerolog/log"
@@ -29,6 +32,13 @@ import (
 var validate = validator.New()
 
 var modClient = mr.NewClient()
+
+var lastSync atomic.Int64
+var latencyP50 atomic.Int64
+var latencyP95 atomic.Int64
+
+var latencyMu sync.Mutex
+var latencySamples []int64
 
 func writeModrinthError(w http.ResponseWriter, r *http.Request, err error) {
 	var me *mr.Error
@@ -58,9 +68,36 @@ func validatePayload(v interface{}) *httpx.HTTPError {
 	return nil
 }
 
+func recordLatency(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		dur := time.Since(start).Milliseconds()
+		latencyMu.Lock()
+		latencySamples = append(latencySamples, dur)
+		if len(latencySamples) > 100 {
+			latencySamples = latencySamples[1:]
+		}
+		samples := append([]int64(nil), latencySamples...)
+		latencyMu.Unlock()
+		if len(samples) == 0 {
+			return
+		}
+		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+		latencyP50.Store(samples[len(samples)/2])
+		idx := (len(samples) * 95) / 100
+		if idx >= len(samples) {
+			idx = len(samples) - 1
+		}
+		latencyP95.Store(samples[idx])
+	})
+}
+
 // New builds a router with all HTTP handlers.
 func New(db *sql.DB, dist embed.FS) http.Handler {
 	r := chi.NewRouter()
+
+	r.Use(recordLatency)
 
 	r.Get("/favicon.ico", serveFavicon(dist))
 	r.Get("/api/mods", listModsHandler(db))
@@ -68,9 +105,11 @@ func New(db *sql.DB, dist embed.FS) http.Handler {
 	r.Post("/api/mods", createModHandler(db))
 	r.Put("/api/mods/{id}", updateModHandler(db))
 	r.Delete("/api/mods/{id}", deleteModHandler(db))
+	r.Post("/api/mods/{id}/update", applyUpdateHandler(db))
 	r.Get("/api/token", getTokenHandler())
 	r.Post("/api/token", setTokenHandler())
 	r.Delete("/api/token", clearTokenHandler())
+	r.Get("/api/dashboard", dashboardHandler(db))
 
 	static, _ := fs.Sub(dist, "frontend/dist")
 	r.Get("/*", serveStatic(static))
@@ -228,6 +267,24 @@ func deleteModHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid id"))
+			return
+		}
+		m, err := dbpkg.ApplyUpdate(db, id)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(m)
+	}
+}
+
 type tokenRequest struct {
 	Token string `json:"token" validate:"required"`
 }
@@ -275,6 +332,37 @@ func clearTokenHandler() http.HandlerFunc {
 	}
 }
 
+func dashboardHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		stats, err := dbpkg.GetDashboardStats(db)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		resp := struct {
+			Tracked      int               `json:"tracked"`
+			UpToDate     int               `json:"up_to_date"`
+			Outdated     int               `json:"outdated"`
+			OutdatedMods []dbpkg.Mod       `json:"outdated_mods"`
+			Recent       []dbpkg.ModUpdate `json:"recent_updates"`
+			LastSync     int64             `json:"last_sync"`
+			LatencyP50   int64             `json:"latency_p50"`
+			LatencyP95   int64             `json:"latency_p95"`
+		}{
+			Tracked:      stats.Tracked,
+			UpToDate:     stats.UpToDate,
+			Outdated:     stats.Outdated,
+			OutdatedMods: stats.OutdatedMods,
+			Recent:       stats.RecentUpdates,
+			LastSync:     lastSync.Load(),
+			LatencyP50:   latencyP50.Load(),
+			LatencyP95:   latencyP95.Load(),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}
+}
+
 func serveStatic(static fs.FS) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -310,6 +398,7 @@ func CheckUpdates(ctx context.Context, db *sql.DB) {
 			log.Error().Err(err).Msg("update version")
 		}
 	}
+	lastSync.Store(time.Now().Unix())
 }
 
 type modMetadata struct {
