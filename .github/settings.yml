@@ -1,0 +1,8 @@
+# Repository settings managed by Probot Settings
+branches:
+  - name: main
+    protection:
+      required_status_checks:
+        strict: true
+        contexts:
+          - test
