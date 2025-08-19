@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"embed"
 	"encoding/json"
@@ -16,10 +17,35 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-playground/validator/v10"
 	"github.com/rs/zerolog/log"
 
 	dbpkg "modsentinel/internal/db"
+	"modsentinel/internal/httpx"
 )
+
+var validate = validator.New()
+
+var httpClient = &http.Client{Timeout: 10 * time.Second}
+
+type metadataRequest struct {
+	URL string `json:"url" validate:"required,url"`
+}
+
+func validatePayload(v interface{}) *httpx.HTTPError {
+	if err := validate.Struct(v); err != nil {
+		var ve validator.ValidationErrors
+		if errors.As(err, &ve) {
+			fields := make(map[string]string, len(ve))
+			for _, fe := range ve {
+				fields[strings.ToLower(fe.Field())] = fe.Tag()
+			}
+			return httpx.BadRequest("validation failed").WithFields(fields)
+		}
+		return httpx.Internal(err)
+	}
+	return nil
+}
 
 // New builds a router with all HTTP handlers.
 func New(db *sql.DB, dist embed.FS) http.Handler {
@@ -54,7 +80,7 @@ func listModsHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mods, err := dbpkg.ListMods(db)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -64,16 +90,18 @@ func listModsHandler(db *sql.DB) http.HandlerFunc {
 
 func metadataHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			URL string `json:"url"`
-		}
+		var req metadataRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.Write(w, r, httpx.BadRequest("invalid json"))
 			return
 		}
-		meta, err := fetchModMetadata(req.URL)
+		if err := validatePayload(&req); err != nil {
+			httpx.Write(w, r, err)
+			return
+		}
+		meta, err := fetchModMetadata(r.Context(), req.URL)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.Write(w, r, httpx.BadRequest(err.Error()))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -85,29 +113,33 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var m dbpkg.Mod
 		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.Write(w, r, httpx.BadRequest("invalid json"))
+			return
+		}
+		if err := validatePayload(&m); err != nil {
+			httpx.Write(w, r, err)
 			return
 		}
 		slug, err := parseModrinthSlug(m.URL)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.Write(w, r, httpx.BadRequest(err.Error()))
 			return
 		}
-		if err := populateProjectInfo(&m, slug); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if err := populateProjectInfo(r.Context(), &m, slug); err != nil {
+			httpx.Write(w, r, httpx.BadRequest(err.Error()))
 			return
 		}
-		if err := populateVersions(&m, slug); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if err := populateVersions(r.Context(), &m, slug); err != nil {
+			httpx.Write(w, r, httpx.BadRequest(err.Error()))
 			return
 		}
 		if err := dbpkg.InsertMod(db, &m); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
 		mods, err := dbpkg.ListMods(db)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -120,35 +152,39 @@ func updateModHandler(db *sql.DB) http.HandlerFunc {
 		idStr := chi.URLParam(r, "id")
 		id, err := strconv.Atoi(idStr)
 		if err != nil {
-			http.Error(w, "invalid id", http.StatusBadRequest)
+			httpx.Write(w, r, httpx.BadRequest("invalid id"))
 			return
 		}
 		var m dbpkg.Mod
 		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.Write(w, r, httpx.BadRequest("invalid json"))
 			return
 		}
 		m.ID = id
+		if err := validatePayload(&m); err != nil {
+			httpx.Write(w, r, err)
+			return
+		}
 		slug, err := parseModrinthSlug(m.URL)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.Write(w, r, httpx.BadRequest(err.Error()))
 			return
 		}
-		if err := populateProjectInfo(&m, slug); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if err := populateProjectInfo(r.Context(), &m, slug); err != nil {
+			httpx.Write(w, r, httpx.BadRequest(err.Error()))
 			return
 		}
-		if err := populateVersions(&m, slug); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if err := populateVersions(r.Context(), &m, slug); err != nil {
+			httpx.Write(w, r, httpx.BadRequest(err.Error()))
 			return
 		}
 		if err := dbpkg.UpdateMod(db, &m); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
 		mods, err := dbpkg.ListMods(db)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -194,7 +230,7 @@ func serveStatic(static fs.FS) http.HandlerFunc {
 }
 
 // CheckUpdates refreshes available versions for stored mods.
-func CheckUpdates(db *sql.DB) {
+func CheckUpdates(ctx context.Context, db *sql.DB) {
 	mods, err := dbpkg.ListMods(db)
 	if err != nil {
 		log.Error().Err(err).Msg("list mods")
@@ -205,7 +241,7 @@ func CheckUpdates(db *sql.DB) {
 		if err != nil {
 			continue
 		}
-		if err := populateAvailableVersion(&m, slug); err != nil {
+		if err := populateAvailableVersion(ctx, &m, slug); err != nil {
 			continue
 		}
 		_, err = db.Exec(`UPDATE mods SET available_version=?, available_channel=?, download_url=? WHERE id=?`, m.AvailableVersion, m.AvailableChannel, m.DownloadURL, m.ID)
@@ -236,13 +272,19 @@ type modMetadata struct {
 	Versions     []modVersion `json:"versions"`
 }
 
-func fetchModMetadata(rawURL string) (*modMetadata, error) {
+func fetchModMetadata(ctx context.Context, rawURL string) (*modMetadata, error) {
 	slug, err := parseModrinthSlug(rawURL)
 	if err != nil {
 		return nil, err
 	}
 	url := fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version", slug)
-	resp, err := http.Get(url)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -293,9 +335,15 @@ type projectInfo struct {
 	IconURL string `json:"icon_url"`
 }
 
-func populateProjectInfo(m *dbpkg.Mod, slug string) error {
+func populateProjectInfo(ctx context.Context, m *dbpkg.Mod, slug string) error {
 	url := fmt.Sprintf("https://api.modrinth.com/v2/project/%s", slug)
-	resp, err := http.Get(url)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -312,9 +360,15 @@ func populateProjectInfo(m *dbpkg.Mod, slug string) error {
 	return nil
 }
 
-func fetchVersions(slug, gameVersion, loader string) ([]modrinthVersion, error) {
+func fetchVersions(ctx context.Context, slug, gameVersion, loader string) ([]modrinthVersion, error) {
 	url := fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version?game_versions=[\"%s\"]&loaders=[\"%s\"]", slug, gameVersion, loader)
-	resp, err := http.Get(url)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -329,8 +383,8 @@ func fetchVersions(slug, gameVersion, loader string) ([]modrinthVersion, error) 
 	return versions, nil
 }
 
-func populateVersions(m *dbpkg.Mod, slug string) error {
-	versions, err := fetchVersions(slug, m.GameVersion, m.Loader)
+func populateVersions(ctx context.Context, m *dbpkg.Mod, slug string) error {
+	versions, err := fetchVersions(ctx, slug, m.GameVersion, m.Loader)
 	if err != nil {
 		return err
 	}
@@ -350,14 +404,14 @@ func populateVersions(m *dbpkg.Mod, slug string) error {
 	if len(current.Files) > 0 {
 		m.DownloadURL = current.Files[0].URL
 	}
-	if err := populateAvailableVersion(m, slug); err != nil {
+	if err := populateAvailableVersion(ctx, m, slug); err != nil {
 		return err
 	}
 	return nil
 }
 
-func populateAvailableVersion(m *dbpkg.Mod, slug string) error {
-	versions, err := fetchVersions(slug, m.GameVersion, m.Loader)
+func populateAvailableVersion(ctx context.Context, m *dbpkg.Mod, slug string) error {
+	versions, err := fetchVersions(ctx, slug, m.GameVersion, m.Loader)
 	if err != nil {
 		return err
 	}
