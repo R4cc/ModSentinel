@@ -20,7 +20,6 @@ Use at your own risk.
 - SQLite storage via `modernc.org/sqlite` for CGO-free builds
 - Periodic update checks with `gocron`
 - Structured logging with `zerolog`
-- Automatically creates the SQLite database file on startup
 
 ## Development
 
@@ -39,7 +38,7 @@ The server listens on `:8080`.
 
 ```bash
 docker build -t modsentinel .
-docker run -p 8080:8080 modsentinel
+docker run -p 8080:8080 nl2109/modsentinel
 ```
 
 ### Docker Compose
@@ -52,7 +51,6 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-    # Persist the database on the host (file is created automatically)
-    # volumes:
-    #   - ./mods.db:/mods.db
+    volumes:
+      - ./mods.db:/mods.db
 ```
