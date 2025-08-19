@@ -141,7 +141,6 @@ export default function AddEntry({ onAdded, editingMod, onEditDone }) {
   function selectLoader(ld) {
     setLoader(ld);
     handleLoader(ld);
-    setStep(2);
   }
 
   function handleGameVersion(gv = gameVersion, ld = loader) {
@@ -156,7 +155,6 @@ export default function AddEntry({ onAdded, editingMod, onEditDone }) {
 
   function selectVersion(v) {
     setSelectedVersion(v);
-    setStep(4);
   }
 
   function cancel() {
@@ -274,6 +272,14 @@ export default function AddEntry({ onAdded, editingMod, onEditDone }) {
                   </button>
                 ))}
               </fieldset>
+              <button
+                type="button"
+                className="continue"
+                onClick={() => setStep(2)}
+                disabled={!loader}
+              >
+                Continue
+              </button>
             </section>
           )}
 
@@ -343,6 +349,14 @@ export default function AddEntry({ onAdded, editingMod, onEditDone }) {
                   <p className="empty"><span className="tiny">🌌</span> No versions available.</p>
                 )}
               </fieldset>
+              <button
+                type="button"
+                className="continue"
+                onClick={() => setStep(4)}
+                disabled={!selectedVersion}
+              >
+                Continue
+              </button>
             </section>
           )}
 
