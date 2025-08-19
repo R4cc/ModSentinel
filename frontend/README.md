@@ -1,4 +1,4 @@
 # ModSentinel Frontend
 
-React-based interface for ModSentinel built with Vite and React.
+React interface for ModSentinel built with Vite, Tailwind CSS, and shadcn/ui.
 
