@@ -315,6 +315,7 @@ export default function AddEntry({ onAdded, editingMod, onEditDone }) {
                     className={`chip ${channelFilter === c ? 'active' : ''}`}
                     onClick={() => setChannelFilter(c)}
                     disabled={!versionOptions.some(v => v.version_type === c)}
+                    title={!versionOptions.some(v => v.version_type === c) ? 'No version available' : ''}
                   >
                     {c[0].toUpperCase() + c.slice(1)}
                   </button>
