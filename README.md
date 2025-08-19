@@ -25,6 +25,10 @@ Use at your own risk.
 ## Development
 
 ```bash
+cd frontend
+npm ci
+npm run build
+cd ..
 go build
 ./modsentinel
 ```
