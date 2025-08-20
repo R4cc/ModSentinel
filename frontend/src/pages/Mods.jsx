@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useSearchParams, Link } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { Package, RefreshCw, Trash2, Plus } from 'lucide-react';
 import { Input } from '@/components/ui/Input.jsx';
 import { Select } from '@/components/ui/Select.jsx';
@@ -18,6 +18,7 @@ import { getMods, refreshMod, deleteMod, getToken } from '@/lib/api.ts';
 import { cn } from '@/lib/utils.js';
 import { toast } from 'sonner';
 import { useConfirm } from '@/hooks/useConfirm.jsx';
+import { useOpenAddMod } from '@/hooks/useOpenAddMod.js';
 
 export default function Mods() {
   const [mods, setMods] = useState([]);
@@ -31,6 +32,7 @@ export default function Mods() {
   const perPage = 10;
   const { confirm, ConfirmModal } = useConfirm();
   const [hasToken, setHasToken] = useState(true);
+  const openAddMod = useOpenAddMod();
 
   useEffect(() => {
     getToken()
@@ -145,20 +147,18 @@ export default function Mods() {
               <option value="name-desc">Name Z–A</option>
             </Select>
           </div>
-          <Link
-            to="/mods/add"
-            className={cn(
-              'sm:ml-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2',
-              !hasToken && 'pointer-events-none opacity-50'
-            )}
-            aria-disabled={!hasToken}
-            title="Add Mod"
-          >
-            <Button className="w-full sm:w-auto gap-xs" disabled={!hasToken}>
+            <Button
+              onClick={openAddMod}
+              className={cn(
+                'w-full gap-xs sm:ml-auto sm:w-auto',
+                !hasToken && 'pointer-events-none opacity-50'
+              )}
+              disabled={!hasToken}
+              title="Add Mod"
+            >
               <Plus className="h-4 w-4" aria-hidden="true" />
               Add Mod
             </Button>
-          </Link>
         </div>
 
       {!hasToken && (
