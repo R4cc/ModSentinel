@@ -13,6 +13,9 @@ vi.mock("@/lib/api.ts", () => ({
   addInstance: vi.fn(),
   updateInstance: vi.fn(),
   deleteInstance: vi.fn(),
+  getPufferCreds: vi.fn(),
+  syncInstances: vi.fn(),
+  getPufferServers: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({
@@ -30,16 +33,24 @@ import {
   addInstance,
   updateInstance,
   deleteInstance,
+  getPufferCreds,
+  syncInstances,
+  getPufferServers,
 } from "@/lib/api.ts";
 import { toast } from "sonner";
 
 describe("Instances page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getPufferCreds.mockResolvedValue({
+      base_url: "",
+      client_id: "",
+      client_secret: "",
+    });
   });
 
   it("shows empty state when no instances", async () => {
-    getInstances.mockResolvedValueOnce([]);
+    getInstances.mockResolvedValue([]);
     render(
       <MemoryRouter>
         <Instances />
@@ -55,9 +66,7 @@ describe("Instances page", () => {
         <Instances />
       </MemoryRouter>,
     );
-    expect(
-      await screen.findByText("Failed to load instances"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("oops")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
@@ -188,7 +197,7 @@ describe("Instances page", () => {
       id: 1,
       name: "One!",
       loader: "fabric",
-      enforce_same_loader: false,
+      enforce_same_loader: true,
     });
 
     render(
@@ -202,16 +211,131 @@ describe("Instances page", () => {
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "One!" },
     });
-    fireEvent.click(screen.getByLabelText("Enforce same loader for mods"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
       expect(updateInstance).toHaveBeenCalledWith(1, {
         name: "One!",
-        loader: "fabric",
-        enforce_same_loader: false,
       }),
     );
     expect(toast.success).toHaveBeenCalledWith("Instance updated");
+  });
+
+  it("shows sync button when pufferpanel credentials exist", async () => {
+    getInstances.mockResolvedValueOnce([]);
+    getPufferCreds.mockResolvedValueOnce({
+      base_url: "url",
+      client_id: "id",
+      client_secret: "secret",
+    });
+    render(
+      <MemoryRouter>
+        <Instances />
+      </MemoryRouter>,
+    );
+    expect(
+      await screen.findByRole("button", { name: /sync/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("disables PufferPanel sync without credentials", async () => {
+    getInstances.mockResolvedValueOnce([]);
+    render(
+      <MemoryRouter>
+        <Instances />
+      </MemoryRouter>,
+    );
+    const [newBtn] = await screen.findAllByRole("button", {
+      name: /new instance/i,
+    });
+    fireEvent.click(newBtn);
+    const toggle = screen.getByLabelText("Sync from PufferPanel");
+    expect(toggle).toBeDisabled();
+    expect(screen.getByText(/pufferpanel credentials/i)).toBeInTheDocument();
+  });
+
+  it("enables create after selecting server", async () => {
+    getInstances.mockResolvedValueOnce([]);
+    getPufferCreds.mockResolvedValueOnce({
+      base_url: "url",
+      client_id: "id",
+      client_secret: "secret",
+    });
+    getPufferServers.mockResolvedValueOnce([{ id: "1", name: "One" }]);
+    syncInstances.mockResolvedValueOnce({
+      instance: {
+        id: 1,
+        name: "Srv",
+        loader: "fabric",
+        enforce_same_loader: true,
+        mod_count: 0,
+      },
+      unmatched: [],
+      mods: [],
+    });
+    render(
+      <MemoryRouter>
+        <Instances />
+      </MemoryRouter>,
+    );
+    const [newBtn] = await screen.findAllByRole("button", {
+      name: /new instance/i,
+    });
+    fireEvent.click(newBtn);
+    const toggle = screen.getByLabelText("Sync from PufferPanel");
+    fireEvent.click(toggle);
+    const select = await screen.findByLabelText("Server");
+    const add = screen.getByRole("button", { name: "Add" });
+    expect(add).toBeDisabled();
+    fireEvent.change(select, { target: { value: "1" } });
+    expect(add).not.toBeDisabled();
+    fireEvent.click(add);
+    await waitFor(() => expect(syncInstances).toHaveBeenCalledWith("1"));
+  });
+
+  it("shows scanning progress during sync", async () => {
+    getInstances.mockResolvedValueOnce([]);
+    getPufferCreds.mockResolvedValueOnce({
+      base_url: "url",
+      client_id: "id",
+      client_secret: "secret",
+    });
+    getPufferServers.mockResolvedValueOnce([{ id: "1", name: "One" }]);
+    let resolveSync;
+    syncInstances.mockReturnValueOnce(
+      new Promise((res) => {
+        resolveSync = res;
+      }),
+    );
+    render(
+      <MemoryRouter>
+        <Instances />
+      </MemoryRouter>,
+    );
+    const [newBtn] = await screen.findAllByRole("button", {
+      name: /new instance/i,
+    });
+    fireEvent.click(newBtn);
+    fireEvent.click(screen.getByLabelText("Sync from PufferPanel"));
+    const select = await screen.findByLabelText("Server");
+    fireEvent.change(select, { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByText(/scanning/i)).toBeInTheDocument();
+    resolveSync({
+      instance: {
+        id: 1,
+        name: "Srv",
+        loader: "fabric",
+        enforce_same_loader: true,
+        mod_count: 0,
+      },
+      unmatched: ["a.jar"],
+      mods: [],
+    });
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith("/instances/1", {
+        state: { unmatched: ["a.jar"], mods: [] },
+      }),
+    );
   });
 });

@@ -7,12 +7,17 @@ import (
 
 // Instance represents a game instance tracking mods.
 type Instance struct {
-	ID                int    `json:"id"`
-	Name              string `json:"name"`
-	Loader            string `json:"loader"`
-	EnforceSameLoader bool   `json:"enforce_same_loader"`
-	CreatedAt         string `json:"created_at"`
-	ModCount          int    `json:"mod_count"`
+	ID                  int    `json:"id"`
+	Name                string `json:"name"`
+	Loader              string `json:"loader"`
+	PufferpanelServerID string `json:"pufferpanel_server_id"`
+	EnforceSameLoader   bool   `json:"enforce_same_loader"`
+	CreatedAt           string `json:"created_at"`
+	ModCount            int    `json:"mod_count"`
+	LastSyncAt          string `json:"last_sync_at"`
+	LastSyncAdded       int    `json:"last_sync_added"`
+	LastSyncUpdated     int    `json:"last_sync_updated"`
+	LastSyncFailed      int    `json:"last_sync_failed"`
 }
 
 // Mod represents a tracked mod entry.
@@ -53,10 +58,15 @@ func Init(db *sql.DB) error {
 	}
 
 	instCols := map[string]string{
-		"name":                "TEXT",
-		"loader":              "TEXT",
-		"enforce_same_loader": "INTEGER DEFAULT 1",
-		"created_at":          "DATETIME DEFAULT CURRENT_TIMESTAMP",
+		"name":                  "TEXT",
+		"loader":                "TEXT",
+		"pufferpanel_server_id": "TEXT",
+		"enforce_same_loader":   "INTEGER DEFAULT 1",
+		"created_at":            "DATETIME DEFAULT CURRENT_TIMESTAMP",
+		"last_sync_at":          "DATETIME",
+		"last_sync_added":       "INTEGER DEFAULT 0",
+		"last_sync_updated":     "INTEGER DEFAULT 0",
+		"last_sync_failed":      "INTEGER DEFAULT 0",
 	}
 
 	rows, err := db.Query(`SELECT name FROM pragma_table_info('instances')`)
@@ -224,7 +234,7 @@ func DeleteMod(db *sql.DB, id int) error {
 
 // InsertInstance inserts a new instance record.
 func InsertInstance(db *sql.DB, i *Instance) error {
-	res, err := db.Exec(`INSERT INTO instances(name, loader, enforce_same_loader) VALUES(?,?,?)`, i.Name, i.Loader, i.EnforceSameLoader)
+	res, err := db.Exec(`INSERT INTO instances(name, loader, enforce_same_loader, pufferpanel_server_id) VALUES(?,?,?,?)`, i.Name, i.Loader, i.EnforceSameLoader, i.PufferpanelServerID)
 	if err != nil {
 		return err
 	}
@@ -237,7 +247,13 @@ func InsertInstance(db *sql.DB, i *Instance) error {
 
 // UpdateInstance updates an existing instance.
 func UpdateInstance(db *sql.DB, i *Instance) error {
-	_, err := db.Exec(`UPDATE instances SET name=?, loader=?, enforce_same_loader=? WHERE id=?`, i.Name, i.Loader, i.EnforceSameLoader, i.ID)
+	_, err := db.Exec(`UPDATE instances SET name=?, enforce_same_loader=? WHERE id=?`, i.Name, i.EnforceSameLoader, i.ID)
+	return err
+}
+
+// UpdateInstanceSync records sync stats for an instance.
+func UpdateInstanceSync(db *sql.DB, id, added, updated, failed int) error {
+	_, err := db.Exec(`UPDATE instances SET last_sync_at=CURRENT_TIMESTAMP, last_sync_added=?, last_sync_updated=?, last_sync_failed=? WHERE id=?`, added, updated, failed, id)
 	return err
 }
 
@@ -260,9 +276,9 @@ func DeleteInstance(db *sql.DB, id int, targetID *int) error {
 // GetInstance returns an instance by ID.
 func GetInstance(db *sql.DB, id int) (*Instance, error) {
 	var inst Instance
-	err := db.QueryRow(`SELECT i.id, IFNULL(i.name, ''), IFNULL(i.loader, ''), IFNULL(i.enforce_same_loader, 1), IFNULL(i.created_at, ''),
-               (SELECT COUNT(*) FROM mods m WHERE m.instance_id = i.id)
-               FROM instances i WHERE i.id=?`, id).Scan(&inst.ID, &inst.Name, &inst.Loader, &inst.EnforceSameLoader, &inst.CreatedAt, &inst.ModCount)
+	err := db.QueryRow(`SELECT i.id, IFNULL(i.name, ''), IFNULL(i.loader, ''), IFNULL(i.pufferpanel_server_id, ''), IFNULL(i.enforce_same_loader, 1), IFNULL(i.created_at, ''), IFNULL(i.last_sync_at, ''), IFNULL(i.last_sync_added, 0), IFNULL(i.last_sync_updated, 0), IFNULL(i.last_sync_failed, 0),
+             (SELECT COUNT(*) FROM mods m WHERE m.instance_id = i.id)
+             FROM instances i WHERE i.id=?`, id).Scan(&inst.ID, &inst.Name, &inst.Loader, &inst.PufferpanelServerID, &inst.EnforceSameLoader, &inst.CreatedAt, &inst.LastSyncAt, &inst.LastSyncAdded, &inst.LastSyncUpdated, &inst.LastSyncFailed, &inst.ModCount)
 	if err != nil {
 		return nil, err
 	}
@@ -271,8 +287,8 @@ func GetInstance(db *sql.DB, id int) (*Instance, error) {
 
 // ListInstances returns all instances sorted by ID descending.
 func ListInstances(db *sql.DB) ([]Instance, error) {
-	rows, err := db.Query(`SELECT i.id, IFNULL(i.name, ''), IFNULL(i.loader, ''), IFNULL(i.enforce_same_loader, 1), IFNULL(i.created_at, ''), COUNT(m.id) 
-               FROM instances i LEFT JOIN mods m ON m.instance_id = i.id GROUP BY i.id ORDER BY i.id DESC`)
+	rows, err := db.Query(`SELECT i.id, IFNULL(i.name, ''), IFNULL(i.loader, ''), IFNULL(i.pufferpanel_server_id, ''), IFNULL(i.enforce_same_loader, 1), IFNULL(i.created_at, ''), IFNULL(i.last_sync_at, ''), IFNULL(i.last_sync_added, 0), IFNULL(i.last_sync_updated, 0), IFNULL(i.last_sync_failed, 0), COUNT(m.id)
+              FROM instances i LEFT JOIN mods m ON m.instance_id = i.id GROUP BY i.id ORDER BY i.id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +296,7 @@ func ListInstances(db *sql.DB) ([]Instance, error) {
 	out := []Instance{}
 	for rows.Next() {
 		var inst Instance
-		if err := rows.Scan(&inst.ID, &inst.Name, &inst.Loader, &inst.EnforceSameLoader, &inst.CreatedAt, &inst.ModCount); err != nil {
+		if err := rows.Scan(&inst.ID, &inst.Name, &inst.Loader, &inst.PufferpanelServerID, &inst.EnforceSameLoader, &inst.CreatedAt, &inst.LastSyncAt, &inst.LastSyncAdded, &inst.LastSyncUpdated, &inst.LastSyncFailed, &inst.ModCount); err != nil {
 			return nil, err
 		}
 		out = append(out, inst)
@@ -356,6 +372,13 @@ func ApplyUpdate(db *sql.DB, id int) (*Mod, error) {
 		return nil, err
 	}
 	return GetMod(db, id)
+}
+
+// InsertUpdateIfNew records a mod update if the version hasn't been recorded.
+func InsertUpdateIfNew(db *sql.DB, modID int, version string) error {
+	_, err := db.Exec(`INSERT INTO updates(mod_id, version)
+               SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM updates WHERE mod_id=? AND version=?)`, modID, version, modID, version)
+	return err
 }
 
 // DashboardStats aggregates counts and recent updates for the dashboard.

@@ -1,12 +1,16 @@
 package handlers
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,6 +21,7 @@ import (
 	dbpkg "modsentinel/internal/db"
 	"modsentinel/internal/httpx"
 	mr "modsentinel/internal/modrinth"
+	pppkg "modsentinel/internal/pufferpanel"
 
 	_ "modernc.org/sqlite"
 )
@@ -47,6 +52,39 @@ func (fakeModClient) Versions(ctx context.Context, slug, gameVersion, loader str
 		DatePublished: time.Now(),
 		Files:         []mr.VersionFile{{URL: "http://example.com"}},
 	}}, nil
+}
+
+func (fakeModClient) Search(ctx context.Context, query string) (*mr.SearchResult, error) {
+	return &mr.SearchResult{Hits: []struct {
+		ProjectID string `json:"project_id"`
+		Slug      string `json:"slug"`
+		Title     string `json:"title"`
+	}{{ProjectID: "1", Slug: query, Title: "Fake"}}}, nil
+}
+
+type matchClient struct{}
+
+func (matchClient) Project(ctx context.Context, slug string) (*mr.Project, error) {
+	return &mr.Project{Title: "Sodium", IconURL: ""}, nil
+}
+
+func (matchClient) Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error) {
+	return []mr.Version{{
+		ID:            "1",
+		VersionNumber: "1.0",
+		VersionType:   "release",
+		GameVersions:  []string{"1.20"},
+		Loaders:       []string{"fabric"},
+		Files:         []mr.VersionFile{{URL: "http://example.com"}},
+	}}, nil
+}
+
+func (matchClient) Search(ctx context.Context, query string) (*mr.SearchResult, error) {
+	return &mr.SearchResult{Hits: []struct {
+		ProjectID string `json:"project_id"`
+		Slug      string `json:"slug"`
+		Title     string `json:"title"`
+	}{{ProjectID: "1", Slug: "sodium", Title: "Sodium"}}}, nil
 }
 
 func TestCreateModHandler_EnforceLoader(t *testing.T) {
@@ -138,8 +176,8 @@ func TestInstanceHandlers_CRUD(t *testing.T) {
 		t.Fatalf("expected enforcement default true")
 	}
 
-	// Create with enforcement disabled
-	req2 := httptest.NewRequest(http.MethodPost, "/api/instances", strings.NewReader(`{"name":"B","loader":"forge","enforce_same_loader":false}`))
+	// Create with enforcement disabled and PufferPanel linkage
+	req2 := httptest.NewRequest(http.MethodPost, "/api/instances", strings.NewReader(`{"name":"B","loader":"forge","enforce_same_loader":false,"pufferpanel_server_id":"srv1"}`))
 	w2 := httptest.NewRecorder()
 	create(w2, req2)
 	if w2.Code != http.StatusOK {
@@ -152,10 +190,25 @@ func TestInstanceHandlers_CRUD(t *testing.T) {
 	if inst2.EnforceSameLoader {
 		t.Fatalf("expected enforcement false")
 	}
+	if inst2.PufferpanelServerID != "srv1" {
+		t.Fatalf("expected server id persisted")
+	}
+
+	// Attempt to change loader should fail
+	update := updateInstanceHandler(db)
+	badPayload := fmt.Sprintf(`{"loader":"fabric"}`)
+	reqBad := httptest.NewRequest(http.MethodPut, "/api/instances/"+strconv.Itoa(inst2.ID), strings.NewReader(badPayload))
+	rctxBad := chi.NewRouteContext()
+	rctxBad.URLParams.Add("id", strconv.Itoa(inst2.ID))
+	reqBad = reqBad.WithContext(context.WithValue(reqBad.Context(), chi.RouteCtxKey, rctxBad))
+	wBad := httptest.NewRecorder()
+	update(wBad, reqBad)
+	if wBad.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when changing loader, got %d", wBad.Code)
+	}
 
 	// Update second instance to enable enforcement
-	update := updateInstanceHandler(db)
-	payload := fmt.Sprintf(`{"name":"B2","loader":"forge","enforce_same_loader":true}`)
+	payload := fmt.Sprintf(`{"name":"B2","enforce_same_loader":true}`)
 	req3 := httptest.NewRequest(http.MethodPut, "/api/instances/"+strconv.Itoa(inst2.ID), strings.NewReader(payload))
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", strconv.Itoa(inst2.ID))
@@ -187,6 +240,259 @@ func TestInstanceHandlers_CRUD(t *testing.T) {
 	if _, err := dbpkg.GetInstance(db, inst.ID); err == nil {
 		t.Fatalf("instance not deleted")
 	}
+}
+
+func TestSyncHandler_ScansMods(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	// mock pufferpanel server
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/oauth2/token":
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case r.URL.Path == "/api/servers/1":
+			fmt.Fprint(w, `{"id":"1","name":"Srv","environment":{"type":"fabric"}}`)
+		case r.URL.Path == "/api/servers/1/files/list" && r.URL.Query().Get("path") == "mods":
+			http.NotFound(w, r)
+		case r.URL.Path == "/api/servers/1/files/list" && r.URL.Query().Get("path") == "plugins":
+			fmt.Fprint(w, `[{"name":"mod.jar","is_dir":false},{"name":"other.txt","is_dir":false}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	os.Setenv("MODSENTINEL_PUFFERPANEL_PATH", filepath.Join(dir, "creds"))
+	t.Cleanup(func() { os.Unsetenv("MODSENTINEL_PUFFERPANEL_PATH") })
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+
+	h := syncHandler(db)
+	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync?server=1", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var resp struct {
+		Instance  dbpkg.Instance `json:"instance"`
+		Unmatched []string       `json:"unmatched"`
+		Mods      []dbpkg.Mod    `json:"mods"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Instance.Name != "Srv" || resp.Instance.Loader != "fabric" || resp.Instance.PufferpanelServerID != "1" {
+		t.Fatalf("unexpected instance %+v", resp.Instance)
+	}
+	if len(resp.Unmatched) != 1 || resp.Unmatched[0] != "mod.jar" {
+		t.Fatalf("unexpected unmatched %v", resp.Unmatched)
+	}
+}
+
+func TestSyncHandler_MatchesMods(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/oauth2/token":
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case r.URL.Path == "/api/servers/1":
+			fmt.Fprint(w, `{"id":"1","name":"Srv","environment":{"type":"fabric"}}`)
+		case r.URL.Path == "/api/servers/1/files/list" && r.URL.Query().Get("path") == "mods":
+			fmt.Fprint(w, `[{"name":"sodium-1.0.jar","is_dir":false}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	os.Setenv("MODSENTINEL_PUFFERPANEL_PATH", filepath.Join(dir, "creds"))
+	t.Cleanup(func() { os.Unsetenv("MODSENTINEL_PUFFERPANEL_PATH") })
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+
+	oldClient := modClient
+	modClient = matchClient{}
+	defer func() { modClient = oldClient }()
+
+	h := syncHandler(db)
+	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync?server=1", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var resp struct {
+		Instance  dbpkg.Instance `json:"instance"`
+		Unmatched []string       `json:"unmatched"`
+		Mods      []dbpkg.Mod    `json:"mods"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Unmatched) != 0 {
+		t.Fatalf("unexpected unmatched %v", resp.Unmatched)
+	}
+	if len(resp.Mods) != 1 || resp.Mods[0].CurrentVersion != "1.0" {
+		t.Fatalf("unexpected mods %+v", resp.Mods)
+	}
+}
+
+func TestSyncHandler_DeepScanMatches(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	fw, _ := zw.Create("fabric.mod.json")
+	fmt.Fprint(fw, `{"id":"sodium","version":"1.0"}`)
+	zw.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/oauth2/token":
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case r.URL.Path == "/api/servers/1":
+			fmt.Fprint(w, `{"id":"1","name":"Srv","environment":{"type":"fabric"}}`)
+		case r.URL.Path == "/api/servers/1/files/list" && r.URL.Query().Get("path") == "mods":
+			fmt.Fprint(w, `[{"name":"m.jar","is_dir":false}]`)
+		case r.URL.Path == "/api/servers/1/files/contents" && r.URL.Query().Get("path") == "mods/m.jar":
+			w.Write(buf.Bytes())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	os.Setenv("MODSENTINEL_PUFFERPANEL_PATH", filepath.Join(dir, "creds"))
+	t.Cleanup(func() { os.Unsetenv("MODSENTINEL_PUFFERPANEL_PATH") })
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret", DeepScan: true}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+
+	oldClient := modClient
+	modClient = matchClient{}
+	defer func() { modClient = oldClient }()
+
+	h := syncHandler(db)
+	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync?server=1", nil)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	var resp struct {
+		Instance  dbpkg.Instance `json:"instance"`
+		Unmatched []string       `json:"unmatched"`
+		Mods      []dbpkg.Mod    `json:"mods"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Unmatched) != 0 {
+		t.Fatalf("unexpected unmatched %v", resp.Unmatched)
+	}
+	if len(resp.Mods) != 1 || resp.Mods[0].CurrentVersion != "1.0" {
+		t.Fatalf("unexpected mods %+v", resp.Mods)
+	}
+}
+
+func TestResyncInstanceHandler_Idempotent(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	// prepare instance and mod
+	inst := dbpkg.Instance{Name: "Srv", Loader: "fabric", EnforceSameLoader: true, PufferpanelServerID: "1"}
+	if err := dbpkg.InsertInstance(db, &inst); err != nil {
+		t.Fatalf("insert inst: %v", err)
+	}
+	mod := dbpkg.Mod{Name: "Sodium", URL: "https://modrinth.com/mod/sodium", GameVersion: "1.20", Loader: "fabric", Channel: "release", CurrentVersion: "1.0", AvailableVersion: "1.0", AvailableChannel: "release", DownloadURL: "http://example.com", InstanceID: inst.ID}
+	if err := dbpkg.InsertMod(db, &mod); err != nil {
+		t.Fatalf("insert mod: %v", err)
+	}
+
+	// mock server
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/oauth2/token":
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case r.URL.Path == "/api/servers/1/files/list" && r.URL.Query().Get("path") == "mods":
+			fmt.Fprint(w, `[{"name":"sodium-2.0.jar","is_dir":false}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	os.Setenv("MODSENTINEL_PUFFERPANEL_PATH", filepath.Join(dir, "creds"))
+	t.Cleanup(func() { os.Unsetenv("MODSENTINEL_PUFFERPANEL_PATH") })
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+
+	// custom mod client returning version 2.0
+	oldClient := modClient
+	modClient = resyncClient{}
+	defer func() { modClient = oldClient }()
+
+	h := resyncInstanceHandler(db)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+strconv.Itoa(inst.ID)+"/resync", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(inst.ID))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	w2 := httptest.NewRecorder()
+	h(w2, req)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("status2 %d", w2.Code)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM updates`).Scan(&count); err != nil {
+		t.Fatalf("count updates: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 update, got %d", count)
+	}
+}
+
+type resyncClient struct{}
+
+func (resyncClient) Project(ctx context.Context, slug string) (*mr.Project, error) {
+	return &mr.Project{Title: "Sodium", IconURL: ""}, nil
+}
+
+func (resyncClient) Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error) {
+	return []mr.Version{{
+		ID:            "1",
+		VersionNumber: "2.0",
+		VersionType:   "release",
+		GameVersions:  []string{"1.20"},
+		Loaders:       []string{"fabric"},
+		Files:         []mr.VersionFile{{URL: "http://example.com"}},
+	}}, nil
+}
+
+func (resyncClient) Search(ctx context.Context, query string) (*mr.SearchResult, error) {
+	return &mr.SearchResult{Hits: []struct {
+		ProjectID string `json:"project_id"`
+		Slug      string `json:"slug"`
+		Title     string `json:"title"`
+	}{{ProjectID: "1", Slug: "sodium", Title: "Sodium"}}}, nil
 }
 
 func TestCreateModHandler_WarningWithoutEnforcement(t *testing.T) {

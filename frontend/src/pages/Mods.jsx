@@ -23,6 +23,7 @@ import {
   getToken,
   getInstance,
   updateInstance,
+  resyncInstance,
 } from "@/lib/api.ts";
 import { cn } from "@/lib/utils.js";
 import { toast } from "sonner";
@@ -50,6 +51,8 @@ export default function Mods() {
   const [name, setName] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [enforce, setEnforce] = useState(true);
+  const [unmatched, setUnmatched] = useState([]);
+  const [resyncing, setResyncing] = useState(false);
 
   useEffect(() => {
     getToken()
@@ -65,6 +68,15 @@ export default function Mods() {
     } else {
       fetchMods();
     }
+    if (location.state?.unmatched) {
+      let next = location.state.unmatched;
+      if (location.state?.resolved) {
+        next = next.filter((f) => f !== location.state.resolved);
+      }
+      setUnmatched(next);
+    } else if (location.state?.resolved) {
+      setUnmatched((prev) => prev.filter((f) => f !== location.state.resolved));
+    }
   }, [instanceId, location.state]);
 
   async function fetchMods() {
@@ -73,8 +85,8 @@ export default function Mods() {
     try {
       const data = await getMods(instanceId);
       setMods(data);
-    } catch {
-      setError("Failed to load mods");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load mods");
     } finally {
       setLoading(false);
     }
@@ -84,8 +96,26 @@ export default function Mods() {
     try {
       const data = await getInstance(instanceId);
       setInstance(data);
-    } catch {
-      toast.error("Failed to load instance");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to load instance");
+    }
+  }
+
+  async function handleResync() {
+    if (!instance) return;
+    setResyncing(true);
+    try {
+      const { instance: inst, unmatched: um, mods: m } = await resyncInstance(
+        instance.id,
+      );
+      setInstance(inst);
+      setUnmatched(um);
+      setMods(m);
+      toast.success("Resynced");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to resync");
+    } finally {
+      setResyncing(false);
     }
   }
 
@@ -129,6 +159,8 @@ export default function Mods() {
     } catch (err) {
       if (err instanceof Error && err.message === "token required") {
         toast.error("Modrinth token required");
+      } else if (err instanceof Error) {
+        toast.error(err.message);
       } else {
         toast.error("Failed to check updates");
       }
@@ -146,8 +178,8 @@ export default function Mods() {
       const data = await deleteMod(id, instanceId);
       setMods(data);
       toast.success("Mod deleted");
-    } catch {
-      toast.error("Failed to delete mod");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete mod");
     }
   }
 
@@ -158,16 +190,12 @@ export default function Mods() {
       return;
     }
     try {
-      const updated = await updateInstance(instance.id, {
-        name,
-        loader: instance.loader,
-        enforce_same_loader: instance.enforce_same_loader,
-      });
+      const updated = await updateInstance(instance.id, { name });
       setInstance(updated);
       toast.success("Instance updated");
       setEditingName(false);
-    } catch {
-      toast.error("Failed to save instance");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save instance");
     }
   }
 
@@ -175,15 +203,13 @@ export default function Mods() {
     e.preventDefault();
     try {
       const updated = await updateInstance(instance.id, {
-        name: instance.name,
-        loader: instance.loader,
         enforce_same_loader: enforce,
       });
       setInstance(updated);
       toast.success("Instance updated");
       setSettingsOpen(false);
-    } catch {
-      toast.error("Failed to save instance");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save instance");
     }
   }
 
@@ -193,7 +219,10 @@ export default function Mods() {
       {instance && (
         <div className="flex flex-wrap items-center gap-sm">
           {editingName ? (
-            <form className="flex flex-wrap items-center gap-sm" onSubmit={saveName}>
+            <form
+              className="flex flex-wrap items-center gap-sm"
+              onSubmit={saveName}
+            >
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -247,6 +276,44 @@ export default function Mods() {
           >
             Edit
           </Button>
+          {instance.pufferpanel_server_id && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={handleResync}
+              disabled={resyncing}
+            >
+              {resyncing ? "Resyncing..." : "Resync from PufferPanel"}
+            </Button>
+          )}
+        </div>
+      )}
+      {instance?.last_sync_at && (
+        <p className="text-sm text-muted-foreground">
+          Last sync: {new Date(instance.last_sync_at).toLocaleString()} (added
+          {" "}
+          {instance.last_sync_added}, changed {instance.last_sync_updated},
+          failed {instance.last_sync_failed})
+        </p>
+      )}
+      {unmatched.length > 0 && (
+        <div>
+          <h2 className="text-lg font-medium">Unmatched files</h2>
+          <ul className="space-y-xs" data-testid="unmatched-files">
+            {unmatched.map((f) => (
+              <li
+                key={f}
+                className="flex items-center justify-between rounded border border-yellow-200 bg-yellow-50 px-sm py-xs text-sm text-yellow-800"
+              >
+                <span className="truncate" title={f}>
+                  {f}
+                </span>
+                <Button size="sm" variant="outline" onClick={() => openAddMod(f)}>
+                  Resolve
+                </Button>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
       <div className="flex flex-col gap-sm sm:flex-row sm:items-center">

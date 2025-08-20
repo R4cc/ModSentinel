@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"database/sql"
@@ -10,6 +11,7 @@ import (
 	"io/fs"
 	"net/http"
 	urlpkg "net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,9 +24,12 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/rs/zerolog/log"
 
+	"fmt"
+
 	dbpkg "modsentinel/internal/db"
 	"modsentinel/internal/httpx"
 	mr "modsentinel/internal/modrinth"
+	pppkg "modsentinel/internal/pufferpanel"
 	"modsentinel/internal/telemetry"
 	tokenpkg "modsentinel/internal/token"
 )
@@ -34,6 +39,7 @@ var validate = validator.New()
 type modrinthClient interface {
 	Project(ctx context.Context, slug string) (*mr.Project, error)
 	Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error)
+	Search(ctx context.Context, query string) (*mr.SearchResult, error)
 }
 
 var modClient modrinthClient = mr.NewClient()
@@ -109,6 +115,7 @@ func New(db *sql.DB, dist embed.FS) http.Handler {
 	r.Get("/api/instances/{id}", getInstanceHandler(db))
 	r.Post("/api/instances", createInstanceHandler(db))
 	r.Put("/api/instances/{id}", updateInstanceHandler(db))
+	r.Post("/api/instances/{id}/resync", resyncInstanceHandler(db))
 	r.Delete("/api/instances/{id}", deleteInstanceHandler(db))
 	r.Get("/api/mods", listModsHandler(db))
 	r.Post("/api/mods/metadata", metadataHandler())
@@ -119,6 +126,12 @@ func New(db *sql.DB, dist embed.FS) http.Handler {
 	r.Get("/api/token", getTokenHandler())
 	r.Post("/api/token", setTokenHandler())
 	r.Delete("/api/token", clearTokenHandler())
+	r.Get("/api/pufferpanel", getPufferHandler())
+	r.Post("/api/pufferpanel", setPufferHandler())
+	r.Delete("/api/pufferpanel", clearPufferHandler())
+	r.Post("/api/pufferpanel/test", testPufferHandler())
+	r.Get("/api/pufferpanel/servers", listServersHandler())
+	r.Post("/api/pufferpanel/sync", syncHandler(db))
 	r.Get("/api/dashboard", dashboardHandler(db))
 
 	static, _ := fs.Sub(dist, "frontend/dist")
@@ -174,15 +187,16 @@ func getInstanceHandler(db *sql.DB) http.HandlerFunc {
 func createInstanceHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Name              string `json:"name"`
-			Loader            string `json:"loader"`
-			EnforceSameLoader *bool  `json:"enforce_same_loader"`
+			Name                string `json:"name"`
+			Loader              string `json:"loader"`
+			EnforceSameLoader   *bool  `json:"enforce_same_loader"`
+			PufferpanelServerID string `json:"pufferpanel_server_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpx.Write(w, r, httpx.BadRequest("invalid json"))
 			return
 		}
-		inst := dbpkg.Instance{ID: 0, Name: req.Name, Loader: req.Loader}
+		inst := dbpkg.Instance{ID: 0, Name: req.Name, Loader: req.Loader, PufferpanelServerID: req.PufferpanelServerID}
 		if req.EnforceSameLoader == nil {
 			inst.EnforceSameLoader = true
 		} else {
@@ -216,17 +230,24 @@ func updateInstanceHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		var req struct {
-			Name              string `json:"name"`
-			Loader            string `json:"loader"`
-			EnforceSameLoader bool   `json:"enforce_same_loader"`
+			Name              *string `json:"name"`
+			Loader            *string `json:"loader"`
+			EnforceSameLoader *bool   `json:"enforce_same_loader"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpx.Write(w, r, httpx.BadRequest("invalid json"))
 			return
 		}
-		inst.Name = req.Name
-		inst.Loader = req.Loader
-		inst.EnforceSameLoader = req.EnforceSameLoader
+		if req.Loader != nil && !strings.EqualFold(*req.Loader, inst.Loader) {
+			httpx.Write(w, r, httpx.BadRequest("loader immutable"))
+			return
+		}
+		if req.Name != nil {
+			inst.Name = *req.Name
+		}
+		if req.EnforceSameLoader != nil {
+			inst.EnforceSameLoader = *req.EnforceSameLoader
+		}
 		if err := validatePayload(inst); err != nil {
 			httpx.Write(w, r, err)
 			return
@@ -504,6 +525,426 @@ func clearTokenHandler() http.HandlerFunc {
 	}
 }
 
+type pufferRequest struct {
+	BaseURL      string `json:"base_url" validate:"required,url"`
+	ClientID     string `json:"client_id" validate:"required"`
+	ClientSecret string `json:"client_secret" validate:"required"`
+	DeepScan     bool   `json:"deep_scan"`
+}
+
+func getPufferHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		creds, err := pppkg.Get()
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(creds)
+	}
+}
+
+func setPufferHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req pufferRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid json"))
+			return
+		}
+		if err := validatePayload(&req); err != nil {
+			httpx.Write(w, r, err)
+			return
+		}
+		if err := pppkg.Set(pppkg.Credentials{BaseURL: req.BaseURL, ClientID: req.ClientID, ClientSecret: req.ClientSecret, DeepScan: req.DeepScan}); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		telemetry.Event("pufferpanel_set", nil)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func clearPufferHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := pppkg.Clear(); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		telemetry.Event("pufferpanel_cleared", nil)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func testPufferHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req pufferRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid json"))
+			return
+		}
+		if err := validatePayload(&req); err != nil {
+			httpx.Write(w, r, err)
+			return
+		}
+		if err := pppkg.TestConnection(r.Context(), pppkg.Credentials{BaseURL: req.BaseURL, ClientID: req.ClientID, ClientSecret: req.ClientSecret, DeepScan: req.DeepScan}); err != nil {
+			httpx.Write(w, r, httpx.BadRequest(err.Error()))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func listServersHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		servers, err := pppkg.ListServers(r.Context())
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(servers)
+	}
+}
+
+func syncHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		serverID := r.URL.Query().Get("server")
+		if serverID == "" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		srv, err := pppkg.GetServer(r.Context(), serverID)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		inst := dbpkg.Instance{
+			Name:                srv.Name,
+			Loader:              strings.ToLower(srv.Environment.Type),
+			PufferpanelServerID: serverID,
+			EnforceSameLoader:   true,
+		}
+		if inst.Loader == "" {
+			inst.Loader = "fabric"
+		}
+		if err := validatePayload(&inst); err != nil {
+			httpx.Write(w, r, err)
+			return
+		}
+		if err := dbpkg.InsertInstance(db, &inst); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		creds, err := pppkg.Get()
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		files, err := pppkg.ListJarFiles(r.Context(), serverID)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		matched := make([]dbpkg.Mod, 0)
+		unmatched := make([]string, 0, len(files))
+		for _, f := range files {
+			slug, ver := parseJarFilename(f)
+			scanned := false
+			if creds.DeepScan && (slug == "" || ver == "") {
+				scanned = true
+				time.Sleep(100 * time.Millisecond)
+				data, err := pppkg.FetchFile(r.Context(), serverID, "mods/"+f)
+				if errors.Is(err, os.ErrNotExist) {
+					data, err = pppkg.FetchFile(r.Context(), serverID, "plugins/"+f)
+				}
+				if err == nil {
+					s2, v2 := parseJarMetadata(data)
+					if s2 != "" && v2 != "" {
+						slug, ver = s2, v2
+					}
+				}
+			}
+			if slug == "" || ver == "" {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			res, err := modClient.Search(r.Context(), slug)
+			if (err != nil || len(res.Hits) == 0) && creds.DeepScan && !scanned {
+				time.Sleep(100 * time.Millisecond)
+				data, err := pppkg.FetchFile(r.Context(), serverID, "mods/"+f)
+				if errors.Is(err, os.ErrNotExist) {
+					data, err = pppkg.FetchFile(r.Context(), serverID, "plugins/"+f)
+				}
+				if err == nil {
+					s2, v2 := parseJarMetadata(data)
+					if s2 != "" && v2 != "" {
+						slug, ver = s2, v2
+						res, err = modClient.Search(r.Context(), slug)
+					}
+				}
+			}
+			if err != nil || len(res.Hits) == 0 {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			slug = res.Hits[0].Slug
+			proj, err := modClient.Project(r.Context(), slug)
+			if err != nil {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			versions, err := modClient.Versions(r.Context(), slug, "", "")
+			if err != nil {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			var v mr.Version
+			found := false
+			for _, vv := range versions {
+				if vv.VersionNumber == ver {
+					v = vv
+					found = true
+					break
+				}
+			}
+			if !found {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			m := dbpkg.Mod{
+				Name:           proj.Title,
+				IconURL:        proj.IconURL,
+				URL:            fmt.Sprintf("https://modrinth.com/mod/%s", slug),
+				InstanceID:     inst.ID,
+				Channel:        strings.ToLower(v.VersionType),
+				CurrentVersion: v.VersionNumber,
+			}
+			if len(v.GameVersions) > 0 {
+				m.GameVersion = v.GameVersions[0]
+			}
+			if len(v.Loaders) > 0 {
+				m.Loader = v.Loaders[0]
+			} else {
+				m.Loader = inst.Loader
+			}
+			if len(v.Files) > 0 {
+				m.DownloadURL = v.Files[0].URL
+			}
+			if err := populateAvailableVersion(r.Context(), &m, slug); err != nil {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			if err := dbpkg.InsertMod(db, &m); err != nil {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			matched = append(matched, m)
+		}
+		if err := dbpkg.UpdateInstanceSync(db, inst.ID, len(matched), 0, len(unmatched)); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		inst2, err := dbpkg.GetInstance(db, inst.ID)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Instance  dbpkg.Instance `json:"instance"`
+			Unmatched []string       `json:"unmatched"`
+			Mods      []dbpkg.Mod    `json:"mods"`
+		}{*inst2, unmatched, matched})
+	}
+}
+
+func resyncInstanceHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid id"))
+			return
+		}
+		inst, err := dbpkg.GetInstance(db, id)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if inst.PufferpanelServerID == "" {
+			httpx.Write(w, r, httpx.BadRequest("no pufferpanel server"))
+			return
+		}
+		creds, err := pppkg.Get()
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		files, err := pppkg.ListJarFiles(r.Context(), inst.PufferpanelServerID)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		existing, err := dbpkg.ListMods(db, inst.ID)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		exMap := map[string]dbpkg.Mod{}
+		for _, m := range existing {
+			slug, _ := parseModrinthSlug(m.URL)
+			exMap[slug] = m
+		}
+		added, changed := 0, 0
+		unmatched := []string{}
+		for _, f := range files {
+			slug, ver := parseJarFilename(f)
+			scanned := false
+			if creds.DeepScan && (slug == "" || ver == "") {
+				scanned = true
+				time.Sleep(100 * time.Millisecond)
+				data, err := pppkg.FetchFile(r.Context(), inst.PufferpanelServerID, "mods/"+f)
+				if errors.Is(err, os.ErrNotExist) {
+					data, err = pppkg.FetchFile(r.Context(), inst.PufferpanelServerID, "plugins/"+f)
+				}
+				if err == nil {
+					s2, v2 := parseJarMetadata(data)
+					if s2 != "" && v2 != "" {
+						slug, ver = s2, v2
+					}
+				}
+			}
+			if slug == "" || ver == "" {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			res, err := modClient.Search(r.Context(), slug)
+			if (err != nil || len(res.Hits) == 0) && creds.DeepScan && !scanned {
+				time.Sleep(100 * time.Millisecond)
+				data, err := pppkg.FetchFile(r.Context(), inst.PufferpanelServerID, "mods/"+f)
+				if errors.Is(err, os.ErrNotExist) {
+					data, err = pppkg.FetchFile(r.Context(), inst.PufferpanelServerID, "plugins/"+f)
+				}
+				if err == nil {
+					s2, v2 := parseJarMetadata(data)
+					if s2 != "" && v2 != "" {
+						slug, ver = s2, v2
+						res, err = modClient.Search(r.Context(), slug)
+					}
+				}
+			}
+			if err != nil || len(res.Hits) == 0 {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			slug = res.Hits[0].Slug
+			proj, err := modClient.Project(r.Context(), slug)
+			if err != nil {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			versions, err := modClient.Versions(r.Context(), slug, "", "")
+			if err != nil {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			var v mr.Version
+			found := false
+			for _, vv := range versions {
+				if vv.VersionNumber == ver {
+					v = vv
+					found = true
+					break
+				}
+			}
+			if !found {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			if existingMod, ok := exMap[slug]; ok {
+				if existingMod.CurrentVersion == ver {
+					continue
+				}
+				existingMod.CurrentVersion = v.VersionNumber
+				existingMod.Channel = strings.ToLower(v.VersionType)
+				existingMod.DownloadURL = ""
+				if len(v.Files) > 0 {
+					existingMod.DownloadURL = v.Files[0].URL
+				}
+				if len(v.GameVersions) > 0 {
+					existingMod.GameVersion = v.GameVersions[0]
+				}
+				if len(v.Loaders) > 0 {
+					existingMod.Loader = v.Loaders[0]
+				}
+				if err := populateAvailableVersion(r.Context(), &existingMod, slug); err != nil {
+					unmatched = append(unmatched, f)
+					continue
+				}
+				if err := dbpkg.UpdateMod(db, &existingMod); err != nil {
+					unmatched = append(unmatched, f)
+					continue
+				}
+				if err := dbpkg.InsertUpdateIfNew(db, existingMod.ID, existingMod.CurrentVersion); err != nil {
+					unmatched = append(unmatched, f)
+					continue
+				}
+				changed++
+				exMap[slug] = existingMod
+				continue
+			}
+			m := dbpkg.Mod{
+				Name:           proj.Title,
+				IconURL:        proj.IconURL,
+				URL:            fmt.Sprintf("https://modrinth.com/mod/%s", slug),
+				InstanceID:     inst.ID,
+				Channel:        strings.ToLower(v.VersionType),
+				CurrentVersion: v.VersionNumber,
+			}
+			if len(v.GameVersions) > 0 {
+				m.GameVersion = v.GameVersions[0]
+			}
+			if len(v.Loaders) > 0 {
+				m.Loader = v.Loaders[0]
+			} else {
+				m.Loader = inst.Loader
+			}
+			if len(v.Files) > 0 {
+				m.DownloadURL = v.Files[0].URL
+			}
+			if err := populateAvailableVersion(r.Context(), &m, slug); err != nil {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			if err := dbpkg.InsertMod(db, &m); err != nil {
+				unmatched = append(unmatched, f)
+				continue
+			}
+			added++
+		}
+		if err := dbpkg.UpdateInstanceSync(db, inst.ID, added, changed, len(unmatched)); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		inst2, err := dbpkg.GetInstance(db, inst.ID)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		mods, err := dbpkg.ListMods(db, inst.ID)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Instance  dbpkg.Instance `json:"instance"`
+			Unmatched []string       `json:"unmatched"`
+			Mods      []dbpkg.Mod    `json:"mods"`
+		}{*inst2, unmatched, mods})
+	}
+}
+
 func dashboardHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stats, err := dbpkg.GetDashboardStats(db)
@@ -695,4 +1136,66 @@ func parseModrinthSlug(raw string) (string, error) {
 		}
 	}
 	return "", errors.New("slug not found")
+}
+
+func parseJarFilename(name string) (slug, version string) {
+	name = strings.TrimSuffix(strings.ToLower(name), ".jar")
+	parts := strings.FieldsFunc(name, func(r rune) bool { return r == '-' || r == '_' })
+	if len(parts) == 0 {
+		return "", ""
+	}
+	idx := -1
+	for i := 1; i < len(parts); i++ {
+		if parts[i] != "" && parts[i][0] >= '0' && parts[i][0] <= '9' {
+			idx = i
+			break
+		}
+	}
+	slugParts := parts
+	if idx != -1 {
+		version = parts[idx]
+		slugParts = parts[:idx]
+	}
+	filtered := make([]string, 0, len(slugParts))
+	loaders := map[string]struct{}{"fabric": {}, "forge": {}, "quilt": {}, "neoforge": {}}
+	for _, p := range slugParts {
+		if _, ok := loaders[p]; ok {
+			continue
+		}
+		if strings.HasPrefix(p, "mc") {
+			continue
+		}
+		filtered = append(filtered, p)
+	}
+	if len(filtered) == 0 {
+		filtered = slugParts
+	}
+	slug = strings.Join(filtered, "-")
+	return
+}
+
+func parseJarMetadata(data []byte) (slug, version string) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", ""
+	}
+	for _, f := range zr.File {
+		if f.Name == "fabric.mod.json" || f.Name == "quilt.mod.json" {
+			rc, err := f.Open()
+			if err != nil {
+				continue
+			}
+			var meta struct {
+				ID      string `json:"id"`
+				Version string `json:"version"`
+			}
+			if err := json.NewDecoder(rc).Decode(&meta); err == nil {
+				slug = meta.ID
+				version = meta.Version
+			}
+			rc.Close()
+			return slug, version
+		}
+	}
+	return "", ""
 }
