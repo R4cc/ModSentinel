@@ -11,9 +11,14 @@ export interface Instance {
   id: number;
   name: string;
   loader: string;
+  pufferpanel_server_id?: string;
   enforce_same_loader: boolean;
   created_at: string;
   mod_count: number;
+  last_sync_at?: string;
+  last_sync_added?: number;
+  last_sync_updated?: number;
+  last_sync_failed?: number;
 }
 
 export interface Mod {
@@ -54,6 +59,19 @@ export interface ModUpdate {
   updated_at: string;
 }
 
+async function parseError(res: Response, fallback: string): Promise<Error> {
+  try {
+    const err = await res.json();
+    if (err?.code && err?.message) {
+      return new Error(`${err.code}: ${err.message}`);
+    }
+    if (err?.message) return new Error(err.message);
+  } catch {
+    // ignore
+  }
+  return new Error(fallback);
+}
+
 export async function getModMetadata(url: string): Promise<ModMetadata> {
   const res = await fetch("/api/mods/metadata", {
     method: "POST",
@@ -61,7 +79,7 @@ export async function getModMetadata(url: string): Promise<ModMetadata> {
     body: JSON.stringify({ url }),
   });
   if (res.status === 401) throw new Error("token required");
-  if (!res.ok) throw new Error("Failed to fetch metadata");
+  if (!res.ok) throw await parseError(res, "Failed to fetch metadata");
   return res.json();
 }
 
@@ -69,31 +87,31 @@ export async function getMods(instanceId: number): Promise<Mod[]> {
   const res = await fetch(`/api/mods?instance_id=${instanceId}`, {
     cache: "no-store",
   });
-  if (!res.ok) throw new Error("Failed to fetch mods");
+  if (!res.ok) throw await parseError(res, "Failed to fetch mods");
   return res.json();
 }
 
 export async function getInstances(): Promise<Instance[]> {
   const res = await fetch("/api/instances", { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to fetch instances");
+  if (!res.ok) throw await parseError(res, "Failed to fetch instances");
   return res.json();
 }
 
 export async function getInstance(id: number): Promise<Instance> {
   const res = await fetch(`/api/instances/${id}`, { cache: "no-store" });
-  if (!res.ok) throw new Error("Failed to fetch instance");
+  if (!res.ok) throw await parseError(res, "Failed to fetch instance");
   return res.json();
 }
 
 export async function deleteInstance(
   id: number,
-  targetInstanceId?: number
+  targetInstanceId?: number,
 ): Promise<void> {
   const url = targetInstanceId
     ? `/api/instances/${id}?target_instance_id=${targetInstanceId}`
     : `/api/instances/${id}`;
   const res = await fetch(url, { method: "DELETE" });
-  if (!res.ok) throw new Error("Failed to delete instance");
+  if (!res.ok) throw await parseError(res, "Failed to delete instance");
 }
 
 export interface NewMod {
@@ -108,6 +126,12 @@ export interface NewInstance {
   name: string;
   loader: string;
   enforce_same_loader: boolean;
+  pufferpanel_server_id?: string;
+}
+
+export interface UpdateInstance {
+  name?: string;
+  enforce_same_loader?: boolean;
 }
 
 export interface AddModResponse {
@@ -122,14 +146,7 @@ export async function addMod(payload: NewMod): Promise<AddModResponse> {
     body: JSON.stringify(payload),
   });
   if (res.status === 401) throw new Error("token required");
-  if (!res.ok) {
-    try {
-      const err = await res.json();
-      throw new Error(err.message || "Failed to add mod");
-    } catch {
-      throw new Error("Failed to add mod");
-    }
-  }
+  if (!res.ok) throw await parseError(res, "Failed to add mod");
   return res.json();
 }
 
@@ -139,20 +156,20 @@ export async function addInstance(payload: NewInstance): Promise<Instance> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error("Failed to add instance");
+  if (!res.ok) throw await parseError(res, "Failed to add instance");
   return res.json();
 }
 
 export async function updateInstance(
   id: number,
-  payload: NewInstance,
+  payload: UpdateInstance,
 ): Promise<Instance> {
   const res = await fetch(`/api/instances/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error("Failed to update instance");
+  if (!res.ok) throw await parseError(res, "Failed to update instance");
   return res.json();
 }
 
@@ -163,13 +180,13 @@ export async function refreshMod(id: number, payload: NewMod): Promise<Mod[]> {
     body: JSON.stringify(payload),
   });
   if (res.status === 401) throw new Error("token required");
-  if (!res.ok) throw new Error("Failed to update mod");
+  if (!res.ok) throw await parseError(res, "Failed to update mod");
   return res.json();
 }
 
 export async function updateModVersion(id: number): Promise<Mod> {
   const res = await fetch(`/api/mods/${id}/update`, { method: "POST" });
-  if (!res.ok) throw new Error("Failed to update mod");
+  if (!res.ok) throw await parseError(res, "Failed to update mod");
   return res.json();
 }
 
@@ -181,7 +198,7 @@ export async function deleteMod(
     method: "DELETE",
     cache: "no-store",
   });
-  if (!res.ok) throw new Error("Failed to delete mod");
+  if (!res.ok) throw await parseError(res, "Failed to delete mod");
   return res.json();
 }
 
@@ -189,13 +206,13 @@ export async function getDashboard(): Promise<DashboardData> {
   const res = await fetch("/api/dashboard");
   if (res.status === 401) throw new Error("token required");
   if (res.status === 429) throw new Error("rate limited");
-  if (!res.ok) throw new Error("Failed to fetch dashboard");
+  if (!res.ok) throw await parseError(res, "Failed to fetch dashboard");
   return res.json();
 }
 
 export async function getToken(): Promise<string> {
   const res = await fetch("/api/token");
-  if (!res.ok) throw new Error("Failed to fetch token");
+  if (!res.ok) throw await parseError(res, "Failed to fetch token");
   const data: { token: string } = await res.json();
   return data.token;
 }
@@ -206,12 +223,82 @@ export async function saveToken(token: string): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token }),
   });
-  if (!res.ok) throw new Error("Failed to save token");
+  if (!res.ok) throw await parseError(res, "Failed to save token");
   window.dispatchEvent(new Event("token-change"));
 }
 
 export async function clearToken(): Promise<void> {
   const res = await fetch("/api/token", { method: "DELETE" });
-  if (!res.ok) throw new Error("Failed to clear token");
+  if (!res.ok) throw await parseError(res, "Failed to clear token");
   window.dispatchEvent(new Event("token-change"));
+}
+
+export interface PufferCreds {
+  base_url: string;
+  client_id: string;
+  client_secret: string;
+  deep_scan?: boolean;
+}
+
+export interface PufferServer {
+  id: string;
+  name: string;
+}
+
+export interface SyncResult {
+  instance: Instance;
+  unmatched: string[];
+  mods: Mod[];
+}
+
+export async function resyncInstance(id: number): Promise<SyncResult> {
+  const res = await fetch(`/api/instances/${id}/resync`, { method: "POST" });
+  if (!res.ok) throw await parseError(res, "Failed to resync");
+  return res.json();
+}
+
+export async function getPufferCreds(): Promise<PufferCreds> {
+  const res = await fetch("/api/pufferpanel");
+  if (!res.ok) throw await parseError(res, "Failed to fetch credentials");
+  return res.json();
+}
+
+export async function savePufferCreds(creds: PufferCreds): Promise<void> {
+  const res = await fetch("/api/pufferpanel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(creds),
+  });
+  if (!res.ok) throw await parseError(res, "Failed to save credentials");
+  window.dispatchEvent(new Event("pufferpanel-change"));
+}
+
+export async function clearPufferCreds(): Promise<void> {
+  const res = await fetch("/api/pufferpanel", { method: "DELETE" });
+  if (!res.ok) throw await parseError(res, "Failed to clear credentials");
+  window.dispatchEvent(new Event("pufferpanel-change"));
+}
+
+export async function testPufferCreds(creds: PufferCreds): Promise<void> {
+  const res = await fetch("/api/pufferpanel/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(creds),
+  });
+  if (!res.ok) throw await parseError(res, "Failed to connect");
+}
+
+export async function getPufferServers(): Promise<PufferServer[]> {
+  const res = await fetch("/api/pufferpanel/servers");
+  if (!res.ok) throw await parseError(res, "Failed to fetch servers");
+  return res.json();
+}
+
+export async function syncInstances(server?: string): Promise<SyncResult> {
+  const url = server
+    ? `/api/pufferpanel/sync?server=${encodeURIComponent(server)}`
+    : "/api/pufferpanel/sync";
+  const res = await fetch(url, { method: "POST" });
+  if (!res.ok) throw await parseError(res, "Failed to sync");
+  return res.json();
 }

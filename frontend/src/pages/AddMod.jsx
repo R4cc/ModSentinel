@@ -10,8 +10,9 @@ import { Badge } from '@/components/ui/Badge.jsx';
 import { Skeleton } from '@/components/ui/Skeleton.jsx';
 import { cn } from '@/lib/utils.js';
 import { addMod, getToken, getInstance } from '@/lib/api.ts';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { useAddModStore, initialState } from '@/stores/addModStore.js';
+import { parseJarFilename } from '@/lib/jar.ts';
 
 const steps = ['Mod URL', 'Loader', 'Minecraft Version', 'Mod Version'];
 const loaders = [
@@ -70,6 +71,8 @@ export default function AddMod() {
   const navigate = useNavigate();
   const { id } = useParams();
   const instanceId = Number(id);
+  const location = useLocation();
+  const unresolvedFile = location.state?.file;
 
   const [hasToken, setHasToken] = useState(true);
   useEffect(() => {
@@ -85,7 +88,11 @@ export default function AddMod() {
         setInstance(data);
         setLoader(data.loader);
       })
-      .catch(() => toast.error('Failed to load instance'));
+      .catch((err) =>
+        toast.error(
+          err instanceof Error ? err.message : 'Failed to load instance',
+        ),
+      );
   }, [instanceId, setLoader]);
 
   useEffect(() => {
@@ -103,10 +110,17 @@ export default function AddMod() {
       state.selectedModVersion === init.selectedModVersion &&
       (state.versions ?? []).length === 0 &&
       (state.modVersions ?? []).length === 0;
-    if (!fresh) {
+    if (!fresh && !unresolvedFile) {
       resetWizard();
     }
-  }, [resetWizard]);
+  }, [resetWizard, unresolvedFile]);
+
+  useEffect(() => {
+    if (unresolvedFile) {
+      const { slug } = parseJarFilename(unresolvedFile);
+      if (slug) setUrl(`https://modrinth.com/mod/${slug}`);
+    }
+  }, [unresolvedFile, setUrl]);
 
   useEffect(() => {
     if (step === 3 && refs[3].current) {
@@ -163,7 +177,9 @@ export default function AddMod() {
       }
       toast.success('Mod added');
       resetWizard();
-      navigate(`/instances/${instanceId}`, { state: { mods: resp.mods } });
+      navigate(`/instances/${instanceId}`, {
+        state: { mods: resp.mods, resolved: unresolvedFile },
+      });
     } catch (err) {
       if (err instanceof Error && err.message === 'token required') {
         toast.error('Modrinth token required');

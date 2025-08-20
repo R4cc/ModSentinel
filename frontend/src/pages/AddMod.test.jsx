@@ -130,6 +130,20 @@ describe('AddMod page', () => {
     expect(screen.queryByText('1.0.0')).not.toBeInTheDocument();
   });
 
+  it('prefills slug from unresolved file', async () => {
+    render(
+      <MemoryRouter
+        initialEntries={[{ pathname: '/instances/1/add', state: { file: 'sodium-1.0.jar' } }]}
+      >
+        <Routes>
+          <Route path='/instances/:id/add' element={<AddMod />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    const input = await screen.findByLabelText('Mod URL');
+    expect(input).toHaveValue('https://modrinth.com/mod/sodium');
+  });
+
   it('shows error toast on loader mismatch when enforced', async () => {
     addMod.mockRejectedValueOnce(new Error('loader mismatch'));
 

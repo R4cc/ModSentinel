@@ -21,6 +21,17 @@ Use at your own risk.
 - Periodic update checks with `gocron`
 - Structured logging with `zerolog`
 
+## PufferPanel integration
+
+ModSentinel can sync mod lists directly from a [PufferPanel](https://pufferpanel.com) server.
+
+1. Open **Settings** → **PufferPanel** and enter your Base URL, client ID, and client secret.
+2. The OAuth client must have the scopes `server.view` and `server.files.view`.
+3. During sync ModSentinel scans the `mods/` directory, falling back to `plugins/` if no jars are found.
+4. Enabling **Deep Scan** downloads each jar to read embedded metadata; this increases bandwidth and API usage.
+
+See [docs/PUFFERPANEL.md](docs/PUFFERPANEL.md) for details.
+
 ## Development
 
 ```bash
