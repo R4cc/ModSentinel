@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Package, RefreshCw, Trash2, Plus } from 'lucide-react';
-import { Input } from '@/components/ui/Input.jsx';
-import { Select } from '@/components/ui/Select.jsx';
-import { Button } from '@/components/ui/Button.jsx';
+import { useEffect, useState } from "react";
+import { useSearchParams, useParams, useLocation } from "react-router-dom";
+import { Package, RefreshCw, Trash2, Plus, Pencil } from "lucide-react";
+import { Input } from "@/components/ui/Input.jsx";
+import { Select } from "@/components/ui/Select.jsx";
+import { Button } from "@/components/ui/Button.jsx";
+import { Modal } from "@/components/ui/Modal.jsx";
+import { Checkbox } from "@/components/ui/Checkbox.jsx";
 import {
   Table,
   TableHeader,
@@ -11,28 +13,43 @@ import {
   TableHead,
   TableBody,
   TableCell,
-} from '@/components/ui/Table.jsx';
-import { Skeleton } from '@/components/ui/Skeleton.jsx';
-import { EmptyState } from '@/components/ui/EmptyState.jsx';
-import { getMods, refreshMod, deleteMod, getToken } from '@/lib/api.ts';
-import { cn } from '@/lib/utils.js';
-import { toast } from 'sonner';
-import { useConfirm } from '@/hooks/useConfirm.jsx';
-import { useOpenAddMod } from '@/hooks/useOpenAddMod.js';
+} from "@/components/ui/Table.jsx";
+import { Skeleton } from "@/components/ui/Skeleton.jsx";
+import { EmptyState } from "@/components/ui/EmptyState.jsx";
+import {
+  getMods,
+  refreshMod,
+  deleteMod,
+  getToken,
+  getInstance,
+  updateInstance,
+} from "@/lib/api.ts";
+import { cn } from "@/lib/utils.js";
+import { toast } from "sonner";
+import { useConfirm } from "@/hooks/useConfirm.jsx";
+import { useOpenAddMod } from "@/hooks/useOpenAddMod.js";
 
 export default function Mods() {
+  const { id } = useParams();
+  const instanceId = Number(id);
+  const location = useLocation();
   const [mods, setMods] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [filter, setFilter] = useState('');
+  const [error, setError] = useState("");
+  const [filter, setFilter] = useState("");
   const [searchParams] = useSearchParams();
-  const status = searchParams.get('status') || 'all';
-  const [sort, setSort] = useState('name-asc');
+  const status = searchParams.get("status") || "all";
+  const [sort, setSort] = useState("name-asc");
   const [page, setPage] = useState(1);
   const perPage = 10;
   const { confirm, ConfirmModal } = useConfirm();
   const [hasToken, setHasToken] = useState(true);
-  const openAddMod = useOpenAddMod();
+  const openAddMod = useOpenAddMod(instanceId);
+  const [instance, setInstance] = useState(null);
+  const [editingName, setEditingName] = useState(false);
+  const [name, setName] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [enforce, setEnforce] = useState(true);
 
   useEffect(() => {
     getToken()
@@ -41,38 +58,54 @@ export default function Mods() {
   }, []);
 
   useEffect(() => {
-    fetchMods();
-  }, []);
+    fetchInstance();
+    if (location.state?.mods) {
+      setMods(location.state.mods);
+      setLoading(false);
+    } else {
+      fetchMods();
+    }
+  }, [instanceId, location.state]);
 
   async function fetchMods() {
     setLoading(true);
-    setError('');
+    setError("");
     try {
-      const data = await getMods();
+      const data = await getMods(instanceId);
       setMods(data);
     } catch {
-      setError('Failed to load mods');
+      setError("Failed to load mods");
     } finally {
       setLoading(false);
     }
   }
 
+  async function fetchInstance() {
+    try {
+      const data = await getInstance(instanceId);
+      setInstance(data);
+    } catch {
+      toast.error("Failed to load instance");
+    }
+  }
+
   useEffect(() => {
     setPage(1);
-  }, [filter, sort, status]);
+  }, [filter, sort, status, instanceId]);
 
   const filtered = mods.filter((m) =>
-    m.name.toLowerCase().includes(filter.toLowerCase())
+    m.name.toLowerCase().includes(filter.toLowerCase()),
   );
   const statusFiltered = filtered.filter((m) => {
-    if (status === 'up_to_date') return m.current_version === m.available_version;
-    if (status === 'outdated') return m.current_version !== m.available_version;
+    if (status === "up_to_date")
+      return m.current_version === m.available_version;
+    if (status === "outdated") return m.current_version !== m.available_version;
     return true;
   });
   const sorted = [...statusFiltered].sort((a, b) =>
-    sort === 'name-desc'
+    sort === "name-desc"
       ? b.name.localeCompare(a.name)
-      : a.name.localeCompare(b.name)
+      : a.name.localeCompare(b.name),
   );
   const totalPages = Math.ceil(sorted.length / perPage) || 1;
   const current = sorted.slice((page - 1) * perPage, page * perPage);
@@ -84,82 +117,178 @@ export default function Mods() {
         loader: m.loader,
         game_version: m.game_version,
         channel: m.channel,
+        instance_id: m.instance_id,
       });
       setMods(data);
       const updated = data.find((x) => x.id === m.id);
       if (updated && updated.available_version !== updated.current_version) {
         toast.info(`New version ${updated.available_version} available`);
       } else {
-        toast.success('Mod is up to date');
+        toast.success("Mod is up to date");
       }
     } catch (err) {
-      if (err instanceof Error && err.message === 'token required') {
-        toast.error('Modrinth token required');
+      if (err instanceof Error && err.message === "token required") {
+        toast.error("Modrinth token required");
       } else {
-        toast.error('Failed to check updates');
+        toast.error("Failed to check updates");
       }
     }
   }
 
   async function handleDelete(id) {
     const ok = await confirm({
-      title: 'Delete mod',
-      message: 'Are you sure you want to delete this mod?',
-      confirmText: 'Delete',
+      title: "Delete mod",
+      message: "Are you sure you want to delete this mod?",
+      confirmText: "Delete",
     });
     if (!ok) return;
     try {
-      const data = await deleteMod(id);
+      const data = await deleteMod(id, instanceId);
       setMods(data);
-      toast.success('Mod deleted');
+      toast.success("Mod deleted");
     } catch {
-      toast.error('Failed to delete mod');
+      toast.error("Failed to delete mod");
+    }
+  }
+
+  async function saveName(e) {
+    e.preventDefault();
+    if (!name.trim()) {
+      toast.error("Name required");
+      return;
+    }
+    try {
+      const updated = await updateInstance(instance.id, {
+        name,
+        loader: instance.loader,
+        enforce_same_loader: instance.enforce_same_loader,
+      });
+      setInstance(updated);
+      toast.success("Instance updated");
+      setEditingName(false);
+    } catch {
+      toast.error("Failed to save instance");
+    }
+  }
+
+  async function saveSettings(e) {
+    e.preventDefault();
+    try {
+      const updated = await updateInstance(instance.id, {
+        name: instance.name,
+        loader: instance.loader,
+        enforce_same_loader: enforce,
+      });
+      setInstance(updated);
+      toast.success("Instance updated");
+      setSettingsOpen(false);
+    } catch {
+      toast.error("Failed to save instance");
     }
   }
 
   return (
     <div className="space-y-md">
       {ConfirmModal}
-        <div className="flex flex-col gap-sm sm:flex-row sm:items-center">
-          <div className="flex flex-col">
-            <label htmlFor="filter" className="sr-only">
-              Filter mods
-            </label>
-            <Input
-              id="filter"
-              placeholder="Filter mods..."
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              className="sm:max-w-xs"
-            />
-          </div>
-          <div className="flex flex-col">
-            <label htmlFor="sort" className="sr-only">
-              Sort mods
-            </label>
-            <Select
-              id="sort"
-              value={sort}
-              onChange={(e) => setSort(e.target.value)}
-              className="sm:w-40"
-            >
-              <option value="name-asc">Name A–Z</option>
-              <option value="name-desc">Name Z–A</option>
-            </Select>
-          </div>
-            <Button
-              onClick={openAddMod}
-              className={cn(
-                'w-full gap-xs sm:ml-auto sm:w-auto',
-                !hasToken && 'pointer-events-none opacity-50'
-              )}
-              disabled={!hasToken}
-              title="Add Mod"
-            >
-              <Plus className="h-4 w-4" aria-hidden="true" />
-              Add Mod
-            </Button>
+      {instance && (
+        <div className="flex flex-wrap items-center gap-sm">
+          {editingName ? (
+            <form className="flex flex-wrap items-center gap-sm" onSubmit={saveName}>
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="h-7 w-48"
+              />
+              <Button size="sm" type="submit">
+                Save
+              </Button>
+              <Button
+                size="sm"
+                type="button"
+                variant="secondary"
+                onClick={() => setEditingName(false)}
+              >
+                Cancel
+              </Button>
+            </form>
+          ) : (
+            <>
+              <h1 className="flex items-center gap-xs text-2xl font-bold">
+                {instance.name}
+                <span className="text-lg font-normal text-muted-foreground capitalize">
+                  ({instance.loader})
+                </span>
+              </h1>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  setName(instance.name);
+                  setEditingName(true);
+                }}
+                aria-label="Rename instance"
+              >
+                <Pencil className="h-4 w-4" />
+              </Button>
+            </>
+          )}
+          {editingName && (
+            <span className="text-lg font-normal text-muted-foreground capitalize">
+              ({instance.loader})
+            </span>
+          )}
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setEnforce(instance.enforce_same_loader);
+              setSettingsOpen(true);
+            }}
+          >
+            Edit
+          </Button>
         </div>
+      )}
+      <div className="flex flex-col gap-sm sm:flex-row sm:items-center">
+        <div className="flex flex-col">
+          <label htmlFor="filter" className="sr-only">
+            Filter mods
+          </label>
+          <Input
+            id="filter"
+            placeholder="Filter mods..."
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="sm:max-w-xs"
+          />
+        </div>
+        <div className="flex flex-col">
+          <label htmlFor="sort" className="sr-only">
+            Sort mods
+          </label>
+          <Select
+            id="sort"
+            value={sort}
+            onChange={(e) => setSort(e.target.value)}
+            className="sm:w-40"
+          >
+            <option value="name-asc">Name A–Z</option>
+            <option value="name-desc">Name Z–A</option>
+          </Select>
+        </div>
+        <Button
+          onClick={openAddMod}
+          className={cn(
+            "w-full gap-xs sm:ml-auto sm:w-auto",
+            !hasToken && "pointer-events-none opacity-50",
+          )}
+          disabled={!hasToken}
+          title="Add Mod"
+        >
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          Add Mod
+        </Button>
+      </div>
 
       {!hasToken && (
         <p className="text-sm text-muted-foreground">
@@ -292,7 +421,34 @@ export default function Mods() {
           </div>
         </>
       )}
+      <Modal open={settingsOpen} onClose={() => setSettingsOpen(false)}>
+        <form className="space-y-md" onSubmit={saveSettings}>
+          <div className="space-y-xs">
+            <span className="text-sm font-medium">Loader</span>
+            <p className="text-sm">{instance?.loader}</p>
+          </div>
+          <div className="flex items-center gap-sm">
+            <Checkbox
+              id="enforce"
+              checked={enforce}
+              onChange={(e) => setEnforce(e.target.checked)}
+            />
+            <label htmlFor="enforce" className="text-sm">
+              Enforce same loader for mods
+            </label>
+          </div>
+          <div className="flex justify-end gap-sm">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setSettingsOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button type="submit">Save</Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }
-

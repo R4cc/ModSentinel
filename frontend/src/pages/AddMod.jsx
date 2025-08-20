@@ -9,8 +9,8 @@ import { Checkbox } from '@/components/ui/Checkbox.jsx';
 import { Badge } from '@/components/ui/Badge.jsx';
 import { Skeleton } from '@/components/ui/Skeleton.jsx';
 import { cn } from '@/lib/utils.js';
-import { addMod, getToken } from '@/lib/api.ts';
-import { useNavigate } from 'react-router-dom';
+import { addMod, getToken, getInstance } from '@/lib/api.ts';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useAddModStore, initialState } from '@/stores/addModStore.js';
 
 const steps = ['Mod URL', 'Loader', 'Minecraft Version', 'Mod Version'];
@@ -67,12 +67,26 @@ export default function AddMod() {
 
   const refs = [useRef(null), useRef(null), useRef(null), useRef(null)];
 
+  const navigate = useNavigate();
+  const { id } = useParams();
+  const instanceId = Number(id);
+
   const [hasToken, setHasToken] = useState(true);
   useEffect(() => {
     getToken()
       .then((t) => setHasToken(!!t))
       .catch(() => setHasToken(false));
   }, []);
+
+  const [instance, setInstance] = useState(null);
+  useEffect(() => {
+    getInstance(instanceId)
+      .then((data) => {
+        setInstance(data);
+        setLoader(data.loader);
+      })
+      .catch(() => toast.error('Failed to load instance'));
+  }, [instanceId, setLoader]);
 
   useEffect(() => {
     refs[step]?.current?.focus();
@@ -101,6 +115,12 @@ export default function AddMod() {
   }, [safeModVersions.length, step]);
 
   useEffect(() => {
+    if (step === 1 && instance?.enforce_same_loader) {
+      nextStep();
+    }
+  }, [step, instance, nextStep]);
+
+  useEffect(() => {
     if (step === 2 && safeVersions.length === 0) {
       fetchVersions();
     }
@@ -127,24 +147,28 @@ export default function AddMod() {
     if (!nextDisabled) nextStep();
   }
 
-  const navigate = useNavigate();
-
   async function handleAdd() {
     const selected = safeModVersions.find((v) => v.id === selectedModVersion);
     if (!selected) return;
     try {
-      await addMod({
+      const resp = await addMod({
         url,
         loader,
         game_version: mcVersion,
         channel: selected.version_type,
+        instance_id: instanceId,
       });
+      if (resp?.warning) {
+        toast.warning(resp.warning);
+      }
       toast.success('Mod added');
       resetWizard();
-      navigate('/mods');
+      navigate(`/instances/${instanceId}`, { state: { mods: resp.mods } });
     } catch (err) {
       if (err instanceof Error && err.message === 'token required') {
         toast.error('Modrinth token required');
+      } else if (err instanceof Error) {
+        toast.error(err.message);
       } else {
         toast.error('Failed to add mod');
       }
@@ -251,6 +275,7 @@ export default function AddMod() {
                           className="h-4 w-4"
                           onChange={() => setLoader(l.id)}
                           checked={loader === l.id}
+                          disabled={instance?.enforce_same_loader}
                         />
                         <Icon className="h-4 w-4" />
                         <div className="flex flex-col">
