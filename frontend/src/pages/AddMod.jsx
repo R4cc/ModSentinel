@@ -11,7 +11,7 @@ import { Skeleton } from '@/components/ui/Skeleton.jsx';
 import { cn } from '@/lib/utils.js';
 import { addMod, getToken } from '@/lib/api.ts';
 import { useNavigate } from 'react-router-dom';
-import { useAddModStore } from '@/stores/addModStore.js';
+import { useAddModStore, initialState } from '@/stores/addModStore.js';
 
 const steps = ['Mod URL', 'Loader', 'Minecraft Version', 'Mod Version'];
 const loaders = [
@@ -48,6 +48,7 @@ export default function AddMod() {
     loadingModVersions,
     includePre,
     selectedModVersion,
+    nonce,
     setUrl,
     validateUrl,
     setLoader,
@@ -58,7 +59,11 @@ export default function AddMod() {
     prevStep,
     fetchVersions,
     fetchModVersions,
+    resetWizard,
   } = useAddModStore();
+
+  const safeVersions = versions ?? [];
+  const safeModVersions = modVersions ?? [];
 
   const refs = [useRef(null), useRef(null), useRef(null), useRef(null)];
 
@@ -74,16 +79,32 @@ export default function AddMod() {
   }, [step]);
 
   useEffect(() => {
+    const state = useAddModStore.getState();
+    const init = initialState();
+    const fresh =
+      state.step === init.step &&
+      state.url === init.url &&
+      state.loader === init.loader &&
+      state.mcVersion === init.mcVersion &&
+      state.selectedModVersion === init.selectedModVersion &&
+      (state.versions ?? []).length === 0 &&
+      (state.modVersions ?? []).length === 0;
+    if (!fresh) {
+      resetWizard();
+    }
+  }, [resetWizard]);
+
+  useEffect(() => {
     if (step === 3 && refs[3].current) {
       refs[3].current.focus();
     }
-  }, [modVersions, step]);
+  }, [safeModVersions.length, step]);
 
   useEffect(() => {
-    if (step === 2 && versions.length === 0) {
+    if (step === 2 && safeVersions.length === 0) {
       fetchVersions();
     }
-  }, [step, versions.length, fetchVersions]);
+  }, [step, safeVersions.length, fetchVersions]);
 
   useEffect(() => {
     if (step === 3) {
@@ -99,14 +120,17 @@ export default function AddMod() {
   ][step];
 
   function handleNext() {
-    if (step === 0) validateUrl(url);
+    if (step === 0) {
+      const ok = validateUrl(url);
+      if (!ok) return;
+    }
     if (!nextDisabled) nextStep();
   }
 
   const navigate = useNavigate();
 
   async function handleAdd() {
-    const selected = modVersions.find((v) => v.id === selectedModVersion);
+    const selected = safeModVersions.find((v) => v.id === selectedModVersion);
     if (!selected) return;
     try {
       await addMod({
@@ -116,6 +140,7 @@ export default function AddMod() {
         channel: selected.version_type,
       });
       toast.success('Mod added');
+      resetWizard();
       navigate('/mods');
     } catch (err) {
       if (err instanceof Error && err.message === 'token required') {
@@ -127,8 +152,8 @@ export default function AddMod() {
   }
 
   const filteredModVersions = includePre
-    ? modVersions
-    : modVersions.filter((v) => v.version_type === 'release');
+    ? safeModVersions
+    : safeModVersions.filter((v) => v.version_type === 'release');
 
   if (!hasToken) {
     return (
@@ -148,7 +173,7 @@ export default function AddMod() {
   }
 
   return (
-    <div className="p-md">
+    <div className="p-md" key={nonce}>
       <Card className="mx-auto w-full max-w-md">
         <CardHeader>
           <CardTitle>Add Mod</CardTitle>
@@ -265,7 +290,7 @@ export default function AddMod() {
                       placeholder="Search versions"
                     />
                     <datalist id="mc-versions">
-                      {versions.map((v) => (
+                      {safeVersions.map((v) => (
                         <option key={v} value={v} />
                       ))}
                     </datalist>
