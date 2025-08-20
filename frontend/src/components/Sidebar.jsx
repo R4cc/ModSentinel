@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Home, Settings, Package, AlertTriangle } from 'lucide-react';
+import { Home, Settings, AlertTriangle, Server } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { cn } from '@/lib/utils.js';
 import { getToken } from '@/lib/api.ts';
@@ -54,15 +54,15 @@ export default function Sidebar({ open, onClose }) {
             <span className="md:hidden lg:inline">Dashboard</span>
           </NavLink>
           <NavLink
-            to="/mods"
+            to="/instances"
             end
             className={linkClass}
             onClick={onClose}
-            aria-label="Mods"
-            title="Mods"
+            aria-label="Instances"
+            title="Instances"
           >
-            <Package className="h-4 w-4" aria-hidden="true" />
-            <span className="md:hidden lg:inline">Mods</span>
+            <Server className="h-4 w-4" aria-hidden="true" />
+            <span className="md:hidden lg:inline">Instances</span>
           </NavLink>
           <NavLink
             to="/settings"

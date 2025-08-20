@@ -1,20 +1,34 @@
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('@/lib/api.ts', () => ({
   getToken: vi.fn().mockResolvedValue('token'),
-  addMod: vi.fn().mockResolvedValue(undefined),
+  addMod: vi.fn(),
+  getInstance: vi.fn(),
+  getMods: vi.fn(),
 }));
 
 vi.mock('sonner', () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+}));
+
+vi.mock('focus-trap-react', () => ({
+  default: ({ children }) => children,
+}));
+
+const confirmMock = vi.fn();
+vi.mock('@/hooks/useConfirm.jsx', () => ({
+  useConfirm: () => ({ confirm: confirmMock, ConfirmModal: null }),
 }));
 
 import AddMod from './AddMod.jsx';
 import { useAddModStore, initialState } from '@/stores/addModStore.js';
 import { useOpenAddMod } from '@/hooks/useOpenAddMod.js';
+import { addMod, getInstance, getMods } from '@/lib/api.ts';
+import Mods from './Mods.jsx';
+import { toast } from 'sonner';
 
 describe('AddMod page', () => {
   beforeEach(() => {
@@ -24,19 +38,34 @@ describe('AddMod page', () => {
       fetchVersions: vi.fn(),
       fetchModVersions: vi.fn(),
     });
+    addMod.mockReset();
+    addMod.mockResolvedValue({ mods: [] });
+    getInstance.mockResolvedValue({
+      id: 1,
+      name: 'Inst',
+      loader: 'fabric',
+      enforce_same_loader: true,
+      created_at: '',
+      mod_count: 0,
+    });
+    getMods.mockResolvedValue([]);
+    confirmMock.mockResolvedValue(true);
+    toast.success.mockReset();
+    toast.error.mockReset();
+    toast.warning.mockReset();
   });
 
   it('resets wizard state when reopened after adding a mod', async () => {
     const Mods = () => {
-      const openAddMod = useOpenAddMod();
+      const openAddMod = useOpenAddMod(1);
       return <button onClick={openAddMod}>Add Another</button>;
     };
 
     render(
-      <MemoryRouter initialEntries={['/mods/add']}>
+      <MemoryRouter initialEntries={['/instances/1/add']}>
         <Routes>
-          <Route path='/mods/add' element={<AddMod />} />
-          <Route path='/mods' element={<Mods />} />
+          <Route path='/instances/:id/add' element={<AddMod />} />
+          <Route path='/instances/:id' element={<Mods />} />
         </Routes>
       </MemoryRouter>
     );
@@ -75,7 +104,8 @@ describe('AddMod page', () => {
       });
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    const btns = screen.getAllByRole('button', { name: 'Add' });
+    fireEvent.click(btns[btns.length - 1]);
 
     fireEvent.click(await screen.findByText('Add Another'));
 
@@ -98,5 +128,177 @@ describe('AddMod page', () => {
     expect(urlInput).toBeInTheDocument();
     expect(urlInput).toHaveValue('');
     expect(screen.queryByText('1.0.0')).not.toBeInTheDocument();
+  });
+
+  it('shows error toast on loader mismatch when enforced', async () => {
+    addMod.mockRejectedValueOnce(new Error('loader mismatch'));
+
+    render(
+      <MemoryRouter initialEntries={['/instances/1/add']}>
+        <Routes>
+          <Route path='/instances/:id/add' element={<AddMod />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    act(() => {
+      useAddModStore.setState({
+        step: 3,
+        url: 'https://example.com/mod/test',
+        loader: 'fabric',
+        mcVersion: '1.20.1',
+        modVersions: [
+          {
+            id: '1',
+            version_type: 'release',
+            version_number: '1.0.0',
+            date_published: new Date().toISOString(),
+          },
+        ],
+        selectedModVersion: '1',
+      });
+    });
+
+    await act(async () => {
+      const btns = screen.getAllByRole('button', { name: 'Add' });
+      fireEvent.click(btns[btns.length - 1]);
+    });
+
+    expect(toast.error).toHaveBeenCalledWith('loader mismatch');
+  });
+
+  it('warns when loader mismatches but enforcement disabled', async () => {
+    addMod.mockResolvedValueOnce({ mods: [], warning: 'loader mismatch' });
+    getInstance.mockResolvedValueOnce({
+      id: 1,
+      name: 'Inst',
+      loader: 'fabric',
+      enforce_same_loader: false,
+      created_at: '',
+      mod_count: 0,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/instances/1/add']}>
+        <Routes>
+          <Route path='/instances/:id/add' element={<AddMod />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    act(() => {
+      useAddModStore.setState({
+        step: 3,
+        url: 'https://example.com/mod/test',
+        loader: 'fabric',
+        mcVersion: '1.20.1',
+        modVersions: [
+          {
+            id: '1',
+            version_type: 'release',
+            version_number: '1.0.0',
+            date_published: new Date().toISOString(),
+          },
+        ],
+        selectedModVersion: '1',
+      });
+    });
+
+    await act(async () => {
+      const btns = screen.getAllByRole('button', { name: 'Add' });
+      fireEvent.click(btns[btns.length - 1]);
+    });
+
+    expect(toast.warning).toHaveBeenCalledWith('loader mismatch');
+    expect(toast.success).toHaveBeenCalledWith('Mod added');
+  });
+
+  it('skips loader step when enforcement enabled', async () => {
+    render(
+      <MemoryRouter initialEntries={['/instances/1/add']}>
+        <Routes>
+          <Route path='/instances/:id/add' element={<AddMod />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const urlInput = await screen.findByLabelText('Mod URL');
+    fireEvent.change(urlInput, { target: { value: 'https://example.com/mod/test' } });
+    const nextBtns = screen.getAllByRole('button', { name: 'Next' });
+    fireEvent.click(nextBtns[nextBtns.length - 1]);
+
+    expect(await screen.findByLabelText('Minecraft version')).toBeInTheDocument();
+    expect(useAddModStore.getState().loader).toBe('fabric');
+  });
+
+  it('preselects instance loader when enforcement disabled', async () => {
+    getInstance.mockResolvedValueOnce({
+      id: 1,
+      name: 'Inst',
+      loader: 'quilt',
+      enforce_same_loader: false,
+      created_at: '',
+      mod_count: 0,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/instances/1/add']}>
+        <Routes>
+          <Route path='/instances/:id/add' element={<AddMod />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(useAddModStore.getState().loader).toBe('quilt');
+    });
+  });
+
+  it('refreshes mod list after adding a mod', async () => {
+    const newMod = {
+      id: 1,
+      name: 'Alpha',
+      url: 'https://example.com/a',
+      game_version: '1.20',
+      loader: 'fabric',
+      current_version: '1.0',
+      available_version: '1.0',
+      channel: 'release',
+      instance_id: 1,
+    };
+    addMod.mockResolvedValueOnce({ mods: [newMod] });
+
+    render(
+      <MemoryRouter initialEntries={['/instances/1/add']}>
+        <Routes>
+          <Route path='/instances/:id/add' element={<AddMod />} />
+          <Route path='/instances/:id' element={<Mods />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    act(() => {
+      useAddModStore.setState({
+        step: 3,
+        url: 'https://example.com/mod/test',
+        loader: 'fabric',
+        mcVersion: '1.20.1',
+        modVersions: [
+          {
+            id: '1',
+            version_type: 'release',
+            version_number: '1.0.0',
+            date_published: new Date().toISOString(),
+          },
+        ],
+        selectedModVersion: '1',
+      });
+    });
+
+    const btns = screen.getAllByRole('button', { name: 'Add' });
+    fireEvent.click(btns[btns.length - 1]);
+
+    expect(await screen.findByText('Alpha')).toBeInTheDocument();
+    expect(getMods).not.toHaveBeenCalled();
   });
 });

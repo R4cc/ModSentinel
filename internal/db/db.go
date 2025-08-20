@@ -5,6 +5,16 @@ import (
 	"fmt"
 )
 
+// Instance represents a game instance tracking mods.
+type Instance struct {
+	ID                int    `json:"id"`
+	Name              string `json:"name"`
+	Loader            string `json:"loader"`
+	EnforceSameLoader bool   `json:"enforce_same_loader"`
+	CreatedAt         string `json:"created_at"`
+	ModCount          int    `json:"mod_count"`
+}
+
 // Mod represents a tracked mod entry.
 type Mod struct {
 	ID               int    `json:"id"`
@@ -18,6 +28,7 @@ type Mod struct {
 	AvailableVersion string `json:"available_version"`
 	AvailableChannel string `json:"available_channel"`
 	DownloadURL      string `json:"download_url"`
+	InstanceID       int    `json:"instance_id"`
 }
 
 // ModUpdate represents a recently applied mod update.
@@ -28,9 +39,53 @@ type ModUpdate struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-// Init ensures the mods table exists and has required columns.
+// Init ensures the mods and instances tables exist and have required columns.
 func Init(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS mods (
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS instances (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       name TEXT,
+       loader TEXT,
+       enforce_same_loader INTEGER DEFAULT 1,
+       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+   )`)
+	if err != nil {
+		return err
+	}
+
+	instCols := map[string]string{
+		"name":                "TEXT",
+		"loader":              "TEXT",
+		"enforce_same_loader": "INTEGER DEFAULT 1",
+		"created_at":          "DATETIME DEFAULT CURRENT_TIMESTAMP",
+	}
+
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('instances')`)
+	if err != nil {
+		return err
+	}
+	existingInst := make(map[string]struct{})
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return err
+		}
+		existingInst[n] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	for col, typ := range instCols {
+		if _, ok := existingInst[col]; !ok {
+			stmt := fmt.Sprintf(`ALTER TABLE instances ADD COLUMN %s %s`, col, typ)
+			if _, err := db.Exec(stmt); err != nil {
+				return fmt.Errorf("add column %s: %w", col, err)
+			}
+		}
+	}
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS mods (
        id INTEGER PRIMARY KEY AUTOINCREMENT,
        name TEXT,
        icon_url TEXT,
@@ -41,7 +96,8 @@ func Init(db *sql.DB) error {
        current_version TEXT,
        available_version TEXT,
        available_channel TEXT,
-       download_url TEXT
+       download_url TEXT,
+       instance_id INTEGER
    )`)
 	if err != nil {
 		return err
@@ -57,9 +113,10 @@ func Init(db *sql.DB) error {
 		"available_version": "TEXT",
 		"available_channel": "TEXT",
 		"download_url":      "TEXT",
+		"instance_id":       "INTEGER",
 	}
 
-	rows, err := db.Query(`SELECT name FROM pragma_table_info('mods')`)
+	rows, err = db.Query(`SELECT name FROM pragma_table_info('mods')`)
 	if err != nil {
 		return err
 	}
@@ -95,12 +152,54 @@ func Init(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
+
+	// Migration: create a default instance and assign existing mods.
+	var instCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM instances`).Scan(&instCount); err != nil {
+		return err
+	}
+	if instCount == 0 {
+		rows, err := db.Query(`SELECT DISTINCT loader FROM mods WHERE IFNULL(loader, '') <> ''`)
+		if err != nil {
+			return err
+		}
+		loaders := []string{}
+		for rows.Next() {
+			var l string
+			if err := rows.Scan(&l); err != nil {
+				rows.Close()
+				return err
+			}
+			loaders = append(loaders, l)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		instLoader := ""
+		if len(loaders) == 1 {
+			instLoader = loaders[0]
+		}
+		res, err := db.Exec(`INSERT INTO instances(name, loader, enforce_same_loader) VALUES('Default', ?, 1)`, instLoader)
+		if err != nil {
+			return err
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		if _, err := db.Exec(`UPDATE mods SET instance_id=? WHERE IFNULL(instance_id, 0)=0`, id); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
 // InsertMod inserts a new mod record.
 func InsertMod(db *sql.DB, m *Mod) error {
-	res, err := db.Exec(`INSERT INTO mods(name, icon_url, url, game_version, loader, channel, current_version, available_version, available_channel, download_url) VALUES(?,?,?,?,?,?,?,?,?,?)`, m.Name, m.IconURL, m.URL, m.GameVersion, m.Loader, m.Channel, m.CurrentVersion, m.AvailableVersion, m.AvailableChannel, m.DownloadURL)
+	res, err := db.Exec(`INSERT INTO mods(name, icon_url, url, game_version, loader, channel, current_version, available_version, available_channel, download_url, instance_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, m.Name, m.IconURL, m.URL, m.GameVersion, m.Loader, m.Channel, m.CurrentVersion, m.AvailableVersion, m.AvailableChannel, m.DownloadURL, m.InstanceID)
 	if err != nil {
 		return err
 	}
@@ -113,7 +212,7 @@ func InsertMod(db *sql.DB, m *Mod) error {
 
 // UpdateMod updates an existing mod.
 func UpdateMod(db *sql.DB, m *Mod) error {
-	_, err := db.Exec(`UPDATE mods SET name=?, icon_url=?, url=?, game_version=?, loader=?, channel=?, current_version=?, available_version=?, available_channel=?, download_url=? WHERE id=?`, m.Name, m.IconURL, m.URL, m.GameVersion, m.Loader, m.Channel, m.CurrentVersion, m.AvailableVersion, m.AvailableChannel, m.DownloadURL, m.ID)
+	_, err := db.Exec(`UPDATE mods SET name=?, icon_url=?, url=?, game_version=?, loader=?, channel=?, current_version=?, available_version=?, available_channel=?, download_url=?, instance_id=? WHERE id=?`, m.Name, m.IconURL, m.URL, m.GameVersion, m.Loader, m.Channel, m.CurrentVersion, m.AvailableVersion, m.AvailableChannel, m.DownloadURL, m.InstanceID, m.ID)
 	return err
 }
 
@@ -123,9 +222,78 @@ func DeleteMod(db *sql.DB, id int) error {
 	return err
 }
 
-// ListMods returns all mods sorted by ID descending.
-func ListMods(db *sql.DB) ([]Mod, error) {
-	rows, err := db.Query(`SELECT id, IFNULL(name, ''), IFNULL(icon_url, ''), url, IFNULL(game_version, ''), IFNULL(loader, ''), IFNULL(channel, ''), IFNULL(current_version, ''), IFNULL(available_version, ''), IFNULL(available_channel, ''), IFNULL(download_url, '') FROM mods ORDER BY id DESC`)
+// InsertInstance inserts a new instance record.
+func InsertInstance(db *sql.DB, i *Instance) error {
+	res, err := db.Exec(`INSERT INTO instances(name, loader, enforce_same_loader) VALUES(?,?,?)`, i.Name, i.Loader, i.EnforceSameLoader)
+	if err != nil {
+		return err
+	}
+	id, err := res.LastInsertId()
+	if err == nil {
+		i.ID = int(id)
+	}
+	return nil
+}
+
+// UpdateInstance updates an existing instance.
+func UpdateInstance(db *sql.DB, i *Instance) error {
+	_, err := db.Exec(`UPDATE instances SET name=?, loader=?, enforce_same_loader=? WHERE id=?`, i.Name, i.Loader, i.EnforceSameLoader, i.ID)
+	return err
+}
+
+// DeleteInstance removes an instance. If targetID is provided, mods are moved
+// to the target instance before deletion; otherwise contained mods are removed.
+func DeleteInstance(db *sql.DB, id int, targetID *int) error {
+	if targetID != nil {
+		if _, err := db.Exec(`UPDATE mods SET instance_id=? WHERE instance_id=?`, *targetID, id); err != nil {
+			return err
+		}
+	} else {
+		if _, err := db.Exec(`DELETE FROM mods WHERE instance_id=?`, id); err != nil {
+			return err
+		}
+	}
+	_, err := db.Exec(`DELETE FROM instances WHERE id=?`, id)
+	return err
+}
+
+// GetInstance returns an instance by ID.
+func GetInstance(db *sql.DB, id int) (*Instance, error) {
+	var inst Instance
+	err := db.QueryRow(`SELECT i.id, IFNULL(i.name, ''), IFNULL(i.loader, ''), IFNULL(i.enforce_same_loader, 1), IFNULL(i.created_at, ''),
+               (SELECT COUNT(*) FROM mods m WHERE m.instance_id = i.id)
+               FROM instances i WHERE i.id=?`, id).Scan(&inst.ID, &inst.Name, &inst.Loader, &inst.EnforceSameLoader, &inst.CreatedAt, &inst.ModCount)
+	if err != nil {
+		return nil, err
+	}
+	return &inst, nil
+}
+
+// ListInstances returns all instances sorted by ID descending.
+func ListInstances(db *sql.DB) ([]Instance, error) {
+	rows, err := db.Query(`SELECT i.id, IFNULL(i.name, ''), IFNULL(i.loader, ''), IFNULL(i.enforce_same_loader, 1), IFNULL(i.created_at, ''), COUNT(m.id) 
+               FROM instances i LEFT JOIN mods m ON m.instance_id = i.id GROUP BY i.id ORDER BY i.id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Instance{}
+	for rows.Next() {
+		var inst Instance
+		if err := rows.Scan(&inst.ID, &inst.Name, &inst.Loader, &inst.EnforceSameLoader, &inst.CreatedAt, &inst.ModCount); err != nil {
+			return nil, err
+		}
+		out = append(out, inst)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListMods returns mods for the provided instance sorted by ID descending.
+func ListMods(db *sql.DB, instanceID int) ([]Mod, error) {
+	rows, err := db.Query(`SELECT id, IFNULL(name, ''), IFNULL(icon_url, ''), url, IFNULL(game_version, ''), IFNULL(loader, ''), IFNULL(channel, ''), IFNULL(current_version, ''), IFNULL(available_version, ''), IFNULL(available_channel, ''), IFNULL(download_url, ''), IFNULL(instance_id, 0) FROM mods WHERE instance_id=? ORDER BY id DESC`, instanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +301,28 @@ func ListMods(db *sql.DB) ([]Mod, error) {
 	mods := []Mod{}
 	for rows.Next() {
 		var m Mod
-		if err := rows.Scan(&m.ID, &m.Name, &m.IconURL, &m.URL, &m.GameVersion, &m.Loader, &m.Channel, &m.CurrentVersion, &m.AvailableVersion, &m.AvailableChannel, &m.DownloadURL); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.IconURL, &m.URL, &m.GameVersion, &m.Loader, &m.Channel, &m.CurrentVersion, &m.AvailableVersion, &m.AvailableChannel, &m.DownloadURL, &m.InstanceID); err != nil {
+			return nil, err
+		}
+		mods = append(mods, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return mods, nil
+}
+
+// ListAllMods returns all mods across instances sorted by ID descending.
+func ListAllMods(db *sql.DB) ([]Mod, error) {
+	rows, err := db.Query(`SELECT id, IFNULL(name, ''), IFNULL(icon_url, ''), url, IFNULL(game_version, ''), IFNULL(loader, ''), IFNULL(channel, ''), IFNULL(current_version, ''), IFNULL(available_version, ''), IFNULL(available_channel, ''), IFNULL(download_url, ''), IFNULL(instance_id, 0) FROM mods ORDER BY id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	mods := []Mod{}
+	for rows.Next() {
+		var m Mod
+		if err := rows.Scan(&m.ID, &m.Name, &m.IconURL, &m.URL, &m.GameVersion, &m.Loader, &m.Channel, &m.CurrentVersion, &m.AvailableVersion, &m.AvailableChannel, &m.DownloadURL, &m.InstanceID); err != nil {
 			return nil, err
 		}
 		mods = append(mods, m)
@@ -147,7 +336,7 @@ func ListMods(db *sql.DB) ([]Mod, error) {
 // GetMod returns a mod by ID.
 func GetMod(db *sql.DB, id int) (*Mod, error) {
 	var m Mod
-	err := db.QueryRow(`SELECT id, IFNULL(name, ''), IFNULL(icon_url, ''), url, IFNULL(game_version, ''), IFNULL(loader, ''), IFNULL(channel, ''), IFNULL(current_version, ''), IFNULL(available_version, ''), IFNULL(available_channel, ''), IFNULL(download_url, '') FROM mods WHERE id=?`, id).Scan(&m.ID, &m.Name, &m.IconURL, &m.URL, &m.GameVersion, &m.Loader, &m.Channel, &m.CurrentVersion, &m.AvailableVersion, &m.AvailableChannel, &m.DownloadURL)
+	err := db.QueryRow(`SELECT id, IFNULL(name, ''), IFNULL(icon_url, ''), url, IFNULL(game_version, ''), IFNULL(loader, ''), IFNULL(channel, ''), IFNULL(current_version, ''), IFNULL(available_version, ''), IFNULL(available_channel, ''), IFNULL(download_url, ''), IFNULL(instance_id, 0) FROM mods WHERE id=?`, id).Scan(&m.ID, &m.Name, &m.IconURL, &m.URL, &m.GameVersion, &m.Loader, &m.Channel, &m.CurrentVersion, &m.AvailableVersion, &m.AvailableChannel, &m.DownloadURL, &m.InstanceID)
 	if err != nil {
 		return nil, err
 	}
@@ -192,13 +381,13 @@ func GetDashboardStats(db *sql.DB) (*DashboardStats, error) {
 		return nil, err
 	}
 
-	rows, err := db.Query(`SELECT id, IFNULL(name, ''), IFNULL(icon_url, ''), url, IFNULL(game_version, ''), IFNULL(loader, ''), IFNULL(channel, ''), IFNULL(current_version, ''), IFNULL(available_version, ''), IFNULL(available_channel, ''), IFNULL(download_url, '') FROM mods WHERE IFNULL(current_version, '') <> IFNULL(available_version, '') ORDER BY id DESC LIMIT 5`)
+	rows, err := db.Query(`SELECT id, IFNULL(name, ''), IFNULL(icon_url, ''), url, IFNULL(game_version, ''), IFNULL(loader, ''), IFNULL(channel, ''), IFNULL(current_version, ''), IFNULL(available_version, ''), IFNULL(available_channel, ''), IFNULL(download_url, ''), IFNULL(instance_id, 0) FROM mods WHERE IFNULL(current_version, '') <> IFNULL(available_version, '') ORDER BY id DESC LIMIT 5`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var m Mod
-		if err := rows.Scan(&m.ID, &m.Name, &m.IconURL, &m.URL, &m.GameVersion, &m.Loader, &m.Channel, &m.CurrentVersion, &m.AvailableVersion, &m.AvailableChannel, &m.DownloadURL); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.IconURL, &m.URL, &m.GameVersion, &m.Loader, &m.Channel, &m.CurrentVersion, &m.AvailableVersion, &m.AvailableChannel, &m.DownloadURL, &m.InstanceID); err != nil {
 			rows.Close()
 			return nil, err
 		}

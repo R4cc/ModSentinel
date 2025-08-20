@@ -31,7 +31,12 @@ import (
 
 var validate = validator.New()
 
-var modClient = mr.NewClient()
+type modrinthClient interface {
+	Project(ctx context.Context, slug string) (*mr.Project, error)
+	Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error)
+}
+
+var modClient modrinthClient = mr.NewClient()
 
 var lastSync atomic.Int64
 var latencyP50 atomic.Int64
@@ -100,6 +105,11 @@ func New(db *sql.DB, dist embed.FS) http.Handler {
 	r.Use(recordLatency)
 
 	r.Get("/favicon.ico", serveFavicon(dist))
+	r.Get("/api/instances", listInstancesHandler(db))
+	r.Get("/api/instances/{id}", getInstanceHandler(db))
+	r.Post("/api/instances", createInstanceHandler(db))
+	r.Put("/api/instances/{id}", updateInstanceHandler(db))
+	r.Delete("/api/instances/{id}", deleteInstanceHandler(db))
 	r.Get("/api/mods", listModsHandler(db))
 	r.Post("/api/mods/metadata", metadataHandler())
 	r.Post("/api/mods", createModHandler(db))
@@ -129,14 +139,151 @@ func serveFavicon(dist embed.FS) http.HandlerFunc {
 	}
 }
 
-func listModsHandler(db *sql.DB) http.HandlerFunc {
+func listInstancesHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		mods, err := dbpkg.ListMods(db)
+		instances, err := dbpkg.ListInstances(db)
 		if err != nil {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "max-age=60")
+		json.NewEncoder(w).Encode(instances)
+	}
+}
+
+func getInstanceHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid id"))
+			return
+		}
+		inst, err := dbpkg.GetInstance(db, id)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "max-age=60")
+		json.NewEncoder(w).Encode(inst)
+	}
+}
+
+func createInstanceHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Name              string `json:"name"`
+			Loader            string `json:"loader"`
+			EnforceSameLoader *bool  `json:"enforce_same_loader"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid json"))
+			return
+		}
+		inst := dbpkg.Instance{ID: 0, Name: req.Name, Loader: req.Loader}
+		if req.EnforceSameLoader == nil {
+			inst.EnforceSameLoader = true
+		} else {
+			inst.EnforceSameLoader = *req.EnforceSameLoader
+		}
+		if err := validatePayload(&inst); err != nil {
+			httpx.Write(w, r, err)
+			return
+		}
+		if err := dbpkg.InsertInstance(db, &inst); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		json.NewEncoder(w).Encode(inst)
+	}
+}
+
+func updateInstanceHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid id"))
+			return
+		}
+		inst, err := dbpkg.GetInstance(db, id)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		var req struct {
+			Name              string `json:"name"`
+			Loader            string `json:"loader"`
+			EnforceSameLoader bool   `json:"enforce_same_loader"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid json"))
+			return
+		}
+		inst.Name = req.Name
+		inst.Loader = req.Loader
+		inst.EnforceSameLoader = req.EnforceSameLoader
+		if err := validatePayload(inst); err != nil {
+			httpx.Write(w, r, err)
+			return
+		}
+		if err := dbpkg.UpdateInstance(db, inst); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		json.NewEncoder(w).Encode(inst)
+	}
+}
+
+func deleteInstanceHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid id"))
+			return
+		}
+
+		var targetID *int
+		if tStr := r.URL.Query().Get("target_instance_id"); tStr != "" {
+			t, err := strconv.Atoi(tStr)
+			if err != nil {
+				httpx.Write(w, r, httpx.BadRequest("invalid target_instance_id"))
+				return
+			}
+			targetID = &t
+		}
+
+		if err := dbpkg.DeleteInstance(db, id, targetID); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func listModsHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := r.URL.Query().Get("instance_id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid instance_id"))
+			return
+		}
+		mods, err := dbpkg.ListMods(db, id)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "max-age=60")
 		json.NewEncoder(w).Encode(mods)
 	}
 }
@@ -173,6 +320,19 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
 			httpx.Write(w, r, err)
 			return
 		}
+		inst, err := dbpkg.GetInstance(db, m.InstanceID)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		warning := ""
+		if !strings.EqualFold(inst.Loader, m.Loader) {
+			if inst.EnforceSameLoader {
+				httpx.Write(w, r, httpx.BadRequest("loader mismatch"))
+				return
+			}
+			warning = "loader mismatch"
+		}
 		slug, err := parseModrinthSlug(m.URL)
 		if err != nil {
 			httpx.Write(w, r, httpx.BadRequest(err.Error()))
@@ -190,13 +350,17 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
-		mods, err := dbpkg.ListMods(db)
+		mods, err := dbpkg.ListMods(db, m.InstanceID)
 		if err != nil {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(mods)
+		w.Header().Set("Cache-Control", "no-store")
+		json.NewEncoder(w).Encode(struct {
+			Mods    []dbpkg.Mod `json:"mods"`
+			Warning string      `json:"warning,omitempty"`
+		}{mods, warning})
 	}
 }
 
@@ -235,12 +399,13 @@ func updateModHandler(db *sql.DB) http.HandlerFunc {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
-		mods, err := dbpkg.ListMods(db)
+		mods, err := dbpkg.ListMods(db, m.InstanceID)
 		if err != nil {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
 		json.NewEncoder(w).Encode(mods)
 	}
 }
@@ -253,16 +418,23 @@ func deleteModHandler(db *sql.DB) http.HandlerFunc {
 			http.Error(w, "invalid id", http.StatusBadRequest)
 			return
 		}
+		instStr := r.URL.Query().Get("instance_id")
+		instID, err := strconv.Atoi(instStr)
+		if err != nil {
+			http.Error(w, "invalid instance_id", http.StatusBadRequest)
+			return
+		}
 		if err := dbpkg.DeleteMod(db, id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		mods, err := dbpkg.ListMods(db)
+		mods, err := dbpkg.ListMods(db, instID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
 		json.NewEncoder(w).Encode(mods)
 	}
 }
@@ -380,7 +552,7 @@ func serveStatic(static fs.FS) http.HandlerFunc {
 
 // CheckUpdates refreshes available versions for stored mods.
 func CheckUpdates(ctx context.Context, db *sql.DB) {
-	mods, err := dbpkg.ListMods(db)
+	mods, err := dbpkg.ListAllMods(db)
 	if err != nil {
 		log.Error().Err(err).Msg("list mods")
 		return

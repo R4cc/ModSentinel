@@ -17,6 +17,10 @@ func openTestDB(t *testing.T) *sql.DB {
 	if err := initDB(db); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
+	inst := &Instance{Name: "Test", Loader: "fabric", EnforceSameLoader: true}
+	if err := insertInstance(db, inst); err != nil {
+		t.Fatalf("insert instance: %v", err)
+	}
 	return db
 }
 
@@ -88,11 +92,11 @@ func TestDatabaseOperations(t *testing.T) {
 		{
 			name: "insert",
 			run: func(db *sql.DB) error {
-				m := &Mod{Name: "A", URL: "u"}
+				m := &Mod{Name: "A", URL: "u", InstanceID: 1}
 				if err := insertMod(db, m); err != nil {
 					return err
 				}
-				mods, err := listMods(db)
+				mods, err := listMods(db, 1)
 				if err != nil {
 					return err
 				}
@@ -113,7 +117,7 @@ func TestDatabaseOperations(t *testing.T) {
 		{
 			name: "update",
 			run: func(db *sql.DB) error {
-				m := &Mod{Name: "Old", URL: "u"}
+				m := &Mod{Name: "Old", URL: "u", InstanceID: 1}
 				if err := insertMod(db, m); err != nil {
 					return err
 				}
@@ -121,7 +125,7 @@ func TestDatabaseOperations(t *testing.T) {
 				if err := updateMod(db, m); err != nil {
 					return err
 				}
-				mods, err := listMods(db)
+				mods, err := listMods(db, 1)
 				if err != nil {
 					return err
 				}
@@ -143,14 +147,14 @@ func TestDatabaseOperations(t *testing.T) {
 		{
 			name: "delete",
 			run: func(db *sql.DB) error {
-				m := &Mod{Name: "Del", URL: "u"}
+				m := &Mod{Name: "Del", URL: "u", InstanceID: 1}
 				if err := insertMod(db, m); err != nil {
 					return err
 				}
 				if err := deleteMod(db, m.ID); err != nil {
 					return err
 				}
-				mods, err := listMods(db)
+				mods, err := listMods(db, 1)
 				if err != nil {
 					return err
 				}
@@ -171,7 +175,7 @@ func TestDatabaseOperations(t *testing.T) {
 		{
 			name: "list empty",
 			run: func(db *sql.DB) error {
-				mods, err := listMods(db)
+				mods, err := listMods(db, 1)
 				if err != nil {
 					return err
 				}
@@ -185,7 +189,7 @@ func TestDatabaseOperations(t *testing.T) {
 			name: "list error",
 			run: func(db *sql.DB) error {
 				db.Close()
-				_, err := listMods(db)
+				_, err := listMods(db, 1)
 				return err
 			},
 			wantErr: true,

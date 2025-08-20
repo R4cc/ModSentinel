@@ -7,6 +7,15 @@ export interface ModVersion {
   loaders: string[];
 }
 
+export interface Instance {
+  id: number;
+  name: string;
+  loader: string;
+  enforce_same_loader: boolean;
+  created_at: string;
+  mod_count: number;
+}
+
 export interface Mod {
   id: number;
   name: string;
@@ -19,6 +28,7 @@ export interface Mod {
   available_version: string;
   available_channel: string;
   download_url: string;
+  instance_id: number;
 }
 
 export interface ModMetadata {
@@ -55,10 +65,35 @@ export async function getModMetadata(url: string): Promise<ModMetadata> {
   return res.json();
 }
 
-export async function getMods(): Promise<Mod[]> {
-  const res = await fetch("/api/mods");
+export async function getMods(instanceId: number): Promise<Mod[]> {
+  const res = await fetch(`/api/mods?instance_id=${instanceId}`, {
+    cache: "no-store",
+  });
   if (!res.ok) throw new Error("Failed to fetch mods");
   return res.json();
+}
+
+export async function getInstances(): Promise<Instance[]> {
+  const res = await fetch("/api/instances", { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch instances");
+  return res.json();
+}
+
+export async function getInstance(id: number): Promise<Instance> {
+  const res = await fetch(`/api/instances/${id}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to fetch instance");
+  return res.json();
+}
+
+export async function deleteInstance(
+  id: number,
+  targetInstanceId?: number
+): Promise<void> {
+  const url = targetInstanceId
+    ? `/api/instances/${id}?target_instance_id=${targetInstanceId}`
+    : `/api/instances/${id}`;
+  const res = await fetch(url, { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to delete instance");
 }
 
 export interface NewMod {
@@ -66,16 +101,58 @@ export interface NewMod {
   game_version: string;
   loader: string;
   channel: string;
+  instance_id: number;
 }
 
-export async function addMod(payload: NewMod): Promise<Mod[]> {
+export interface NewInstance {
+  name: string;
+  loader: string;
+  enforce_same_loader: boolean;
+}
+
+export interface AddModResponse {
+  mods: Mod[];
+  warning?: string;
+}
+
+export async function addMod(payload: NewMod): Promise<AddModResponse> {
   const res = await fetch("/api/mods", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (res.status === 401) throw new Error("token required");
-  if (!res.ok) throw new Error("Failed to add mod");
+  if (!res.ok) {
+    try {
+      const err = await res.json();
+      throw new Error(err.message || "Failed to add mod");
+    } catch {
+      throw new Error("Failed to add mod");
+    }
+  }
+  return res.json();
+}
+
+export async function addInstance(payload: NewInstance): Promise<Instance> {
+  const res = await fetch("/api/instances", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Failed to add instance");
+  return res.json();
+}
+
+export async function updateInstance(
+  id: number,
+  payload: NewInstance,
+): Promise<Instance> {
+  const res = await fetch(`/api/instances/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Failed to update instance");
   return res.json();
 }
 
@@ -91,22 +168,28 @@ export async function refreshMod(id: number, payload: NewMod): Promise<Mod[]> {
 }
 
 export async function updateModVersion(id: number): Promise<Mod> {
-  const res = await fetch(`/api/mods/${id}/update`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to update mod');
+  const res = await fetch(`/api/mods/${id}/update`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to update mod");
   return res.json();
 }
 
-export async function deleteMod(id: number): Promise<Mod[]> {
-  const res = await fetch(`/api/mods/${id}`, { method: "DELETE" });
+export async function deleteMod(
+  id: number,
+  instanceId: number,
+): Promise<Mod[]> {
+  const res = await fetch(`/api/mods/${id}?instance_id=${instanceId}`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
   if (!res.ok) throw new Error("Failed to delete mod");
   return res.json();
 }
 
 export async function getDashboard(): Promise<DashboardData> {
-  const res = await fetch('/api/dashboard');
-  if (res.status === 401) throw new Error('token required');
-  if (res.status === 429) throw new Error('rate limited');
-  if (!res.ok) throw new Error('Failed to fetch dashboard');
+  const res = await fetch("/api/dashboard");
+  if (res.status === 401) throw new Error("token required");
+  if (res.status === 429) throw new Error("rate limited");
+  if (!res.ok) throw new Error("Failed to fetch dashboard");
   return res.json();
 }
 
