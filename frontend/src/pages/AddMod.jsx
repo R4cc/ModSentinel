@@ -10,7 +10,8 @@ import { Badge } from '@/components/ui/Badge.jsx';
 import { Skeleton } from '@/components/ui/Skeleton.jsx';
 import { cn } from '@/lib/utils.js';
 import { addMod, getToken, getInstance } from '@/lib/api.ts';
-import { useNavigate, useParams, useLocation } from 'react-router-dom';
+import { useNavigate, useParams, useLocation, Link } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
 import { useAddModStore, initialState } from '@/stores/addModStore.js';
 import { parseJarFilename } from '@/lib/jar.ts';
 
@@ -183,6 +184,13 @@ export default function AddMod() {
   if (!hasToken) {
     return (
       <div className="p-md">
+        <Link
+          to="/instances"
+          className="mb-md inline-flex items-center gap-xs text-sm text-muted-foreground hover:underline"
+        >
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+          Back to Instances
+        </Link>
         <Card className="mx-auto w-full max-w-md">
           <CardHeader>
             <CardTitle>Add Mod</CardTitle>
@@ -199,6 +207,13 @@ export default function AddMod() {
 
   return (
     <div className="p-md" key={nonce}>
+      <Link
+        to="/instances"
+        className="mb-md inline-flex items-center gap-xs text-sm text-muted-foreground hover:underline"
+      >
+        <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+        Back to Instances
+      </Link>
       <Card className="mx-auto w-full max-w-md">
         <CardHeader>
           <CardTitle>Add Mod</CardTitle>

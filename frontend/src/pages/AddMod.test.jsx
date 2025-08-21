@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { axe } from 'vitest-axe';
 
@@ -317,6 +317,26 @@ describe('AddMod page', () => {
 
     expect(await screen.findByText('Alpha')).toBeInTheDocument();
     expect(getMods).not.toHaveBeenCalled();
+  });
+
+  it('navigates back to instances', async () => {
+    const router = createMemoryRouter(
+      [
+        { path: '/instances/:id/add', element: <AddMod /> },
+        { path: '/instances', element: <div>Instances</div> },
+      ],
+      { initialEntries: ['/instances/1/add'] },
+    );
+
+    render(<RouterProvider router={router} />);
+
+    const links = await screen.findAllByRole('link', {
+      name: /Back to Instances/,
+    });
+    fireEvent.click(links[links.length - 1]);
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe('/instances'),
+    );
   });
 
   it('has no critical axe violations', async () => {

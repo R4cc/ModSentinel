@@ -89,9 +89,7 @@ describe("Instance card navigation", () => {
     expect(router.state.location.pathname).toBe("/instances/1");
     expect(await screen.findByText("Alpha")).toBeInTheDocument();
 
-    await act(async () => {
-      await router.navigate(-1);
-    });
+    fireEvent.click(screen.getByRole("link", { name: "Back to Instances" }));
     expect(router.state.location.pathname).toBe("/instances");
     expect(await screen.findByRole("link", { name: "One" })).toBeInTheDocument();
   });

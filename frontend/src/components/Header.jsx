@@ -1,5 +1,4 @@
 import { Menu, Shield } from 'lucide-react';
-import InstanceSwitcher from './InstanceSwitcher.jsx';
 
 export default function Header({ onMenuClick }) {
   return (
@@ -15,7 +14,6 @@ export default function Header({ onMenuClick }) {
         <Shield className="h-6 w-6" />
         <h1 className="text-xl font-bold">ModSentinel</h1>
       </div>
-      <InstanceSwitcher />
     </header>
   );
 }
