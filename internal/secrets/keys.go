@@ -15,6 +15,7 @@ import (
 
 	kms "cloud.google.com/go/kms/apiv1"
 	kmspb "cloud.google.com/go/kms/apiv1/kmspb"
+	"github.com/rs/zerolog/log"
 )
 
 // Manager handles encryption and decryption of secret data.
@@ -40,7 +41,12 @@ func Load(ctx context.Context) (*Manager, error) {
 func loadFromEnv() (*Manager, error) {
 	s := os.Getenv("SECRET_KEYSET")
 	if s == "" {
-		return nil, errors.New("SECRET_KEYSET not set")
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return nil, fmt.Errorf("generate key: %w", err)
+		}
+		log.Warn().Msg("SECRET_KEYSET not set; using ephemeral key")
+		return &Manager{keys: map[string][]byte{"dev": key}, primary: "dev"}, nil
 	}
 	return parseKeyset([]byte(s))
 }

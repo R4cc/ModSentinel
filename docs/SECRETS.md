@@ -5,7 +5,7 @@ This document covers where secrets are stored, how to rotate them, required scop
 
 ## Where secrets live
 - Secrets are stored in the `secrets` table of `mods.db`.
-- Values are encrypted with AES-256-GCM using a keyset loaded from Cloud KMS or the `SECRET_KEYSET` environment variable.
+- Values are encrypted with AES-256-GCM using a keyset loaded from Cloud KMS or the `SECRET_KEYSET` environment variable. If `SECRET_KEYSET` is absent a temporary key is generated and secrets are lost on restart.
 - Only the last four characters and timestamp metadata are queryable through the API; plaintext never leaves the server.
 
 ## Rotation & revocation

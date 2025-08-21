@@ -36,7 +36,8 @@ See [docs/PUFFERPANEL.md](docs/PUFFERPANEL.md) for details.
 
 Modrinth tokens and PufferPanel credentials are never stored in the browser.
 They live encrypted in the `secrets` table of `mods.db`, keyed by Cloud KMS or
-the `SECRET_KEYSET` environment variable. Use the Settings UI or
+the `SECRET_KEYSET` environment variable. If the variable is absent an
+ephemeral key is generated and secrets are lost on restart. Use the Settings UI or
 `POST /settings/secret/:type` to rotate or **Revoke & Clear** a secret. Modrinth
 tokens should be read-only with `project.read` and `version.read` scopes, while
 PufferPanel requires `server.view` and `server.files.view`.
