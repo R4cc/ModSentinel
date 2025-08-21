@@ -1,6 +1,18 @@
 import { useEffect, useState } from "react";
-import { useSearchParams, useParams, useLocation, Link } from "react-router-dom";
-import { Package, RefreshCw, Trash2, Plus, ExternalLink, ArrowLeft } from "lucide-react";
+import {
+  useSearchParams,
+  useParams,
+  useLocation,
+  Link,
+} from "react-router-dom";
+import {
+  Package,
+  RefreshCw,
+  Trash2,
+  Plus,
+  ExternalLink,
+  ArrowLeft,
+} from "lucide-react";
 import { Input } from "@/components/ui/Input.jsx";
 import { Select } from "@/components/ui/Select.jsx";
 import { Button } from "@/components/ui/Button.jsx";
@@ -20,10 +32,10 @@ import {
   getMods,
   refreshMod,
   deleteMod,
-  getToken,
   getInstance,
   updateInstance,
   resyncInstance,
+  getSecretStatus,
 } from "@/lib/api.ts";
 import { cn } from "@/lib/utils.js";
 import { toast } from "sonner";
@@ -55,8 +67,8 @@ export default function Mods() {
   const [resyncing, setResyncing] = useState(false);
 
   useEffect(() => {
-    getToken()
-      .then((t) => setHasToken(!!t))
+    getSecretStatus("modrinth")
+      .then((s) => setHasToken(s.exists))
       .catch(() => setHasToken(false));
   }, []);
 
@@ -101,7 +113,9 @@ export default function Mods() {
       const data = await getInstance(instanceId);
       setInstance(data);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to load instance");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to load instance",
+      );
     }
   }
 
@@ -109,9 +123,11 @@ export default function Mods() {
     if (!instance) return;
     setResyncing(true);
     try {
-      const { instance: inst, unmatched: um, mods: m } = await resyncInstance(
-        instance.id,
-      );
+      const {
+        instance: inst,
+        unmatched: um,
+        mods: m,
+      } = await resyncInstance(instance.id);
       setInstance(inst);
       setUnmatched(um);
       setMods(m);
@@ -199,7 +215,9 @@ export default function Mods() {
       toast.success("Instance updated");
       setEditingName(false);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to save instance");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to save instance",
+      );
     }
   }
 
@@ -213,7 +231,9 @@ export default function Mods() {
       toast.success("Instance updated");
       setSettingsOpen(false);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to save instance");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to save instance",
+      );
     }
   }
 
@@ -227,10 +247,10 @@ export default function Mods() {
       if (!url) return null;
       try {
         const u = new URL(url);
-        if (!u.hostname.endsWith('modrinth.com')) return null;
-        const parts = u.pathname.split('/').filter(Boolean);
+        if (!u.hostname.endsWith("modrinth.com")) return null;
+        const parts = u.pathname.split("/").filter(Boolean);
         const idx = parts.findIndex((p) =>
-          ['mod', 'plugin', 'datapack', 'resourcepack'].includes(p),
+          ["mod", "plugin", "datapack", "resourcepack"].includes(p),
         );
         if (idx !== -1 && idx + 1 < parts.length) return parts[idx + 1];
       } catch {
@@ -242,7 +262,7 @@ export default function Mods() {
     if (id) return `https://modrinth.com/mod/${id}`;
     const slug = extractSlug(m.url);
     if (slug) return `https://modrinth.com/mod/${slug}`;
-    if (m.url?.includes('modrinth.com')) return m.url;
+    if (m.url?.includes("modrinth.com")) return m.url;
     return null;
   }
 
@@ -341,8 +361,7 @@ export default function Mods() {
       </div>
       {instance?.last_sync_at && (
         <p className="text-sm text-muted-foreground">
-          Last sync: {new Date(instance.last_sync_at).toLocaleString()} (added
-          {" "}
+          Last sync: {new Date(instance.last_sync_at).toLocaleString()} (added{" "}
           {instance.last_sync_added}, changed {instance.last_sync_updated},
           failed {instance.last_sync_failed})
         </p>
@@ -359,7 +378,11 @@ export default function Mods() {
                 <span className="truncate" title={f}>
                   {f}
                 </span>
-                <Button size="sm" variant="outline" onClick={() => openAddMod(f)}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => openAddMod(f)}
+                >
                   Resolve
                 </Button>
               </li>
@@ -476,58 +499,58 @@ export default function Mods() {
                 const projectUrl = getProjectUrl(m);
                 const isModrinth = !!projectUrl;
                 return (
-                <TableRow key={m.id}>
-                  <TableCell className="flex items-center gap-sm font-medium">
-                    {m.icon_url && (
-                      <img
-                        src={m.icon_url}
-                        alt=""
-                        className="h-6 w-6 rounded-sm"
-                      />
-                    )}
-                    {m.name || m.url}
-                  </TableCell>
-                  <TableCell>{m.game_version}</TableCell>
-                  <TableCell>{m.loader}</TableCell>
-                  <TableCell>{m.current_version}</TableCell>
-                  <TableCell>{m.available_version}</TableCell>
-                  <TableCell className="flex gap-xs">
-                    <Button
-                      variant="outline"
-                      onClick={() => handleCheck(m)}
-                      aria-label="Check for updates"
-                      className="h-8 px-sm"
-                      disabled={!hasToken}
-                    >
-                      <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                    </Button>
-                    <Button
-                      variant="outline"
-                      as={projectUrl ? "a" : "button"}
-                      href={projectUrl || undefined}
-                      target={projectUrl ? "_blank" : undefined}
-                      rel={projectUrl ? "noopener" : undefined}
-                      aria-label="Open project page"
-                      className="h-8 px-sm"
-                      disabled={!isModrinth}
-                      title={
-                        isModrinth
-                          ? "Open project page"
-                          : "Project page available only for Modrinth mods"
-                      }
-                    >
-                      <ExternalLink className="h-4 w-4" aria-hidden="true" />
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() => handleDelete(m.id)}
-                      aria-label="Delete mod"
-                      className="h-8 px-sm"
-                    >
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </Button>
-                  </TableCell>
-                </TableRow>
+                  <TableRow key={m.id}>
+                    <TableCell className="flex items-center gap-sm font-medium">
+                      {m.icon_url && (
+                        <img
+                          src={m.icon_url}
+                          alt=""
+                          className="h-6 w-6 rounded-sm"
+                        />
+                      )}
+                      {m.name || m.url}
+                    </TableCell>
+                    <TableCell>{m.game_version}</TableCell>
+                    <TableCell>{m.loader}</TableCell>
+                    <TableCell>{m.current_version}</TableCell>
+                    <TableCell>{m.available_version}</TableCell>
+                    <TableCell className="flex gap-xs">
+                      <Button
+                        variant="outline"
+                        onClick={() => handleCheck(m)}
+                        aria-label="Check for updates"
+                        className="h-8 px-sm"
+                        disabled={!hasToken}
+                      >
+                        <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        as={projectUrl ? "a" : "button"}
+                        href={projectUrl || undefined}
+                        target={projectUrl ? "_blank" : undefined}
+                        rel={projectUrl ? "noopener" : undefined}
+                        aria-label="Open project page"
+                        className="h-8 px-sm"
+                        disabled={!isModrinth}
+                        title={
+                          isModrinth
+                            ? "Open project page"
+                            : "Project page available only for Modrinth mods"
+                        }
+                      >
+                        <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => handleDelete(m.id)}
+                        aria-label="Delete mod"
+                        className="h-8 px-sm"
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
                 );
               })}
             </TableBody>

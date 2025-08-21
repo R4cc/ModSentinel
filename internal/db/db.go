@@ -44,6 +44,17 @@ type ModUpdate struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+// Secret stores encrypted credential data.
+type Secret struct {
+	ID        int    `json:"id"`
+	Type      string `json:"type"`
+	ValueEnc  []byte `json:"value_enc"`
+	KeyID     string `json:"key_id"`
+	IV        []byte `json:"iv"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
 // Init ensures the mods and instances tables exist and have required columns.
 func Init(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS instances (
@@ -160,6 +171,58 @@ func Init(db *sql.DB) error {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`)
 	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS secrets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT,
+        value_enc BLOB,
+        key_id TEXT,
+        iv BLOB,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`)
+	if err != nil {
+		return err
+	}
+
+	secretCols := map[string]string{
+		"type":       "TEXT",
+		"value_enc":  "BLOB",
+		"key_id":     "TEXT",
+		"iv":         "BLOB",
+		"created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+		"updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+	}
+
+	rows2, err := db.Query(`SELECT name FROM pragma_table_info('secrets')`)
+	if err != nil {
+		return err
+	}
+	existingSecret := make(map[string]struct{})
+	for rows2.Next() {
+		var n string
+		if err := rows2.Scan(&n); err != nil {
+			rows2.Close()
+			return err
+		}
+		existingSecret[n] = struct{}{}
+	}
+	if err := rows2.Err(); err != nil {
+		rows2.Close()
+		return err
+	}
+	rows2.Close()
+	for col, typ := range secretCols {
+		if _, ok := existingSecret[col]; !ok {
+			stmt := fmt.Sprintf(`ALTER TABLE secrets ADD COLUMN %s %s`, col, typ)
+			if _, err := db.Exec(stmt); err != nil {
+				return fmt.Errorf("add column %s: %w", col, err)
+			}
+		}
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_secrets_type ON secrets(type)`); err != nil {
 		return err
 	}
 

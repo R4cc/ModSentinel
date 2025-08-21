@@ -1,49 +1,61 @@
-import { render, screen } from '@testing-library/react';
-import '@testing-library/jest-dom/vitest';
-import { describe, it, vi, beforeEach } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { render, screen } from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
+import { describe, it, vi, beforeEach } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 
-vi.mock('@/lib/api.ts', () => ({
-  getToken: vi.fn(),
+vi.mock("@/lib/api.ts", () => ({
+  getSecretStatus: vi.fn(),
 }));
 
-import AlertsCard from './AlertsCard.jsx';
+import AlertsCard from "./AlertsCard.jsx";
 
 beforeEach(() => {
   sessionStorage.clear();
 });
 
-describe('AlertsCard', () => {
-  it('shows no alerts when token exists and no error', async () => {
-    const { getToken } = await import('@/lib/api.ts');
-    getToken.mockResolvedValue('token');
+describe("AlertsCard", () => {
+  it("shows no alerts when token exists and no error", async () => {
+    const { getSecretStatus } = await import("@/lib/api.ts");
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
     render(
       <MemoryRouter>
-        <AlertsCard error='' onRetry={() => {}} />
-      </MemoryRouter>
+        <AlertsCard error="" onRetry={() => {}} />
+      </MemoryRouter>,
     );
-    await screen.findByText('No alerts.');
+    await screen.findByText("No alerts.");
   });
 
-  it('shows token alert when token missing', async () => {
-    const { getToken } = await import('@/lib/api.ts');
-    getToken.mockResolvedValue(null);
+  it("shows token alert when token missing", async () => {
+    const { getSecretStatus } = await import("@/lib/api.ts");
+    getSecretStatus.mockResolvedValue({
+      exists: false,
+      last4: "",
+      updated_at: "",
+    });
     render(
       <MemoryRouter>
-        <AlertsCard error='' onRetry={() => {}} />
-      </MemoryRouter>
+        <AlertsCard error="" onRetry={() => {}} />
+      </MemoryRouter>,
     );
-    await screen.findByText('Modrinth token required.');
+    await screen.findByText("Modrinth token required.");
   });
 
-  it('shows rate limit alert', async () => {
-    const { getToken } = await import('@/lib/api.ts');
-    getToken.mockResolvedValue('token');
+  it("shows rate limit alert", async () => {
+    const { getSecretStatus } = await import("@/lib/api.ts");
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
     render(
       <MemoryRouter>
-        <AlertsCard error='rate limited' onRetry={() => {}} />
-      </MemoryRouter>
+        <AlertsCard error="rate limited" onRetry={() => {}} />
+      </MemoryRouter>,
     );
-    await screen.findByText('Rate limit hit.');
+    await screen.findByText("Rate limit hit.");
   });
 });

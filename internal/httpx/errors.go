@@ -46,6 +46,16 @@ func Unauthorized(msg string) *HTTPError {
 	return &HTTPError{status: http.StatusUnauthorized, code: "token_required", message: msg}
 }
 
+// Forbidden returns a 403 HTTPError.
+func Forbidden(msg string) *HTTPError {
+	return &HTTPError{status: http.StatusForbidden, code: "forbidden", message: msg}
+}
+
+// TooManyRequests returns a 429 HTTPError.
+func TooManyRequests(msg string) *HTTPError {
+	return &HTTPError{status: http.StatusTooManyRequests, code: "rate_limited", message: msg}
+}
+
 // Unavailable returns a 503 HTTPError.
 func Unavailable(msg string) *HTTPError {
 	return &HTTPError{status: http.StatusServiceUnavailable, code: "service_unavailable", message: msg}

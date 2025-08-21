@@ -1,60 +1,48 @@
 package token
 
 import (
-	"os"
-	"path/filepath"
+	"context"
 	"strings"
+
+	"modsentinel/internal/secrets"
 )
 
-func tokenPath() (string, error) {
-	if p := os.Getenv("MODSENTINEL_TOKEN_PATH"); p != "" {
-		return p, nil
-	}
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "modsentinel", "modrinth_token"), nil
-}
+var svc *secrets.Service
 
-// SetToken writes the Modrinth API token to persistent storage.
+// Init sets the secrets service to use for token operations.
+func Init(s *secrets.Service) { svc = s }
+
+// SetToken encrypts and stores the Modrinth API token.
 func SetToken(token string) error {
-	p, err := tokenPath()
-	if err != nil {
-		return err
+	if svc == nil {
+		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(p, []byte(token), 0o600)
+	return svc.Set(context.Background(), "modrinth", []byte(token))
 }
 
-// GetToken retrieves the Modrinth API token from persistent storage.
+// GetToken retrieves the decrypted Modrinth API token for internal use.
 func GetToken() (string, error) {
-	p, err := tokenPath()
-	if err != nil {
-		return "", err
-	}
-	b, err := os.ReadFile(p)
-	if os.IsNotExist(err) {
+	if svc == nil {
 		return "", nil
 	}
-	if err != nil {
-		return "", err
+	b, err := svc.DecryptForUse(context.Background(), "modrinth")
+	return string(b), err
+}
+
+// Exists reports whether a token is stored.
+func Exists() (bool, error) {
+	if svc == nil {
+		return false, nil
 	}
-	return strings.TrimSpace(string(b)), nil
+	return svc.Exists(context.Background(), "modrinth")
 }
 
 // ClearToken removes the stored Modrinth API token.
 func ClearToken() error {
-	p, err := tokenPath()
-	if err != nil {
-		return err
+	if svc == nil {
+		return nil
 	}
-	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	return svc.Delete(context.Background(), "modrinth")
 }
 
 // TokenForLog returns the current token and a redacted version safe for logging.

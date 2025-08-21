@@ -12,35 +12,45 @@ import { Input } from "@/components/ui/Input.jsx";
 import { Button } from "@/components/ui/Button.jsx";
 import { Checkbox } from "@/components/ui/Checkbox.jsx";
 import {
-  getToken,
-  saveToken,
-  clearToken,
+  getSecretStatus,
+  saveSecret,
+  clearSecret,
   getPufferCreds,
-  savePufferCreds,
-  clearPufferCreds,
   testPufferCreds,
 } from "@/lib/api.ts";
 
 export default function Settings() {
   const { theme, setTheme, interval, setInterval } = usePreferences();
   const [token, setToken] = useState("");
+  const [tokenLast4, setTokenLast4] = useState("");
+  const [hasToken, setHasToken] = useState(false);
   const [show, setShow] = useState(false);
   const [baseUrl, setBaseUrl] = useState("");
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [showSecret, setShowSecret] = useState(false);
   const [deepScan, setDeepScan] = useState(false);
+  const [pufferLast4, setPufferLast4] = useState("");
+  const [hasPuffer, setHasPuffer] = useState(false);
 
   useEffect(() => {
-    getToken()
-      .then(setToken)
+    getSecretStatus("modrinth")
+      .then((s) => {
+        setHasToken(s.exists);
+        setTokenLast4(s.last4);
+      })
       .catch(() => {});
     getPufferCreds()
       .then((c) => {
         setBaseUrl(c.base_url || "");
         setClientId(c.client_id || "");
-        setClientSecret(c.client_secret || "");
         setDeepScan(!!c.deep_scan);
+      })
+      .catch(() => {});
+    getSecretStatus("pufferpanel")
+      .then((s) => {
+        setHasPuffer(s.exists);
+        setPufferLast4(s.last4);
       })
       .catch(() => {});
   }, []);
@@ -51,7 +61,12 @@ export default function Settings() {
       return;
     }
     try {
-      await saveToken(token);
+      await saveSecret("modrinth", { token });
+      setToken("");
+      setShow(false);
+      const status = await getSecretStatus("modrinth");
+      setHasToken(status.exists);
+      setTokenLast4(status.last4);
       toast.success("Token saved");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save token");
@@ -60,8 +75,9 @@ export default function Settings() {
 
   async function handleClear() {
     try {
-      await clearToken();
-      setToken("");
+      await clearSecret("modrinth");
+      setHasToken(false);
+      setTokenLast4("");
       toast.success("Token cleared");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to clear token");
@@ -74,12 +90,17 @@ export default function Settings() {
       return;
     }
     try {
-      await savePufferCreds({
+      await saveSecret("pufferpanel", {
         base_url: baseUrl,
         client_id: clientId,
         client_secret: clientSecret,
         deep_scan: deepScan,
       });
+      setClientSecret("");
+      setShowSecret(false);
+      const status = await getSecretStatus("pufferpanel");
+      setHasPuffer(status.exists);
+      setPufferLast4(status.last4);
       toast.success("Credentials saved");
     } catch (err) {
       toast.error(
@@ -90,11 +111,13 @@ export default function Settings() {
 
   async function handlePufferClear() {
     try {
-      await clearPufferCreds();
+      await clearSecret("pufferpanel");
       setBaseUrl("");
       setClientId("");
       setClientSecret("");
       setDeepScan(false);
+      setPufferLast4("");
+      setHasPuffer(false);
       toast.success("Credentials cleared");
     } catch (err) {
       toast.error(
@@ -173,6 +196,11 @@ export default function Settings() {
                 Docs
               </a>
             </label>
+            {hasToken && (
+              <p className="text-sm text-muted-foreground">
+                Saved: ••••{tokenLast4}
+              </p>
+            )}
             <div className="flex gap-sm">
               <Input
                 id="token"
@@ -187,9 +215,15 @@ export default function Settings() {
             </div>
           </div>
           <div className="flex gap-sm">
-            <Button onClick={handleSave}>Save</Button>
-            <Button variant="secondary" onClick={handleClear} disabled={!token}>
-              Clear
+            <Button onClick={handleSave} disabled={!token}>
+              Save
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={handleClear}
+              disabled={!hasToken}
+            >
+              Revoke & Clear
             </Button>
           </div>
         </CardContent>
@@ -228,6 +262,11 @@ export default function Settings() {
             <label htmlFor="pp-secret" className="text-sm font-medium">
               Client Secret
             </label>
+            {hasPuffer && (
+              <p className="text-sm text-muted-foreground">
+                Saved: ••••{pufferLast4}
+              </p>
+            )}
             <div className="flex gap-sm">
               <Input
                 id="pp-secret"
@@ -255,15 +294,24 @@ export default function Settings() {
             </label>
           </div>
           <div className="flex gap-sm">
-            <Button onClick={handlePufferSave}>Save</Button>
+            <Button
+              onClick={handlePufferSave}
+              disabled={!baseUrl || !clientId || !clientSecret}
+            >
+              Save
+            </Button>
             <Button
               variant="secondary"
               onClick={handlePufferClear}
-              disabled={!baseUrl && !clientId && !clientSecret}
+              disabled={!hasPuffer}
             >
-              Clear
+              Revoke & Clear
             </Button>
-            <Button variant="secondary" onClick={handlePufferTest}>
+            <Button
+              variant="secondary"
+              onClick={handlePufferTest}
+              disabled={!baseUrl || !clientId || !clientSecret}
+            >
               Test
             </Button>
           </div>

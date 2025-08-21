@@ -5,12 +5,11 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,6 +21,8 @@ import (
 	"modsentinel/internal/httpx"
 	mr "modsentinel/internal/modrinth"
 	pppkg "modsentinel/internal/pufferpanel"
+	"modsentinel/internal/secrets"
+	tokenpkg "modsentinel/internal/token"
 
 	_ "modernc.org/sqlite"
 )
@@ -77,6 +78,20 @@ func (matchClient) Versions(ctx context.Context, slug, gameVersion, loader strin
 		Loaders:       []string{"fabric"},
 		Files:         []mr.VersionFile{{URL: "http://example.com"}},
 	}}, nil
+}
+
+type errClient struct{}
+
+func (errClient) Project(ctx context.Context, slug string) (*mr.Project, error) {
+	return nil, &mr.Error{Status: http.StatusUnauthorized}
+}
+
+func (errClient) Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error) {
+	return nil, &mr.Error{Status: http.StatusUnauthorized}
+}
+
+func (errClient) Search(ctx context.Context, query string) (*mr.SearchResult, error) {
+	return nil, &mr.Error{Status: http.StatusUnauthorized}
 }
 
 func (matchClient) Search(ctx context.Context, query string) (*mr.SearchResult, error) {
@@ -263,9 +278,7 @@ func TestSyncHandler_ScansMods(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	dir := t.TempDir()
-	os.Setenv("MODSENTINEL_PUFFERPANEL_PATH", filepath.Join(dir, "creds"))
-	t.Cleanup(func() { os.Unsetenv("MODSENTINEL_PUFFERPANEL_PATH") })
+	initSecrets(t, db)
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
@@ -312,9 +325,7 @@ func TestSyncHandler_MatchesMods(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	dir := t.TempDir()
-	os.Setenv("MODSENTINEL_PUFFERPANEL_PATH", filepath.Join(dir, "creds"))
-	t.Cleanup(func() { os.Unsetenv("MODSENTINEL_PUFFERPANEL_PATH") })
+	initSecrets(t, db)
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
@@ -373,9 +384,7 @@ func TestSyncHandler_DeepScanMatches(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	dir := t.TempDir()
-	os.Setenv("MODSENTINEL_PUFFERPANEL_PATH", filepath.Join(dir, "creds"))
-	t.Cleanup(func() { os.Unsetenv("MODSENTINEL_PUFFERPANEL_PATH") })
+	initSecrets(t, db)
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret", DeepScan: true}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
@@ -434,9 +443,7 @@ func TestResyncInstanceHandler_Idempotent(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	dir := t.TempDir()
-	os.Setenv("MODSENTINEL_PUFFERPANEL_PATH", filepath.Join(dir, "creds"))
-	t.Cleanup(func() { os.Unsetenv("MODSENTINEL_PUFFERPANEL_PATH") })
+	initSecrets(t, db)
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
@@ -528,5 +535,208 @@ func TestCreateModHandler_WarningWithoutEnforcement(t *testing.T) {
 	}
 	if len(resp.Mods) != 1 || resp.Mods[0].InstanceID != inst.ID {
 		t.Fatalf("unexpected mods: %v", resp.Mods)
+	}
+}
+
+func initSecrets(t *testing.T, db *sql.DB) {
+	t.Helper()
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	km, err := secrets.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load keys: %v", err)
+	}
+	svc := secrets.NewService(db, km)
+	tokenpkg.Init(svc)
+	pppkg.Init(svc)
+}
+
+func TestSecretSettings_Flow(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	km, err := secrets.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load keys: %v", err)
+	}
+	svc := secrets.NewService(db, km)
+	tokenpkg.Init(svc)
+	pppkg.Init(svc)
+
+	setH := setSecretHandler()
+	statusH := secretStatusHandler(svc)
+	delH := deleteSecretHandler()
+
+	// set secret
+	reqSet := httptest.NewRequest(http.MethodPost, "/api/settings/secret/modrinth", strings.NewReader(`{"token":"abcd1234"}`))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("type", "modrinth")
+	reqSet = reqSet.WithContext(context.WithValue(reqSet.Context(), chi.RouteCtxKey, rctx))
+	wSet := httptest.NewRecorder()
+	setH(wSet, reqSet)
+	if wSet.Code != http.StatusNoContent {
+		t.Fatalf("set status %d", wSet.Code)
+	}
+
+	// status should show last4
+	reqStat := httptest.NewRequest(http.MethodGet, "/api/settings/secret/modrinth/status", nil)
+	rctx2 := chi.NewRouteContext()
+	rctx2.URLParams.Add("type", "modrinth")
+	reqStat = reqStat.WithContext(context.WithValue(reqStat.Context(), chi.RouteCtxKey, rctx2))
+	wStat := httptest.NewRecorder()
+	statusH(wStat, reqStat)
+	if wStat.Code != http.StatusOK {
+		t.Fatalf("status code %d", wStat.Code)
+	}
+	var st struct {
+		Exists    bool      `json:"exists"`
+		Last4     string    `json:"last4"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	if err := json.NewDecoder(wStat.Body).Decode(&st); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if !st.Exists || st.Last4 != "1234" || st.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected status: %+v", st)
+	}
+
+	// delete secret
+	reqDel := httptest.NewRequest(http.MethodDelete, "/api/settings/secret/modrinth", nil)
+	rctx3 := chi.NewRouteContext()
+	rctx3.URLParams.Add("type", "modrinth")
+	reqDel = reqDel.WithContext(context.WithValue(reqDel.Context(), chi.RouteCtxKey, rctx3))
+	wDel := httptest.NewRecorder()
+	delH(wDel, reqDel)
+	if wDel.Code != http.StatusNoContent {
+		t.Fatalf("delete status %d", wDel.Code)
+	}
+
+	// status again should show non-existence
+	reqStat2 := httptest.NewRequest(http.MethodGet, "/api/settings/secret/modrinth/status", nil)
+	rctx4 := chi.NewRouteContext()
+	rctx4.URLParams.Add("type", "modrinth")
+	reqStat2 = reqStat2.WithContext(context.WithValue(reqStat2.Context(), chi.RouteCtxKey, rctx4))
+	wStat2 := httptest.NewRecorder()
+	statusH(wStat2, reqStat2)
+	if wStat2.Code != http.StatusOK {
+		t.Fatalf("status2 code %d", wStat2.Code)
+	}
+	var st2 struct {
+		Exists bool `json:"exists"`
+	}
+	if err := json.NewDecoder(wStat2.Body).Decode(&st2); err != nil {
+		t.Fatalf("decode status2: %v", err)
+	}
+	if st2.Exists {
+		t.Fatalf("expected secret deleted")
+	}
+}
+
+func TestSecurityMiddleware(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	t.Setenv("ADMIN_TOKEN", "admintok")
+	var dist embed.FS
+	h := New(db, dist)
+
+	// unauthorized
+	req0 := httptest.NewRequest(http.MethodGet, "/api/settings/secret/modrinth/status", nil)
+	w0 := httptest.NewRecorder()
+	h.ServeHTTP(w0, req0)
+	if w0.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden, got %d", w0.Code)
+	}
+
+	// fetch token
+	req1 := httptest.NewRequest(http.MethodGet, "/api/settings/secret/modrinth/status", nil)
+	req1.Header.Set("Authorization", "Bearer admintok")
+	w1 := httptest.NewRecorder()
+	h.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("status %d", w1.Code)
+	}
+	if w1.Header().Get("Content-Security-Policy") == "" {
+		t.Fatalf("missing csp header")
+	}
+	if cc := w1.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("unexpected cache-control %q", cc)
+	}
+	var csrf string
+	for _, c := range w1.Result().Cookies() {
+		if c.Name == "csrf_token" {
+			csrf = c.Value
+		}
+	}
+	if csrf == "" {
+		t.Fatalf("missing csrf cookie")
+	}
+
+	// missing csrf header
+	req2 := httptest.NewRequest(http.MethodPost, "/api/settings/secret/modrinth", strings.NewReader(`{"token":"abcd1234"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Authorization", "Bearer admintok")
+	req2.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusForbidden {
+		t.Fatalf("expected csrf forbidden, got %d", w2.Code)
+	}
+
+	// valid csrf
+	req3 := httptest.NewRequest(http.MethodPost, "/api/settings/secret/modrinth", strings.NewReader(`{"token":"abcd1234"}`))
+	req3.Header.Set("Content-Type", "application/json")
+	req3.Header.Set("Authorization", "Bearer admintok")
+	req3.Header.Set("X-CSRF-Token", csrf)
+	req3.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
+	w3 := httptest.NewRecorder()
+	h.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusNoContent {
+		t.Fatalf("set status %d", w3.Code)
+	}
+	if cc := w3.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("unexpected cache-control %q", cc)
+	}
+}
+
+func TestMetadataHandler_Proxy(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	initSecrets(t, db)
+	if err := tokenpkg.SetToken("tok"); err != nil {
+		t.Fatalf("set token: %v", err)
+	}
+	oldClient := modClient
+	modClient = fakeModClient{}
+	defer func() { modClient = oldClient }()
+
+	h := metadataHandler()
+	req := httptest.NewRequest(http.MethodPost, "/api/mods/metadata", strings.NewReader(`{"url":"https://modrinth.com/mod/fake"}`))
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var resp struct {
+		Versions []mr.Version `json:"versions"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Versions) != 1 || resp.Versions[0].ID != "1" {
+		t.Fatalf("unexpected resp %+v", resp)
+	}
+}
+
+func TestMetadataHandler_MissingToken(t *testing.T) {
+	oldClient := modClient
+	modClient = errClient{}
+	defer func() { modClient = oldClient }()
+	h := metadataHandler()
+	req := httptest.NewRequest(http.MethodPost, "/api/mods/metadata", strings.NewReader(`{"url":"https://modrinth.com/mod/fake"}`))
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status %d", w.Code)
 	}
 }

@@ -3,14 +3,14 @@ import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi } from "vitest";
 
 vi.mock("@/lib/api.ts", () => ({
-  getToken: vi.fn().mockResolvedValue(""),
-  saveToken: vi.fn(),
-  clearToken: vi.fn(),
+  getSecretStatus: vi
+    .fn()
+    .mockResolvedValue({ exists: false, last4: "", updated_at: "" }),
+  saveSecret: vi.fn(),
+  clearSecret: vi.fn(),
   getPufferCreds: vi
     .fn()
     .mockResolvedValue({ base_url: "", client_id: "", client_secret: "" }),
-  savePufferCreds: vi.fn(),
-  clearPufferCreds: vi.fn(),
   testPufferCreds: vi.fn(),
 }));
 
@@ -24,11 +24,7 @@ vi.mock("focus-trap-react", () => ({
 
 import { MemoryRouter } from "react-router-dom";
 import Settings from "./Settings.jsx";
-import {
-  savePufferCreds,
-  clearPufferCreds,
-  testPufferCreds,
-} from "@/lib/api.ts";
+import { saveSecret, clearSecret, testPufferCreds } from "@/lib/api.ts";
 import { toast } from "sonner";
 
 Object.defineProperty(window, "matchMedia", {
@@ -42,6 +38,11 @@ Object.defineProperty(window, "matchMedia", {
 
 describe("Settings page", () => {
   it("saves, clears and tests PufferPanel credentials", async () => {
+    const { getSecretStatus } = await import("@/lib/api.ts");
+    getSecretStatus
+      .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" }) // modrinth
+      .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" }) // puffer initial
+      .mockResolvedValueOnce({ exists: true, last4: "1234", updated_at: "" }); // after save
     render(
       <MemoryRouter>
         <Settings />
@@ -60,15 +61,6 @@ describe("Settings page", () => {
       target: { value: "secret" },
     });
     fireEvent.click(screen.getByLabelText("Enable deep scan"));
-    const saveBtn = screen.getAllByRole("button", { name: "Save" })[1];
-    fireEvent.click(saveBtn);
-    expect(savePufferCreds).toHaveBeenCalledWith({
-      base_url: "http://example.com",
-      client_id: "id",
-      client_secret: "secret",
-      deep_scan: true,
-    });
-
     const testBtn = screen.getByRole("button", { name: "Test" });
     fireEvent.click(testBtn);
     expect(testPufferCreds).toHaveBeenCalledWith({
@@ -78,9 +70,23 @@ describe("Settings page", () => {
       deep_scan: true,
     });
 
-    const clearBtn = screen.getAllByRole("button", { name: "Clear" })[1];
+    const saveBtn = screen.getAllByRole("button", { name: "Save" })[1];
+    fireEvent.click(saveBtn);
+    await waitFor(() => expect(saveSecret).toHaveBeenCalled());
+    expect(saveSecret).toHaveBeenCalledWith("pufferpanel", {
+      base_url: "http://example.com",
+      client_id: "id",
+      client_secret: "secret",
+      deep_scan: true,
+    });
+
+    const clearBtn = screen.getAllByRole("button", {
+      name: "Revoke & Clear",
+    })[1];
     fireEvent.click(clearBtn);
-    await waitFor(() => expect(clearPufferCreds).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(clearSecret).toHaveBeenCalledWith("pufferpanel"),
+    );
     expect(toast.success).toHaveBeenCalledWith("Credentials cleared");
   });
 });

@@ -210,29 +210,6 @@ export async function getDashboard(): Promise<DashboardData> {
   return res.json();
 }
 
-export async function getToken(): Promise<string> {
-  const res = await fetch("/api/token");
-  if (!res.ok) throw await parseError(res, "Failed to fetch token");
-  const data: { token: string } = await res.json();
-  return data.token;
-}
-
-export async function saveToken(token: string): Promise<void> {
-  const res = await fetch("/api/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token }),
-  });
-  if (!res.ok) throw await parseError(res, "Failed to save token");
-  window.dispatchEvent(new Event("token-change"));
-}
-
-export async function clearToken(): Promise<void> {
-  const res = await fetch("/api/token", { method: "DELETE" });
-  if (!res.ok) throw await parseError(res, "Failed to clear token");
-  window.dispatchEvent(new Event("token-change"));
-}
-
 export interface PufferCreds {
   base_url: string;
   client_id: string;
@@ -263,22 +240,6 @@ export async function getPufferCreds(): Promise<PufferCreds> {
   return res.json();
 }
 
-export async function savePufferCreds(creds: PufferCreds): Promise<void> {
-  const res = await fetch("/api/pufferpanel", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(creds),
-  });
-  if (!res.ok) throw await parseError(res, "Failed to save credentials");
-  window.dispatchEvent(new Event("pufferpanel-change"));
-}
-
-export async function clearPufferCreds(): Promise<void> {
-  const res = await fetch("/api/pufferpanel", { method: "DELETE" });
-  if (!res.ok) throw await parseError(res, "Failed to clear credentials");
-  window.dispatchEvent(new Event("pufferpanel-change"));
-}
-
 export async function testPufferCreds(creds: PufferCreds): Promise<void> {
   const res = await fetch("/api/pufferpanel/test", {
     method: "POST",
@@ -301,4 +262,48 @@ export async function syncInstances(server?: string): Promise<SyncResult> {
   const res = await fetch(url, { method: "POST" });
   if (!res.ok) throw await parseError(res, "Failed to sync");
   return res.json();
+}
+
+export interface SecretStatus {
+  exists: boolean;
+  last4: string;
+  updated_at: string;
+}
+
+export async function getSecretStatus(type: string): Promise<SecretStatus> {
+  const res = await fetch(`/api/settings/secret/${type}/status`, {
+    cache: "no-store",
+    headers: { Authorization: "Bearer admintok" },
+    credentials: "same-origin",
+  });
+  if (!res.ok) throw await parseError(res, "Failed to fetch status");
+  return res.json();
+}
+
+export async function saveSecret(type: string, payload: any): Promise<void> {
+  const res = await fetch(`/api/settings/secret/${type}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer admintok",
+      "X-CSRF-Token": (document.cookie.match(/csrf_token=([^;]+)/)?.[1] ?? ""),
+    },
+    credentials: "same-origin",
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw await parseError(res, "Failed to save secret");
+  window.dispatchEvent(new Event(`${type}-change`));
+}
+
+export async function clearSecret(type: string): Promise<void> {
+  const res = await fetch(`/api/settings/secret/${type}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: "Bearer admintok",
+      "X-CSRF-Token": (document.cookie.match(/csrf_token=([^;]+)/)?.[1] ?? ""),
+    },
+    credentials: "same-origin",
+  });
+  if (!res.ok) throw await parseError(res, "Failed to clear secret");
+  window.dispatchEvent(new Event(`${type}-change`));
 }

@@ -1,0 +1,55 @@
+openapi: 3.0.3
+info:
+  title: ModSentinel API
+  version: 1.0.0
+paths:
+  /settings/secret/{type}:
+    post:
+      summary: Set or replace a secret
+      parameters:
+        - in: path
+          name: type
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+    delete:
+      summary: Delete a stored secret
+      parameters:
+        - in: path
+          name: type
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Secret deleted
+  /settings/secret/{type}/status:
+    get:
+      summary: Get secret status
+      parameters:
+        - in: path
+          name: type
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Status info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exists:
+                    type: boolean
+                  last4:
+                    type: string
+                  updated_at:
+                    type: string
+                    format: date-time

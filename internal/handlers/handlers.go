@@ -4,8 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -26,10 +28,12 @@ import (
 
 	"fmt"
 
+	rate "golang.org/x/time/rate"
 	dbpkg "modsentinel/internal/db"
 	"modsentinel/internal/httpx"
 	mr "modsentinel/internal/modrinth"
 	pppkg "modsentinel/internal/pufferpanel"
+	"modsentinel/internal/secrets"
 	"modsentinel/internal/telemetry"
 	tokenpkg "modsentinel/internal/token"
 )
@@ -50,6 +54,21 @@ var latencyP95 atomic.Int64
 
 var latencyMu sync.Mutex
 var latencySamples []int64
+
+var writeLimiter = rate.NewLimiter(rate.Every(time.Second), 5)
+
+var csrfToken string
+
+func init() {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	csrfToken = base64.StdEncoding.EncodeToString(b)
+}
+
+// CSRFToken returns the server CSRF token. Exposed for tests.
+func CSRFToken() string { return csrfToken }
 
 func writeModrinthError(w http.ResponseWriter, r *http.Request, err error) {
 	var me *mr.Error
@@ -104,10 +123,57 @@ func recordLatency(next http.Handler) http.Handler {
 	})
 }
 
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func csrfMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+			http.SetCookie(w, &http.Cookie{Name: "csrf_token", Value: csrfToken, Path: "/", HttpOnly: false, SameSite: http.SameSiteStrictMode})
+			next.ServeHTTP(w, r)
+			return
+		}
+		c, err := r.Cookie("csrf_token")
+		token := r.Header.Get("X-CSRF-Token")
+		if err != nil || token == "" || c.Value != token || token != csrfToken {
+			httpx.Write(w, r, httpx.Forbidden("invalid csrf token"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requireAdmin() func(http.Handler) http.Handler {
+	adminToken := os.Getenv("ADMIN_TOKEN")
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := r.Header.Get("Authorization")
+			if !strings.HasPrefix(h, "Bearer ") || strings.TrimPrefix(h, "Bearer ") != adminToken {
+				httpx.Write(w, r, httpx.Forbidden("admin only"))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // New builds a router with all HTTP handlers.
 func New(db *sql.DB, dist embed.FS) http.Handler {
+	km, err := secrets.Load(context.Background())
+	if err != nil {
+		log.Fatal().Err(err).Msg("load secrets")
+	}
+	svc := secrets.NewService(db, km)
+	tokenpkg.Init(svc)
+	pppkg.Init(svc)
+
 	r := chi.NewRouter()
 
+	r.Use(securityHeaders)
 	r.Use(recordLatency)
 
 	r.Get("/favicon.ico", serveFavicon(dist))
@@ -123,15 +189,18 @@ func New(db *sql.DB, dist embed.FS) http.Handler {
 	r.Put("/api/mods/{id}", updateModHandler(db))
 	r.Delete("/api/mods/{id}", deleteModHandler(db))
 	r.Post("/api/mods/{id}/update", applyUpdateHandler(db))
-	r.Get("/api/token", getTokenHandler())
-	r.Post("/api/token", setTokenHandler())
-	r.Delete("/api/token", clearTokenHandler())
 	r.Get("/api/pufferpanel", getPufferHandler())
-	r.Post("/api/pufferpanel", setPufferHandler())
-	r.Delete("/api/pufferpanel", clearPufferHandler())
 	r.Post("/api/pufferpanel/test", testPufferHandler())
 	r.Get("/api/pufferpanel/servers", listServersHandler())
 	r.Post("/api/pufferpanel/sync", syncHandler(db))
+
+	r.Group(func(g chi.Router) {
+		g.Use(requireAdmin())
+		g.Use(csrfMiddleware)
+		g.Post("/api/settings/secret/{type}", setSecretHandler())
+		g.Delete("/api/settings/secret/{type}", deleteSecretHandler())
+		g.Get("/api/settings/secret/{type}/status", secretStatusHandler(svc))
+	})
 	r.Get("/api/dashboard", dashboardHandler(db))
 
 	static, _ := fs.Sub(dist, "frontend/dist")
@@ -482,49 +551,6 @@ type tokenRequest struct {
 	Token string `json:"token" validate:"required"`
 }
 
-func getTokenHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tok, err := tokenpkg.GetToken()
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"token": tok})
-	}
-}
-
-func setTokenHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req tokenRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpx.Write(w, r, httpx.BadRequest("invalid json"))
-			return
-		}
-		if err := validatePayload(&req); err != nil {
-			httpx.Write(w, r, err)
-			return
-		}
-		if err := tokenpkg.SetToken(req.Token); err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		telemetry.Event("token_set", nil)
-		w.WriteHeader(http.StatusNoContent)
-	}
-}
-
-func clearTokenHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if err := tokenpkg.ClearToken(); err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		telemetry.Event("token_cleared", nil)
-		w.WriteHeader(http.StatusNoContent)
-	}
-}
-
 type pufferRequest struct {
 	BaseURL      string `json:"base_url" validate:"required,url"`
 	ClientID     string `json:"client_id" validate:"required"`
@@ -534,7 +560,7 @@ type pufferRequest struct {
 
 func getPufferHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		creds, err := pppkg.Get()
+		creds, err := pppkg.Config()
 		if err != nil {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
@@ -544,34 +570,108 @@ func getPufferHandler() http.HandlerFunc {
 	}
 }
 
-func setPufferHandler() http.HandlerFunc {
+func setSecretHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req pufferRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpx.Write(w, r, httpx.BadRequest("invalid json"))
+		if !writeLimiter.Allow() {
+			httpx.Write(w, r, httpx.TooManyRequests("rate limit exceeded"))
 			return
 		}
-		if err := validatePayload(&req); err != nil {
-			httpx.Write(w, r, err)
+		typ := chi.URLParam(r, "type")
+		var last4 string
+		switch typ {
+		case "modrinth":
+			var req tokenRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				httpx.Write(w, r, httpx.BadRequest("invalid json"))
+				return
+			}
+			if err := validatePayload(&req); err != nil {
+				httpx.Write(w, r, err)
+				return
+			}
+			if n := len(req.Token); n > 4 {
+				last4 = req.Token[n-4:]
+			} else {
+				last4 = req.Token
+			}
+			if err := tokenpkg.SetToken(req.Token); err != nil {
+				httpx.Write(w, r, httpx.Internal(err))
+				return
+			}
+		case "pufferpanel":
+			var req pufferRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				httpx.Write(w, r, httpx.BadRequest("invalid json"))
+				return
+			}
+			if err := validatePayload(&req); err != nil {
+				httpx.Write(w, r, err)
+				return
+			}
+			if n := len(req.ClientSecret); n > 4 {
+				last4 = req.ClientSecret[n-4:]
+			} else {
+				last4 = req.ClientSecret
+			}
+			if err := pppkg.Set(pppkg.Credentials{BaseURL: req.BaseURL, ClientID: req.ClientID, ClientSecret: req.ClientSecret, DeepScan: req.DeepScan}); err != nil {
+				httpx.Write(w, r, httpx.Internal(err))
+				return
+			}
+		default:
+			httpx.Write(w, r, httpx.BadRequest("unknown secret type"))
 			return
 		}
-		if err := pppkg.Set(pppkg.Credentials{BaseURL: req.BaseURL, ClientID: req.ClientID, ClientSecret: req.ClientSecret, DeepScan: req.DeepScan}); err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		telemetry.Event("pufferpanel_set", nil)
+		telemetry.Event("secret_set", map[string]string{"type": typ})
+		log.Info().Str("type", typ).Str("last4", last4).Msg("secret set")
+		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
-func clearPufferHandler() http.HandlerFunc {
+func deleteSecretHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := pppkg.Clear(); err != nil {
+		if !writeLimiter.Allow() {
+			httpx.Write(w, r, httpx.TooManyRequests("rate limit exceeded"))
+			return
+		}
+		typ := chi.URLParam(r, "type")
+		var err error
+		switch typ {
+		case "modrinth":
+			err = tokenpkg.ClearToken()
+		case "pufferpanel":
+			err = pppkg.Clear()
+		default:
+			httpx.Write(w, r, httpx.BadRequest("unknown secret type"))
+			return
+		}
+		if err != nil {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
-		telemetry.Event("pufferpanel_cleared", nil)
+		telemetry.Event("secret_cleared", map[string]string{"type": typ})
+		log.Info().Str("type", typ).Msg("secret deleted")
+		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func secretStatusHandler(svc *secrets.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		typ := chi.URLParam(r, "type")
+		exists, last4, updatedAt, err := svc.Status(r.Context(), typ)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		json.NewEncoder(w).Encode(map[string]any{
+			"exists":     exists,
+			"last4":      last4,
+			"updated_at": updatedAt,
+		})
+		log.Info().Str("type", typ).Str("last4", last4).Msg("secret status")
 	}
 }
 

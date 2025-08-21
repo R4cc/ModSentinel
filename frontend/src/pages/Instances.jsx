@@ -20,8 +20,7 @@ import {
   addInstance,
   updateInstance,
   deleteInstance,
-  getToken,
-  getPufferCreds,
+  getSecretStatus,
   syncInstances,
   getPufferServers,
 } from "@/lib/api.ts";
@@ -58,10 +57,8 @@ export default function Instances() {
 
   useEffect(() => {
     function check() {
-      getPufferCreds()
-        .then((c) =>
-          setHasPuffer(!!(c.base_url && c.client_id && c.client_secret)),
-        )
+      getSecretStatus("pufferpanel")
+        .then((s) => setHasPuffer(s.exists))
         .catch(() => setHasPuffer(false));
     }
     check();
@@ -70,8 +67,8 @@ export default function Instances() {
   }, []);
 
   useEffect(() => {
-    getToken()
-      .then((t) => setHasToken(!!t))
+    getSecretStatus("modrinth")
+      .then((s) => setHasToken(s.exists))
       .catch(() => setHasToken(false));
   }, []);
 
@@ -81,7 +78,9 @@ export default function Instances() {
       getPufferServers()
         .then((s) => setServers(s))
         .catch((err) =>
-          toast.error(err instanceof Error ? err.message : "Failed to load servers"),
+          toast.error(
+            err instanceof Error ? err.message : "Failed to load servers",
+          ),
         )
         .finally(() => setLoadingServers(false));
     } else {
@@ -157,7 +156,8 @@ export default function Instances() {
     if (syncFromPuffer) {
       try {
         setScanning(true);
-        const { instance, unmatched, mods } = await syncInstances(selectedServer);
+        const { instance, unmatched, mods } =
+          await syncInstances(selectedServer);
         toast.success("Synced");
         setOpen(false);
         fetchInstances();

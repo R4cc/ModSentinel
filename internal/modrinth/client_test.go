@@ -1,18 +1,36 @@
 package modrinth
 
 import (
+	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
+	dbpkg "modsentinel/internal/db"
+	"modsentinel/internal/secrets"
 	tokenpkg "modsentinel/internal/token"
+
+	_ "modernc.org/sqlite"
 )
 
 // Test that the client attaches the Authorization header when a token exists.
 func TestClientAddsAuthorizationHeader(t *testing.T) {
-	t.Setenv("MODSENTINEL_TOKEN_PATH", filepath.Join(t.TempDir(), "token"))
+	db, err := sql.Open("sqlite", "file:memdb1?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := dbpkg.Init(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	km, err := secrets.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load keys: %v", err)
+	}
+	tokenpkg.Init(secrets.NewService(db, km))
 	const tok = "abcdef1234"
 	if err := tokenpkg.SetToken(tok); err != nil {
 		t.Fatalf("set token: %v", err)
@@ -41,7 +59,20 @@ func TestClientAddsAuthorizationHeader(t *testing.T) {
 
 // Test that the client does not send Authorization when no token is stored.
 func TestClientOmitsAuthorizationHeader(t *testing.T) {
-	t.Setenv("MODSENTINEL_TOKEN_PATH", filepath.Join(t.TempDir(), "token"))
+	db, err := sql.Open("sqlite", "file:memdb1?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := dbpkg.Init(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	km, err := secrets.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load keys: %v", err)
+	}
+	tokenpkg.Init(secrets.NewService(db, km))
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h := r.Header.Get("Authorization"); h != "" {
 			t.Fatalf("unexpected authorization header: %q", h)
@@ -63,7 +94,20 @@ func TestClientOmitsAuthorizationHeader(t *testing.T) {
 
 // Test that the client retries with exponential backoff on server errors.
 func TestClientBackoff(t *testing.T) {
-	t.Setenv("MODSENTINEL_TOKEN_PATH", filepath.Join(t.TempDir(), "token"))
+	db, err := sql.Open("sqlite", "file:memdb1?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := dbpkg.Init(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	km, err := secrets.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load keys: %v", err)
+	}
+	tokenpkg.Init(secrets.NewService(db, km))
 	attempts := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
@@ -95,7 +139,20 @@ func TestClientBackoff(t *testing.T) {
 
 // Test that 401 responses are surfaced as an Error with the correct status.
 func TestClientInvalidToken(t *testing.T) {
-	t.Setenv("MODSENTINEL_TOKEN_PATH", filepath.Join(t.TempDir(), "token"))
+	db, err := sql.Open("sqlite", "file:memdb1?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := dbpkg.Init(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	km, err := secrets.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load keys: %v", err)
+	}
+	tokenpkg.Init(secrets.NewService(db, km))
 	const tok = "badtoken"
 	if err := tokenpkg.SetToken(tok); err != nil {
 		t.Fatalf("set token: %v", err)
