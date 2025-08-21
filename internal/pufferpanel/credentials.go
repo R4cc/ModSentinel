@@ -3,8 +3,8 @@ package pufferpanel
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
+
+	"modsentinel/internal/secrets"
 )
 
 // Credentials represents stored PufferPanel credentials.
@@ -15,45 +15,31 @@ type Credentials struct {
 	DeepScan     bool   `json:"deep_scan"`
 }
 
-func credsPath() (string, error) {
-	if p := os.Getenv("MODSENTINEL_PUFFERPANEL_PATH"); p != "" {
-		return p, nil
-	}
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "modsentinel", "pufferpanel_creds"), nil
-}
+var svc *secrets.Service
 
-// Set stores the credentials persistently.
+// Init sets the secrets service used for credential storage.
+func Init(s *secrets.Service) { svc = s }
+
+// Set stores the credentials securely.
 func Set(c Credentials) error {
-	p, err := credsPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
+	if svc == nil {
+		return nil
 	}
 	b, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
 	resetToken()
-	return os.WriteFile(p, b, 0o600)
+	return svc.Set(context.Background(), "pufferpanel", b)
 }
 
-// Get retrieves stored credentials.
+// Get retrieves stored credentials for internal use.
 func Get() (Credentials, error) {
-	p, err := credsPath()
-	if err != nil {
-		return Credentials{}, err
-	}
-	b, err := os.ReadFile(p)
-	if os.IsNotExist(err) {
+	if svc == nil {
 		return Credentials{}, nil
 	}
-	if err != nil {
+	b, err := svc.DecryptForUse(context.Background(), "pufferpanel")
+	if err != nil || len(b) == 0 {
 		return Credentials{}, err
 	}
 	var c Credentials
@@ -63,17 +49,34 @@ func Get() (Credentials, error) {
 	return c, nil
 }
 
+// Config returns stored credentials without sensitive fields for HTTP responses.
+func Config() (Credentials, error) {
+	c, err := Get()
+	if err != nil {
+		return Credentials{}, err
+	}
+	if c == (Credentials{}) {
+		return c, nil
+	}
+	c.ClientSecret = ""
+	return c, nil
+}
+
+// Exists reports whether credentials are stored.
+func Exists() (bool, error) {
+	if svc == nil {
+		return false, nil
+	}
+	return svc.Exists(context.Background(), "pufferpanel")
+}
+
 // Clear removes stored credentials.
 func Clear() error {
-	p, err := credsPath()
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-		return err
+	if svc == nil {
+		return nil
 	}
 	resetToken()
-	return nil
+	return svc.Delete(context.Background(), "pufferpanel")
 }
 
 // TestConnection attempts to authenticate against PufferPanel using the provided credentials.

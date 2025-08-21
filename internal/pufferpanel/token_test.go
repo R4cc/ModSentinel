@@ -2,17 +2,39 @@ package pufferpanel
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
+
+	dbpkg "modsentinel/internal/db"
+	"modsentinel/internal/secrets"
+
+	_ "modernc.org/sqlite"
 )
 
+func setup(t *testing.T) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:memdb1?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := dbpkg.Init(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	km, err := secrets.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load manager: %v", err)
+	}
+	Init(secrets.NewService(db, km))
+}
+
 func TestAddAuthCachesAndRefreshesToken(t *testing.T) {
-	t.Parallel()
+	setup(t)
 	var tokenCalls int
 	var lastAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -34,16 +56,12 @@ func TestAddAuthCachesAndRefreshesToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	dir := t.TempDir()
-	os.Setenv("MODSENTINEL_PUFFERPANEL_PATH", filepath.Join(dir, "creds"))
-	t.Cleanup(func() { os.Unsetenv("MODSENTINEL_PUFFERPANEL_PATH") })
 	if err := Set(Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
 	ctx := context.Background()
 
-	// first request, fetch token
 	req1, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/data", nil)
 	if err := AddAuth(ctx, req1); err != nil {
 		t.Fatalf("AddAuth 1: %v", err)
@@ -58,7 +76,6 @@ func TestAddAuthCachesAndRefreshesToken(t *testing.T) {
 		t.Fatalf("auth header = %s, want Bearer tok1", lastAuth)
 	}
 
-	// second request before expiry, should reuse token
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/data", nil)
 	if err := AddAuth(ctx, req2); err != nil {
 		t.Fatalf("AddAuth 2: %v", err)
@@ -70,7 +87,6 @@ func TestAddAuthCachesAndRefreshesToken(t *testing.T) {
 		t.Fatalf("token calls = %d, want 1", tokenCalls)
 	}
 
-	// force expiration and ensure refresh
 	tokenMu.Lock()
 	tokenExpiry = time.Now().Add(-time.Second)
 	tokenMu.Unlock()
@@ -86,5 +102,49 @@ func TestAddAuthCachesAndRefreshesToken(t *testing.T) {
 	}
 	if lastAuth != "Bearer tok2" {
 		t.Fatalf("auth header = %s, want Bearer tok2", lastAuth)
+	}
+}
+func TestClearRevokesCachedToken(t *testing.T) {
+	setup(t)
+	var tokenCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			tokenCalls++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"access_token":"tok1","expires_in":3600}`)
+			return
+		}
+		if r.URL.Path == "/data" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	if err := Set(Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	ctx := context.Background()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/data", nil)
+	if err := AddAuth(ctx, req); err != nil {
+		t.Fatalf("AddAuth: %v", err)
+	}
+	if _, err := http.DefaultClient.Do(req); err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("token calls = %d, want 1", tokenCalls)
+	}
+	// clear credentials should drop cache
+	if err := Clear(); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/data", nil)
+	if err := AddAuth(ctx, req2); err == nil {
+		t.Fatalf("expected error after clear")
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("token endpoint called after clear")
 	}
 }

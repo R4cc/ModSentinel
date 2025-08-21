@@ -42,3 +42,38 @@ func TestInitCreatesDefaultInstance(t *testing.T) {
 		t.Fatalf("mods not migrated: %d", count)
 	}
 }
+
+func TestInitCreatesSecretsTable(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:memdb2?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	if err := Init(db); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('secrets')`)
+	if err != nil {
+		t.Fatalf("pragma: %v", err)
+	}
+	defer rows.Close()
+	cols := map[string]bool{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		cols[n] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	expected := []string{"id", "type", "value_enc", "key_id", "iv", "created_at", "updated_at"}
+	for _, c := range expected {
+		if !cols[c] {
+			t.Fatalf("missing column %s", c)
+		}
+	}
+}

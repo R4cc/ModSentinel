@@ -2,14 +2,36 @@ package pufferpanel
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"testing"
+
+	dbpkg "modsentinel/internal/db"
+	"modsentinel/internal/secrets"
+
+	_ "modernc.org/sqlite"
 )
+
+func setupFiles(t *testing.T) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:memdb1?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := dbpkg.Init(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	km, err := secrets.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load keys: %v", err)
+	}
+	Init(secrets.NewService(db, km))
+}
 
 func TestListJarFiles(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -26,9 +48,7 @@ func TestListJarFiles(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	dir := t.TempDir()
-	os.Setenv("MODSENTINEL_PUFFERPANEL_PATH", filepath.Join(dir, "creds"))
-	t.Cleanup(func() { os.Unsetenv("MODSENTINEL_PUFFERPANEL_PATH") })
+	setupFiles(t)
 	if err := Set(Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -54,9 +74,7 @@ func TestFetchFile(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	dir := t.TempDir()
-	os.Setenv("MODSENTINEL_PUFFERPANEL_PATH", filepath.Join(dir, "creds"))
-	t.Cleanup(func() { os.Unsetenv("MODSENTINEL_PUFFERPANEL_PATH") })
+	setupFiles(t)
 	if err := Set(Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -85,9 +103,7 @@ func TestListJarFilesErrors(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			dir := t.TempDir()
-			os.Setenv("MODSENTINEL_PUFFERPANEL_PATH", filepath.Join(dir, "creds"))
-			t.Cleanup(func() { os.Unsetenv("MODSENTINEL_PUFFERPANEL_PATH") })
+			setupFiles(t)
 			if err := Set(Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 				t.Fatalf("Set: %v", err)
 			}

@@ -1,33 +1,33 @@
-import { useEffect, useState } from 'react';
-import { Home, Settings, AlertTriangle, Server } from 'lucide-react';
-import { NavLink } from 'react-router-dom';
-import { cn } from '@/lib/utils.js';
-import { getToken } from '@/lib/api.ts';
+import { useEffect, useState } from "react";
+import { Home, Settings, AlertTriangle, Server } from "lucide-react";
+import { NavLink } from "react-router-dom";
+import { cn } from "@/lib/utils.js";
+import { getSecretStatus } from "@/lib/api.ts";
 
 export default function Sidebar({ open, onClose }) {
   const linkClass = ({ isActive }) =>
     cn(
-      'flex flex-wrap items-center gap-sm md:gap-0 lg:gap-sm rounded-md p-sm text-sm font-medium hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 transition-transform motion-reduce:transition-none motion-safe:hover:translate-x-0.5 motion-safe:focus-visible:translate-x-0.5 justify-start md:justify-center lg:justify-start',
-      isActive && 'bg-muted'
+      "flex flex-wrap items-center gap-sm md:gap-0 lg:gap-sm rounded-md p-sm text-sm font-medium hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 transition-transform motion-reduce:transition-none motion-safe:hover:translate-x-0.5 motion-safe:focus-visible:translate-x-0.5 justify-start md:justify-center lg:justify-start",
+      isActive && "bg-muted",
     );
   const [hasToken, setHasToken] = useState(true);
   useEffect(() => {
     function update() {
-      getToken()
-        .then((t) => setHasToken(!!t))
+      getSecretStatus("modrinth")
+        .then((s) => setHasToken(s.exists))
         .catch(() => setHasToken(false));
     }
     update();
-    window.addEventListener('token-change', update);
-    return () => window.removeEventListener('token-change', update);
+    window.addEventListener("modrinth-change", update);
+    return () => window.removeEventListener("modrinth-change", update);
   }, []);
 
   return (
     <>
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-20 w-64 md:w-16 lg:w-64 transform bg-muted p-md transition-transform md:static md:translate-x-0',
-          open ? 'translate-x-0' : '-translate-x-full'
+          "fixed inset-y-0 left-0 z-20 w-64 md:w-16 lg:w-64 transform bg-muted p-md transition-transform md:static md:translate-x-0",
+          open ? "translate-x-0" : "-translate-x-full",
         )}
       >
         <NavLink
@@ -39,7 +39,9 @@ export default function Sidebar({ open, onClose }) {
           title="ModSentinel"
         >
           <img src="/favicon.ico" alt="ModSentinel" className="h-6 w-6" />
-          <span className="hidden text-lg font-bold lg:inline">ModSentinel</span>
+          <span className="hidden text-lg font-bold lg:inline">
+            ModSentinel
+          </span>
         </NavLink>
         <nav className="flex flex-col gap-xs">
           <NavLink
@@ -90,7 +92,7 @@ export default function Sidebar({ open, onClose }) {
           tabIndex={0}
           aria-label="Close menu"
           onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') onClose();
+            if (e.key === "Enter" || e.key === " ") onClose();
           }}
         />
       )}

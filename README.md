@@ -32,6 +32,19 @@ ModSentinel can sync mod lists directly from a [PufferPanel](https://pufferpanel
 
 See [docs/PUFFERPANEL.md](docs/PUFFERPANEL.md) for details.
 
+## Secret storage & rotation
+
+Modrinth tokens and PufferPanel credentials are never stored in the browser.
+They live encrypted in the `secrets` table of `mods.db`, keyed by Cloud KMS or
+the `SECRET_KEYSET` environment variable. Use the Settings UI or
+`POST /settings/secret/:type` to rotate or **Revoke & Clear** a secret. Modrinth
+tokens should be read-only with `project.read` and `version.read` scopes, while
+PufferPanel requires `server.view` and `server.files.view`.
+
+Backups must include both `mods.db` and the encryption key material; restoring
+with a different keyset will invalidate stored secrets. See
+[docs/SECRETS.md](docs/SECRETS.md) for details.
+
 ## Development
 
 ```bash

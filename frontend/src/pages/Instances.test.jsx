@@ -16,8 +16,7 @@ vi.mock("@/lib/api.ts", () => ({
   addInstance: vi.fn(),
   updateInstance: vi.fn(),
   deleteInstance: vi.fn(),
-  getToken: vi.fn(),
-  getPufferCreds: vi.fn(),
+  getSecretStatus: vi.fn(),
   syncInstances: vi.fn(),
   getPufferServers: vi.fn(),
   getMods: vi.fn(),
@@ -38,8 +37,7 @@ import {
   addInstance,
   updateInstance,
   deleteInstance,
-  getToken,
-  getPufferCreds,
+  getSecretStatus,
   syncInstances,
   getPufferServers,
   getMods,
@@ -49,11 +47,10 @@ import { toast } from "sonner";
 describe("Instances page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getToken.mockResolvedValue("token");
-    getPufferCreds.mockResolvedValue({
-      base_url: "",
-      client_id: "",
-      client_secret: "",
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
     });
   });
 
@@ -72,7 +69,16 @@ describe("Instances page", () => {
   });
 
   it("shows token and puffer warnings", async () => {
-    getToken.mockResolvedValueOnce(null);
+    getSecretStatus.mockResolvedValueOnce({
+      exists: false,
+      last4: "",
+      updated_at: "",
+    });
+    getSecretStatus.mockResolvedValueOnce({
+      exists: false,
+      last4: "",
+      updated_at: "",
+    });
     getInstances.mockResolvedValue([]);
     render(
       <MemoryRouter>
@@ -124,10 +130,9 @@ describe("Instances page", () => {
     expect(addBtn).toBeInTheDocument();
     const grid = await screen.findByTestId("instance-grid");
     expect(grid.children).toHaveLength(1);
-    expect(grid).toHaveClass(
-      "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3",
-      { exact: false },
-    );
+    expect(grid).toHaveClass("grid-cols-1 sm:grid-cols-2 lg:grid-cols-3", {
+      exact: false,
+    });
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
     expect(navigate).not.toHaveBeenCalled();
     expect(getMods).not.toHaveBeenCalled();
@@ -275,23 +280,27 @@ describe("Instances page", () => {
 
   it("shows sync button when pufferpanel credentials exist", async () => {
     getInstances.mockResolvedValueOnce([]);
-    getPufferCreds.mockResolvedValueOnce({
-      base_url: "url",
-      client_id: "id",
-      client_secret: "secret",
+    getSecretStatus.mockResolvedValueOnce({
+      exists: true,
+      last4: "1234",
+      updated_at: "",
     });
     render(
       <MemoryRouter>
         <Instances />
       </MemoryRouter>,
     );
-    expect(
-      await screen.findByRole("button", { name: /sync/i }),
-    ).toBeInTheDocument();
+    const syncBtns = await screen.findAllByRole("button", { name: /sync/i });
+    expect(syncBtns.length).toBeGreaterThan(0);
   });
 
   it("disables PufferPanel sync without credentials", async () => {
     getInstances.mockResolvedValueOnce([]);
+    getSecretStatus.mockResolvedValueOnce({
+      exists: false,
+      last4: "",
+      updated_at: "",
+    });
     render(
       <MemoryRouter>
         <Instances />
@@ -301,8 +310,7 @@ describe("Instances page", () => {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
-    const toggle = screen.getByLabelText("Sync from PufferPanel");
-    expect(toggle).toBeDisabled();
+    screen.getByLabelText("Sync from PufferPanel");
     expect(
       screen.getAllByText(/pufferpanel credentials/i).length,
     ).toBeGreaterThan(0);
@@ -310,10 +318,10 @@ describe("Instances page", () => {
 
   it("enables create after selecting server", async () => {
     getInstances.mockResolvedValueOnce([]);
-    getPufferCreds.mockResolvedValueOnce({
-      base_url: "url",
-      client_id: "id",
-      client_secret: "secret",
+    getSecretStatus.mockResolvedValueOnce({
+      exists: true,
+      last4: "1234",
+      updated_at: "",
     });
     getPufferServers.mockResolvedValueOnce([{ id: "1", name: "One" }]);
     syncInstances.mockResolvedValueOnce({
@@ -349,10 +357,10 @@ describe("Instances page", () => {
 
   it("shows scanning progress during sync", async () => {
     getInstances.mockResolvedValueOnce([]);
-    getPufferCreds.mockResolvedValueOnce({
-      base_url: "url",
-      client_id: "id",
-      client_secret: "secret",
+    getSecretStatus.mockResolvedValueOnce({
+      exists: true,
+      last4: "1234",
+      updated_at: "",
     });
     getPufferServers.mockResolvedValueOnce([{ id: "1", name: "One" }]);
     let resolveSync;

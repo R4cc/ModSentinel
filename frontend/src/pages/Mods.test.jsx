@@ -1,4 +1,10 @@
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -10,10 +16,10 @@ vi.mock("@/lib/api.ts", () => ({
   getMods: vi.fn(),
   refreshMod: vi.fn(),
   deleteMod: vi.fn(),
-  getToken: vi.fn(),
   getInstance: vi.fn(),
   updateInstance: vi.fn(),
   resyncInstance: vi.fn(),
+  getSecretStatus: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({
@@ -37,10 +43,10 @@ import {
   getMods,
   getInstance,
   updateInstance,
-  getToken,
   refreshMod,
   deleteMod,
   resyncInstance,
+  getSecretStatus,
 } from "@/lib/api.ts";
 
 function renderPage() {
@@ -66,7 +72,11 @@ function renderWithState(state) {
 describe("Mods instance editing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getToken.mockResolvedValue("token");
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
     confirmMock.mockResolvedValue(true);
     getMods.mockResolvedValue([]);
     getInstance.mockResolvedValue({
@@ -134,7 +144,11 @@ describe("Mods instance editing", () => {
 describe("Mods instance scoping", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getToken.mockResolvedValue("token");
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
     confirmMock.mockResolvedValue(true);
     getInstance.mockResolvedValue({
       id: 1,
@@ -202,10 +216,7 @@ describe("Mods instance scoping", () => {
     const link = await screen.findByRole("link", {
       name: "Open project page",
     });
-    expect(link).toHaveAttribute(
-      "href",
-      "https://modrinth.com/mod/AANobbMI",
-    );
+    expect(link).toHaveAttribute("href", "https://modrinth.com/mod/AANobbMI");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener");
   });
@@ -260,7 +271,11 @@ describe("Mods instance scoping", () => {
 describe("Mods unmatched files", () => {
   it("shows unmatched files with resolve", async () => {
     getMods.mockResolvedValue([]);
-    getToken.mockResolvedValue("t");
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
     getInstance.mockResolvedValue({
       id: 1,
       name: "Srv",
@@ -274,7 +289,6 @@ describe("Mods unmatched files", () => {
     expect(screen.getByText("a.jar")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resolve" })).toBeInTheDocument();
   });
-
 });
 
 describe("Mods from sync", () => {
@@ -283,7 +297,11 @@ describe("Mods from sync", () => {
   });
   it("uses mods from navigation state", async () => {
     getMods.mockResolvedValue([]);
-    getToken.mockResolvedValue("t");
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
     const mod = {
       id: 1,
       name: "Sodium",
@@ -316,7 +334,11 @@ describe("Mods from sync", () => {
 describe("Mods resync", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getToken.mockResolvedValue("t");
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
     getInstance.mockResolvedValue({
       id: 1,
       name: "Srv",
@@ -363,7 +385,11 @@ describe("Mods resync", () => {
 describe("Mods instance switching", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getToken.mockResolvedValue("t");
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
   });
 
   it("clears stale data when navigating between instances", async () => {
@@ -452,11 +478,19 @@ describe("Mods warnings", () => {
       created_at: "",
       mod_count: 0,
     });
-    getToken.mockResolvedValue("token");
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
   });
 
   it("shows token missing warning", async () => {
-    getToken.mockResolvedValue(null);
+    getSecretStatus.mockResolvedValue({
+      exists: false,
+      last4: "",
+      updated_at: "",
+    });
     renderPage();
     expect(
       await screen.findByText(
@@ -466,7 +500,11 @@ describe("Mods warnings", () => {
   });
 
   it("shows unsynced PufferPanel warning", async () => {
-    getToken.mockResolvedValue("token");
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
     getInstance.mockResolvedValueOnce({
       id: 1,
       name: "Srv",

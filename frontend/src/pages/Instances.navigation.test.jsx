@@ -8,8 +8,7 @@ vi.mock("@/lib/api.ts", () => ({
   addInstance: vi.fn(),
   updateInstance: vi.fn(),
   deleteInstance: vi.fn(),
-  getToken: vi.fn(),
-  getPufferCreds: vi.fn(),
+  getSecretStatus: vi.fn(),
   syncInstances: vi.fn(),
   getPufferServers: vi.fn(),
   getMods: vi.fn(),
@@ -30,8 +29,7 @@ import Instances from "./Instances.jsx";
 import Mods from "./Mods.jsx";
 import {
   getInstances,
-  getPufferCreds,
-  getToken,
+  getSecretStatus,
   getMods,
   getInstance,
 } from "@/lib/api.ts";
@@ -47,12 +45,11 @@ describe("Instance card navigation", () => {
         mod_count: 1,
       },
     ]);
-    getPufferCreds.mockResolvedValue({
-      base_url: "",
-      client_id: "",
-      client_secret: "",
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
     });
-    getToken.mockResolvedValue("t");
     getInstance.mockResolvedValue({
       id: 1,
       name: "One",
@@ -91,6 +88,8 @@ describe("Instance card navigation", () => {
 
     fireEvent.click(screen.getByRole("link", { name: "Back to Instances" }));
     expect(router.state.location.pathname).toBe("/instances");
-    expect(await screen.findByRole("link", { name: "One" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("link", { name: "One" }),
+    ).toBeInTheDocument();
   });
 });

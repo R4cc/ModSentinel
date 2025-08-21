@@ -1,25 +1,31 @@
-import { useEffect, useRef, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { toast } from 'sonner';
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/Card.jsx';
-import { Button } from '@/components/ui/Button.jsx';
-import { Input } from '@/components/ui/Input.jsx';
-import { Select } from '@/components/ui/Select.jsx';
-import { Checkbox } from '@/components/ui/Checkbox.jsx';
-import { Badge } from '@/components/ui/Badge.jsx';
-import { Skeleton } from '@/components/ui/Skeleton.jsx';
-import { cn } from '@/lib/utils.js';
-import { addMod, getToken, getInstance } from '@/lib/api.ts';
-import { useNavigate, useParams, useLocation, Link } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
-import { useAddModStore, initialState } from '@/stores/addModStore.js';
-import { parseJarFilename } from '@/lib/jar.ts';
+import { useEffect, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/Card.jsx";
+import { Button } from "@/components/ui/Button.jsx";
+import { Input } from "@/components/ui/Input.jsx";
+import { Select } from "@/components/ui/Select.jsx";
+import { Checkbox } from "@/components/ui/Checkbox.jsx";
+import { Badge } from "@/components/ui/Badge.jsx";
+import { Skeleton } from "@/components/ui/Skeleton.jsx";
+import { cn } from "@/lib/utils.js";
+import { addMod, getInstance, getSecretStatus } from "@/lib/api.ts";
+import { useNavigate, useParams, useLocation, Link } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
+import { useAddModStore, initialState } from "@/stores/addModStore.js";
+import { parseJarFilename } from "@/lib/jar.ts";
 
-const steps = ['Mod URL', 'Loader', 'Minecraft Version', 'Mod Version'];
+const steps = ["Mod URL", "Loader", "Minecraft Version", "Mod Version"];
 const loaders = [
-  { id: 'fabric', label: 'Fabric' },
-  { id: 'forge', label: 'Forge' },
-  { id: 'quilt', label: 'Quilt' },
+  { id: "fabric", label: "Fabric" },
+  { id: "forge", label: "Forge" },
+  { id: "quilt", label: "Quilt" },
 ];
 
 export default function AddMod() {
@@ -62,8 +68,8 @@ export default function AddMod() {
 
   const [hasToken, setHasToken] = useState(true);
   useEffect(() => {
-    getToken()
-      .then((t) => setHasToken(!!t))
+    getSecretStatus("modrinth")
+      .then((s) => setHasToken(s.exists))
       .catch(() => setHasToken(false));
   }, []);
 
@@ -76,7 +82,7 @@ export default function AddMod() {
       })
       .catch((err) =>
         toast.error(
-          err instanceof Error ? err.message : 'Failed to load instance',
+          err instanceof Error ? err.message : "Failed to load instance",
         ),
       );
   }, [instanceId, setLoader]);
@@ -161,25 +167,25 @@ export default function AddMod() {
       if (resp?.warning) {
         toast.warning(resp.warning);
       }
-      toast.success('Mod added');
+      toast.success("Mod added");
       resetWizard();
       navigate(`/instances/${instanceId}`, {
         state: { mods: resp.mods, resolved: unresolvedFile },
       });
     } catch (err) {
-      if (err instanceof Error && err.message === 'token required') {
-        toast.error('Modrinth token required');
+      if (err instanceof Error && err.message === "token required") {
+        toast.error("Modrinth token required");
       } else if (err instanceof Error) {
         toast.error(err.message);
       } else {
-        toast.error('Failed to add mod');
+        toast.error("Failed to add mod");
       }
     }
   }
 
   const filteredModVersions = includePre
     ? safeModVersions
-    : safeModVersions.filter((v) => v.version_type === 'release');
+    : safeModVersions.filter((v) => v.version_type === "release");
 
   if (!hasToken) {
     return (
@@ -224,8 +230,8 @@ export default function AddMod() {
               <li key={s} className="flex-1">
                 <div
                   className={cn(
-                    'h-1 rounded-full bg-muted',
-                    i <= step && 'bg-primary'
+                    "h-1 rounded-full bg-muted",
+                    i <= step && "bg-primary",
                   )}
                 />
               </li>
@@ -300,7 +306,10 @@ export default function AddMod() {
                 exit={{ opacity: 0 }}
                 className="space-y-sm"
               >
-                <label className="block text-sm font-medium" htmlFor="mc-version">
+                <label
+                  className="block text-sm font-medium"
+                  htmlFor="mc-version"
+                >
                   Minecraft version
                 </label>
                 {loadingVersions ? (
@@ -357,8 +366,8 @@ export default function AddMod() {
                         ref={idx === 0 ? refs[3] : null}
                         onClick={() => setSelectedModVersion(v.id)}
                         className={cn(
-                          'flex w-full items-center justify-between rounded-md border p-sm text-left',
-                          selectedModVersion === v.id && 'border-primary'
+                          "flex w-full items-center justify-between rounded-md border p-sm text-left",
+                          selectedModVersion === v.id && "border-primary",
                         )}
                       >
                         <div>

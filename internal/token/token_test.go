@@ -1,13 +1,37 @@
 package token
 
 import (
-	"path/filepath"
+	"context"
+	"database/sql"
 	"strings"
 	"testing"
+
+	dbpkg "modsentinel/internal/db"
+	"modsentinel/internal/secrets"
+
+	_ "modernc.org/sqlite"
 )
 
+func initSvc(t *testing.T) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:memdb1?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := dbpkg.Init(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	km, err := secrets.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load manager: %v", err)
+	}
+	Init(secrets.NewService(db, km))
+}
+
 func TestTokenStorage(t *testing.T) {
-	t.Setenv("MODSENTINEL_TOKEN_PATH", filepath.Join(t.TempDir(), "token"))
+	initSvc(t)
 	tok := "abcdef123456"
 	if err := SetToken(tok); err != nil {
 		t.Fatalf("set token: %v", err)
@@ -32,7 +56,7 @@ func TestTokenStorage(t *testing.T) {
 }
 
 func TestTokenRedaction(t *testing.T) {
-	t.Setenv("MODSENTINEL_TOKEN_PATH", filepath.Join(t.TempDir(), "token"))
+	initSvc(t)
 	tok := "abcdef1234567890"
 	if err := SetToken(tok); err != nil {
 		t.Fatalf("set token: %v", err)
