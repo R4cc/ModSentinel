@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { useSearchParams, useParams, useLocation } from "react-router-dom";
-import { Package, RefreshCw, Trash2, Plus } from "lucide-react";
+import { useSearchParams, useParams, useLocation, Link } from "react-router-dom";
+import { Package, RefreshCw, Trash2, Plus, ExternalLink, ArrowLeft } from "lucide-react";
 import { Input } from "@/components/ui/Input.jsx";
 import { Select } from "@/components/ui/Select.jsx";
 import { Button } from "@/components/ui/Button.jsx";
@@ -217,14 +217,50 @@ export default function Mods() {
     }
   }
 
+  function getProjectUrl(m) {
+    const extractId = (url) => {
+      if (!url) return null;
+      const match = url.match(/cdn\.modrinth\.com\/data\/([^/]+)/);
+      return match ? match[1] : null;
+    };
+    const extractSlug = (url) => {
+      if (!url) return null;
+      try {
+        const u = new URL(url);
+        if (!u.hostname.endsWith('modrinth.com')) return null;
+        const parts = u.pathname.split('/').filter(Boolean);
+        const idx = parts.findIndex((p) =>
+          ['mod', 'plugin', 'datapack', 'resourcepack'].includes(p),
+        );
+        if (idx !== -1 && idx + 1 < parts.length) return parts[idx + 1];
+      } catch {
+        return null;
+      }
+      return null;
+    };
+    const id = extractId(m.download_url) || extractId(m.icon_url);
+    if (id) return `https://modrinth.com/mod/${id}`;
+    const slug = extractSlug(m.url);
+    if (slug) return `https://modrinth.com/mod/${slug}`;
+    if (m.url?.includes('modrinth.com')) return m.url;
+    return null;
+  }
+
   return (
     <div className="space-y-md">
       {ConfirmModal}
+      <Link
+        to="/instances"
+        className="inline-flex items-center gap-xs text-sm text-muted-foreground hover:underline"
+      >
+        <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+        Back to Instances
+      </Link>
       {instance && (
         <div className="flex flex-wrap items-center gap-sm">
           {editingName ? (
             <form
-              className="flex flex-wrap items-center gap-sm"
+              className="flex flex-wrap items-center gap-sm flex-1"
               onSubmit={saveName}
             >
               <Input
@@ -248,13 +284,15 @@ export default function Mods() {
               </Button>
             </form>
           ) : (
-            <>
-              <h1 className="flex items-center gap-xs text-2xl font-bold">
-                {instance.name}
-                <span className="text-lg font-normal text-muted-foreground capitalize">
-                  ({instance.loader})
-                </span>
-              </h1>
+            <h1 className="flex items-center gap-xs text-2xl font-bold flex-1">
+              {instance.name}
+              <span className="text-lg font-normal text-muted-foreground capitalize">
+                ({instance.loader})
+              </span>
+            </h1>
+          )}
+          <div className="flex flex-wrap items-center gap-sm ml-auto">
+            {!editingName && (
               <Button
                 size="sm"
                 variant="secondary"
@@ -265,28 +303,28 @@ export default function Mods() {
               >
                 Edit Name
               </Button>
-            </>
-          )}
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => {
-              setEnforce(instance.enforce_same_loader);
-              setSettingsOpen(true);
-            }}
-          >
-            Edit
-          </Button>
-          {instance.pufferpanel_server_id && (
+            )}
             <Button
               size="sm"
               variant="secondary"
-              onClick={handleResync}
-              disabled={resyncing}
+              onClick={() => {
+                setEnforce(instance.enforce_same_loader);
+                setSettingsOpen(true);
+              }}
             >
-              {resyncing ? "Resyncing..." : "Resync from PufferPanel"}
+              Edit
             </Button>
-          )}
+            {instance.pufferpanel_server_id && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={handleResync}
+                disabled={resyncing}
+              >
+                {resyncing ? "Resyncing..." : "Resync from PufferPanel"}
+              </Button>
+            )}
+          </div>
         </div>
       )}
       <div className="min-h-5 space-y-xs">
@@ -434,7 +472,10 @@ export default function Mods() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {current.map((m) => (
+              {current.map((m) => {
+                const projectUrl = getProjectUrl(m);
+                const isModrinth = !!projectUrl;
+                return (
                 <TableRow key={m.id}>
                   <TableCell className="flex items-center gap-sm font-medium">
                     {m.icon_url && (
@@ -462,6 +503,23 @@ export default function Mods() {
                     </Button>
                     <Button
                       variant="outline"
+                      as={projectUrl ? "a" : "button"}
+                      href={projectUrl || undefined}
+                      target={projectUrl ? "_blank" : undefined}
+                      rel={projectUrl ? "noopener" : undefined}
+                      aria-label="Open project page"
+                      className="h-8 px-sm"
+                      disabled={!isModrinth}
+                      title={
+                        isModrinth
+                          ? "Open project page"
+                          : "Project page available only for Modrinth mods"
+                      }
+                    >
+                      <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                    <Button
+                      variant="outline"
                       onClick={() => handleDelete(m.id)}
                       aria-label="Delete mod"
                       className="h-8 px-sm"
@@ -470,7 +528,8 @@ export default function Mods() {
                     </Button>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
 

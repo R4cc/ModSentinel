@@ -181,6 +181,80 @@ describe("Mods instance scoping", () => {
     fireEvent.click(screen.getAllByLabelText("Delete mod")[0]);
     await waitFor(() => expect(deleteMod).toHaveBeenCalledWith(1, 1));
   });
+
+  it("renders project link for Modrinth mods", async () => {
+    const modA = {
+      id: 1,
+      name: "Alpha",
+      url: "https://example.com/a",
+      icon_url: "https://cdn.modrinth.com/data/AANobbMI/icon.png",
+      download_url:
+        "https://cdn.modrinth.com/data/AANobbMI/versions/1.0.0/alpha.jar",
+      game_version: "1.20",
+      loader: "fabric",
+      current_version: "1.0",
+      available_version: "1.0",
+      channel: "release",
+      instance_id: 1,
+    };
+    getMods.mockResolvedValueOnce([modA]);
+    renderPage();
+    const link = await screen.findByRole("link", {
+      name: "Open project page",
+    });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://modrinth.com/mod/AANobbMI",
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener");
+  });
+
+  it("disables project link for non-Modrinth mods", async () => {
+    const modA = {
+      id: 1,
+      name: "Alpha",
+      url: "https://example.com/a",
+      game_version: "1.20",
+      loader: "fabric",
+      current_version: "1.0",
+      available_version: "1.0",
+      channel: "release",
+      instance_id: 1,
+    };
+    getMods.mockResolvedValueOnce([modA]);
+    renderPage();
+    const els = await screen.findAllByLabelText("Open project page");
+    const btn = els.find((e) => e.tagName === "BUTTON");
+    expect(btn).toBeDefined();
+    expect(btn).toBeDisabled();
+    expect(btn).not.toHaveAttribute("href");
+    expect(btn).toHaveAttribute(
+      "title",
+      "Project page available only for Modrinth mods",
+    );
+    const row = btn.closest("tr");
+    expect(row.querySelector('a[aria-label="Open project page"]')).toBeNull();
+  });
+
+  it("navigates back to instances", async () => {
+    const router = createMemoryRouter(
+      [
+        { path: "/instances/:id", element: <Mods /> },
+        { path: "/instances", element: <div>Instances</div> },
+      ],
+      { initialEntries: ["/instances/1"] },
+    );
+
+    render(<RouterProvider router={router} />);
+
+    await screen.findAllByRole("heading", { name: /Inst/ });
+    const links = screen.getAllByRole("link", { name: /Back to Instances/ });
+    fireEvent.click(links[links.length - 1]);
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/instances"),
+    );
+  });
 });
 
 describe("Mods unmatched files", () => {
@@ -347,11 +421,12 @@ describe("Mods instance switching", () => {
       { initialEntries: ["/instances/1"] },
     );
 
-    const { container, findByText } = render(
+    const { container, findAllByText, findByText } = render(
       <RouterProvider router={router} />,
     );
 
-    expect(await findByText("Alpha")).toBeInTheDocument();
+    const alpha = await findAllByText("Alpha");
+    expect(alpha[0]).toBeInTheDocument();
 
     await act(async () => {
       await router.navigate("/instances/2");
