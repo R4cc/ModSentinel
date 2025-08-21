@@ -38,3 +38,29 @@ func TestEncryptDecryptRoundtrip(t *testing.T) {
 		t.Fatalf("roundtrip mismatch: %s", pt)
 	}
 }
+
+func TestLoadGeneratesEphemeralKey(t *testing.T) {
+	os.Unsetenv("SECRET_KEYSET")
+	os.Unsetenv("KMS_KEY_NAME")
+	os.Unsetenv("SECRET_KEYSET_CIPHERTEXT")
+
+	mgr, err := Load(context.Background())
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	ct, iv, keyID, err := mgr.Encrypt([]byte("hi"))
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	if keyID == "" {
+		t.Fatalf("expected non-empty key id")
+	}
+	pt, err := mgr.Decrypt(ct, iv, keyID)
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if string(pt) != "hi" {
+		t.Fatalf("roundtrip mismatch: %s", pt)
+	}
+}
