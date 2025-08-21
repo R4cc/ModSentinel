@@ -2,6 +2,9 @@ import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { axe } from 'vitest-axe';
+
+HTMLCanvasElement.prototype.getContext = () => {};
 
 vi.mock('@/lib/api.ts', () => ({
   getToken: vi.fn().mockResolvedValue('token'),
@@ -237,7 +240,7 @@ describe('AddMod page', () => {
     );
 
     const urlInput = await screen.findByLabelText('Mod URL');
-    fireEvent.change(urlInput, { target: { value: 'https://example.com/mod/test' } });
+    fireEvent.change(urlInput, { target: { value: 'https://modrinth.com/mod/test' } });
     const nextBtns = screen.getAllByRole('button', { name: 'Next' });
     fireEvent.click(nextBtns[nextBtns.length - 1]);
 
@@ -314,5 +317,19 @@ describe('AddMod page', () => {
 
     expect(await screen.findByText('Alpha')).toBeInTheDocument();
     expect(getMods).not.toHaveBeenCalled();
+  });
+
+  it('has no critical axe violations', async () => {
+    const { container } = render(
+      <MemoryRouter initialEntries={['/instances/1/add']}>
+        <Routes>
+          <Route path='/instances/:id/add' element={<AddMod />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    await screen.findByLabelText('Mod URL');
+    const results = await axe(container);
+    const critical = results.violations.filter(v => v.impact === 'critical');
+    expect(critical).toHaveLength(0);
   });
 });

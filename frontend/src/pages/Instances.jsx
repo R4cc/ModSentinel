@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Server, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button.jsx";
 import { Modal } from "@/components/ui/Modal.jsx";
@@ -8,19 +8,19 @@ import { Select } from "@/components/ui/Select.jsx";
 import { Checkbox } from "@/components/ui/Checkbox.jsx";
 import { Skeleton } from "@/components/ui/Skeleton.jsx";
 import {
-  Table,
-  TableHeader,
-  TableRow,
-  TableHead,
-  TableBody,
-  TableCell,
-} from "@/components/ui/Table.jsx";
+  Card,
+  CardHeader,
+  CardTitle,
+  CardContent,
+  CardFooter,
+} from "@/components/ui/Card.jsx";
 import { EmptyState } from "@/components/ui/EmptyState.jsx";
 import {
   getInstances,
   addInstance,
   updateInstance,
   deleteInstance,
+  getToken,
   getPufferCreds,
   syncInstances,
   getPufferServers,
@@ -42,6 +42,7 @@ export default function Instances() {
   const [name, setName] = useState("");
   const [loader, setLoader] = useState(loaders[0].id);
   const [enforce, setEnforce] = useState(true);
+  const [hasToken, setHasToken] = useState(true);
   const [hasPuffer, setHasPuffer] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncFromPuffer, setSyncFromPuffer] = useState(false);
@@ -69,6 +70,12 @@ export default function Instances() {
   }, []);
 
   useEffect(() => {
+    getToken()
+      .then((t) => setHasToken(!!t))
+      .catch(() => setHasToken(false));
+  }, []);
+
+  useEffect(() => {
     if (syncFromPuffer) {
       setLoadingServers(true);
       getPufferServers()
@@ -88,10 +95,6 @@ export default function Instances() {
     try {
       const data = await getInstances();
       setInstances(data);
-      if (data.length === 1) {
-        navigate(`/instances/${data[0].id}`, { replace: true });
-        return;
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load instances");
     } finally {
@@ -239,6 +242,18 @@ export default function Instances() {
 
   return (
     <div className="space-y-md">
+      <div className="min-h-5 space-y-xs">
+        {!hasToken && (
+          <p className="text-sm text-muted-foreground">
+            Set a Modrinth token in Settings to enable update checks.
+          </p>
+        )}
+        {!hasPuffer && (
+          <p className="text-sm text-muted-foreground">
+            Set PufferPanel credentials in Settings to enable sync.
+          </p>
+        )}
+      </div>
       <div className="flex justify-end gap-sm">
         {hasPuffer && (
           <Button
@@ -250,37 +265,18 @@ export default function Instances() {
             {syncing ? "Syncing..." : "Sync"}
           </Button>
         )}
-        <Button onClick={openAdd}>New instance</Button>
+        <Button onClick={openAdd}>Add instance</Button>
       </div>
       {loading && (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Loader</TableHead>
-              <TableHead>Mods</TableHead>
-              <TableHead></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {Array.from({ length: 3 }).map((_, i) => (
-              <TableRow key={i}>
-                <TableCell>
-                  <Skeleton className="h-4 w-32" />
-                </TableCell>
-                <TableCell>
-                  <Skeleton className="h-4 w-20" />
-                </TableCell>
-                <TableCell>
-                  <Skeleton className="h-4 w-8" />
-                </TableCell>
-                <TableCell>
-                  <Skeleton className="h-4 w-20" />
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <div className="grid grid-cols-1 gap-md sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Card key={i} className="p-md space-y-sm">
+              <Skeleton className="h-5 w-32" />
+              <Skeleton className="h-4 w-20" />
+              <Skeleton className="h-4 w-8" />
+            </Card>
+          ))}
+        </div>
       )}
       {!loading && error && (
         <div className="flex flex-col items-center gap-sm">
@@ -296,45 +292,54 @@ export default function Instances() {
         />
       )}
       {!loading && !error && instances.length > 0 && (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Loader</TableHead>
-              <TableHead>Mods</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {instances.map((inst) => (
-              <TableRow key={inst.id}>
-                <TableCell>
-                  <Link
-                    to={`/instances/${inst.id}`}
-                    className="underline hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                  >
-                    {inst.name}
-                  </Link>
-                </TableCell>
-                <TableCell>{inst.loader}</TableCell>
-                <TableCell>{inst.mod_count}</TableCell>
-                <TableCell className="flex gap-xs">
-                  <Button size="sm" onClick={() => openEdit(inst)}>
-                    Edit
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => openDelete(inst)}
-                    aria-label="Delete instance"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <div
+          className="grid grid-cols-1 gap-md sm:grid-cols-2 lg:grid-cols-3"
+          data-testid="instance-grid"
+        >
+          {instances.map((inst) => (
+            <Card
+              key={inst.id}
+              role="link"
+              tabIndex={0}
+              onClick={() => navigate(`/instances/${inst.id}`)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") navigate(`/instances/${inst.id}`);
+              }}
+              aria-label={inst.name}
+              className="flex flex-col justify-between cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+            >
+              <CardHeader>
+                <CardTitle>{inst.name}</CardTitle>
+              </CardHeader>
+              <CardContent className="flex items-center justify-between text-sm">
+                <span className="capitalize">{inst.loader}</span>
+                <span>{inst.mod_count} mods</span>
+              </CardContent>
+              <CardFooter className="flex justify-end gap-xs">
+                <Button
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openEdit(inst);
+                  }}
+                >
+                  Edit
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openDelete(inst);
+                  }}
+                  aria-label="Delete instance"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </CardFooter>
+            </Card>
+          ))}
+        </div>
       )}
 
       <Modal open={open} onClose={() => setOpen(false)}>
