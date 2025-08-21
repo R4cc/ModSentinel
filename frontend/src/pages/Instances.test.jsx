@@ -1,6 +1,9 @@
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { axe } from "vitest-axe";
+
+HTMLCanvasElement.prototype.getContext = () => {};
 
 const navigate = vi.fn();
 vi.mock("react-router-dom", async () => {
@@ -13,9 +16,11 @@ vi.mock("@/lib/api.ts", () => ({
   addInstance: vi.fn(),
   updateInstance: vi.fn(),
   deleteInstance: vi.fn(),
+  getToken: vi.fn(),
   getPufferCreds: vi.fn(),
   syncInstances: vi.fn(),
   getPufferServers: vi.fn(),
+  getMods: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({
@@ -33,15 +38,18 @@ import {
   addInstance,
   updateInstance,
   deleteInstance,
+  getToken,
   getPufferCreds,
   syncInstances,
   getPufferServers,
+  getMods,
 } from "@/lib/api.ts";
 import { toast } from "sonner";
 
 describe("Instances page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getToken.mockResolvedValue("token");
     getPufferCreds.mockResolvedValue({
       base_url: "",
       client_id: "",
@@ -57,6 +65,30 @@ describe("Instances page", () => {
       </MemoryRouter>,
     );
     expect(await screen.findByText("No instances")).toBeInTheDocument();
+    const [addBtn] = await screen.findAllByRole("button", {
+      name: /add instance/i,
+    });
+    expect(addBtn).toBeInTheDocument();
+  });
+
+  it("shows token and puffer warnings", async () => {
+    getToken.mockResolvedValueOnce(null);
+    getInstances.mockResolvedValue([]);
+    render(
+      <MemoryRouter>
+        <Instances />
+      </MemoryRouter>,
+    );
+    expect(
+      await screen.findByText(
+        "Set a Modrinth token in Settings to enable update checks.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(
+        "Set PufferPanel credentials in Settings to enable sync.",
+      ).length,
+    ).toBeGreaterThan(0);
   });
 
   it("shows error state on failure", async () => {
@@ -70,18 +102,35 @@ describe("Instances page", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
-  it("redirects to single instance", async () => {
+  it("shows overview without loading mods or redirecting when single instance", async () => {
     getInstances.mockResolvedValueOnce([
-      { id: 1, name: "Default", loader: "fabric", enforce_same_loader: true },
+      {
+        id: 1,
+        name: "Default",
+        loader: "fabric",
+        enforce_same_loader: true,
+        mod_count: 0,
+      },
     ]);
     render(
       <MemoryRouter initialEntries={["/instances"]}>
         <Instances />
       </MemoryRouter>,
     );
-    await waitFor(() =>
-      expect(navigate).toHaveBeenCalledWith("/instances/1", { replace: true }),
+    expect(await screen.findByText("Default")).toBeInTheDocument();
+    const [addBtn] = await screen.findAllByRole("button", {
+      name: /add instance/i,
+    });
+    expect(addBtn).toBeInTheDocument();
+    const grid = await screen.findByTestId("instance-grid");
+    expect(grid.children).toHaveLength(1);
+    expect(grid).toHaveClass(
+      "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3",
+      { exact: false },
     );
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(getMods).not.toHaveBeenCalled();
   });
 
   it("creates instance and navigates", async () => {
@@ -100,10 +149,10 @@ describe("Instances page", () => {
       </MemoryRouter>,
     );
 
-    const [newBtn] = await screen.findAllByRole("button", {
-      name: /new instance/i,
+    const [addBtn] = await screen.findAllByRole("button", {
+      name: /add instance/i,
     });
-    fireEvent.click(newBtn);
+    fireEvent.click(addBtn);
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "Test" },
     });
@@ -131,10 +180,10 @@ describe("Instances page", () => {
       </MemoryRouter>,
     );
 
-    const [newBtn] = await screen.findAllByRole("button", {
-      name: /new instance/i,
+    const [addBtn] = await screen.findAllByRole("button", {
+      name: /add instance/i,
     });
-    fireEvent.click(newBtn);
+    fireEvent.click(addBtn);
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(addInstance).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalledWith("Name required");
@@ -156,12 +205,15 @@ describe("Instances page", () => {
       </MemoryRouter>,
     );
 
-    const [newBtn] = await screen.findAllByRole("button", {
-      name: /new instance/i,
+    const [addBtn] = await screen.findAllByRole("button", {
+      name: /add instance/i,
     });
-    fireEvent.click(newBtn);
+    fireEvent.click(addBtn);
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "Test" },
+    });
+    fireEvent.change(screen.getByLabelText("Loader"), {
+      target: { value: "forge" },
     });
     fireEvent.click(screen.getByLabelText("Enforce same loader for mods"));
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
@@ -170,7 +222,7 @@ describe("Instances page", () => {
     await waitFor(() =>
       expect(addInstance).toHaveBeenCalledWith({
         name: "Test",
-        loader: "fabric",
+        loader: "forge",
         enforce_same_loader: false,
       }),
     );
@@ -245,13 +297,15 @@ describe("Instances page", () => {
         <Instances />
       </MemoryRouter>,
     );
-    const [newBtn] = await screen.findAllByRole("button", {
-      name: /new instance/i,
+    const [addBtn] = await screen.findAllByRole("button", {
+      name: /add instance/i,
     });
-    fireEvent.click(newBtn);
+    fireEvent.click(addBtn);
     const toggle = screen.getByLabelText("Sync from PufferPanel");
     expect(toggle).toBeDisabled();
-    expect(screen.getByText(/pufferpanel credentials/i)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/pufferpanel credentials/i).length,
+    ).toBeGreaterThan(0);
   });
 
   it("enables create after selecting server", async () => {
@@ -278,10 +332,10 @@ describe("Instances page", () => {
         <Instances />
       </MemoryRouter>,
     );
-    const [newBtn] = await screen.findAllByRole("button", {
-      name: /new instance/i,
+    const [addBtn] = await screen.findAllByRole("button", {
+      name: /add instance/i,
     });
-    fireEvent.click(newBtn);
+    fireEvent.click(addBtn);
     const toggle = screen.getByLabelText("Sync from PufferPanel");
     fireEvent.click(toggle);
     const select = await screen.findByLabelText("Server");
@@ -312,10 +366,10 @@ describe("Instances page", () => {
         <Instances />
       </MemoryRouter>,
     );
-    const [newBtn] = await screen.findAllByRole("button", {
-      name: /new instance/i,
+    const [addBtn] = await screen.findAllByRole("button", {
+      name: /add instance/i,
     });
-    fireEvent.click(newBtn);
+    fireEvent.click(addBtn);
     fireEvent.click(screen.getByLabelText("Sync from PufferPanel"));
     const select = await screen.findByLabelText("Server");
     fireEvent.change(select, { target: { value: "1" } });
@@ -337,5 +391,18 @@ describe("Instances page", () => {
         state: { unmatched: ["a.jar"], mods: [] },
       }),
     );
+  });
+
+  it("has no critical axe violations", async () => {
+    getInstances.mockResolvedValueOnce([]);
+    const { container } = render(
+      <MemoryRouter>
+        <Instances />
+      </MemoryRouter>,
+    );
+    await screen.findAllByText("No instances");
+    const results = await axe(container);
+    const critical = results.violations.filter((v) => v.impact === "critical");
+    expect(critical).toHaveLength(0);
   });
 });

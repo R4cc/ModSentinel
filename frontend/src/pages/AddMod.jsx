@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
-import { Box, Cog, Gauge } from 'lucide-react';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/Card.jsx';
 import { Button } from '@/components/ui/Button.jsx';
 import { Input } from '@/components/ui/Input.jsx';
+import { Select } from '@/components/ui/Select.jsx';
 import { Checkbox } from '@/components/ui/Checkbox.jsx';
 import { Badge } from '@/components/ui/Badge.jsx';
 import { Skeleton } from '@/components/ui/Skeleton.jsx';
@@ -16,24 +16,9 @@ import { parseJarFilename } from '@/lib/jar.ts';
 
 const steps = ['Mod URL', 'Loader', 'Minecraft Version', 'Mod Version'];
 const loaders = [
-  {
-    id: 'fabric',
-    label: 'Fabric',
-    description: 'Lightweight mod loader',
-    icon: Box,
-  },
-  {
-    id: 'forge',
-    label: 'Forge',
-    description: 'Classic mod loader',
-    icon: Cog,
-  },
-  {
-    id: 'quilt',
-    label: 'Quilt',
-    description: 'Fork of Fabric with patches',
-    icon: Gauge,
-  },
+  { id: 'fabric', label: 'Fabric' },
+  { id: 'forge', label: 'Forge' },
+  { id: 'quilt', label: 'Quilt' },
 ];
 
 export default function AddMod() {
@@ -271,39 +256,24 @@ export default function AddMod() {
                 exit={{ opacity: 0 }}
                 className="space-y-sm"
               >
-                <fieldset className="space-y-xs">
-                  <legend className="text-sm font-medium">Choose loader</legend>
-                  {loaders.map((l, idx) => {
-                    const Icon = l.icon;
-                    return (
-                      <label
-                        key={l.id}
-                        className={cn(
-                          'flex cursor-pointer items-center gap-sm rounded-md border p-sm',
-                          loader === l.id && 'border-primary'
-                        )}
-                      >
-                        <input
-                          ref={idx === 0 ? refs[1] : null}
-                          type="radio"
-                          name="loader"
-                          value={l.id}
-                          className="h-4 w-4"
-                          onChange={() => setLoader(l.id)}
-                          checked={loader === l.id}
-                          disabled={instance?.enforce_same_loader}
-                        />
-                        <Icon className="h-4 w-4" />
-                        <div className="flex flex-col">
-                          <span className="font-medium">{l.label}</span>
-                          <span className="text-sm text-muted-foreground">
-                            {l.description}
-                          </span>
-                        </div>
-                      </label>
-                    );
-                  })}
-                </fieldset>
+                <div className="space-y-xs">
+                  <label htmlFor="loader" className="text-sm font-medium">
+                    Loader
+                  </label>
+                  <Select
+                    id="loader"
+                    ref={refs[1]}
+                    value={loader}
+                    onChange={(e) => setLoader(e.target.value)}
+                    disabled={instance?.enforce_same_loader}
+                  >
+                    {loaders.map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {l.label}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
               </motion.div>
             )}
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams, useParams, useLocation } from "react-router-dom";
-import { Package, RefreshCw, Trash2, Plus, Pencil } from "lucide-react";
+import { Package, RefreshCw, Trash2, Plus } from "lucide-react";
 import { Input } from "@/components/ui/Input.jsx";
 import { Select } from "@/components/ui/Select.jsx";
 import { Button } from "@/components/ui/Button.jsx";
@@ -61,6 +61,10 @@ export default function Mods() {
   }, []);
 
   useEffect(() => {
+    setInstance(null);
+    setMods([]);
+    setUnmatched([]);
+    setLoading(true);
     fetchInstance();
     if (location.state?.mods) {
       setMods(location.state.mods);
@@ -228,6 +232,9 @@ export default function Mods() {
                 onChange={(e) => setName(e.target.value)}
                 className="h-7 w-48"
               />
+              <span className="text-lg font-normal text-muted-foreground capitalize">
+                ({instance.loader})
+              </span>
               <Button size="sm" type="submit">
                 Save
               </Button>
@@ -249,22 +256,16 @@ export default function Mods() {
                 </span>
               </h1>
               <Button
-                variant="ghost"
-                size="icon"
+                size="sm"
+                variant="secondary"
                 onClick={() => {
                   setName(instance.name);
                   setEditingName(true);
                 }}
-                aria-label="Rename instance"
               >
-                <Pencil className="h-4 w-4" />
+                Edit Name
               </Button>
             </>
-          )}
-          {editingName && (
-            <span className="text-lg font-normal text-muted-foreground capitalize">
-              ({instance.loader})
-            </span>
           )}
           <Button
             size="sm"
@@ -288,6 +289,18 @@ export default function Mods() {
           )}
         </div>
       )}
+      <div className="min-h-5 space-y-xs">
+        {!hasToken && (
+          <p className="text-sm text-muted-foreground">
+            Set a Modrinth token in Settings to enable update checks.
+          </p>
+        )}
+        {instance?.pufferpanel_server_id && !instance?.last_sync_at && (
+          <p className="text-sm text-muted-foreground">
+            Instance has never been synced from PufferPanel.
+          </p>
+        )}
+      </div>
       {instance?.last_sync_at && (
         <p className="text-sm text-muted-foreground">
           Last sync: {new Date(instance.last_sync_at).toLocaleString()} (added
@@ -356,12 +369,6 @@ export default function Mods() {
           Add Mod
         </Button>
       </div>
-
-      {!hasToken && (
-        <p className="text-sm text-muted-foreground">
-          Set a Modrinth token in settings to enable update checks.
-        </p>
-      )}
 
       {loading && (
         <Table>

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -26,7 +26,13 @@ vi.mock("@/hooks/useConfirm.jsx", () => ({
 }));
 
 import Mods from "./Mods.jsx";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  createMemoryRouter,
+  RouterProvider,
+} from "react-router-dom";
 import {
   getMods,
   getInstance,
@@ -98,7 +104,7 @@ describe("Mods instance editing", () => {
       await screen.findByRole("heading", { name: /Old/ }),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText("Rename instance"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit Name" }));
     const input = screen.getByDisplayValue("Old");
     fireEvent.change(input, { target: { value: "New" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -108,7 +114,9 @@ describe("Mods instance editing", () => {
         name: "New",
       }),
     );
-    expect(screen.getByRole("heading", { name: /New/ })).toBeInTheDocument();
+    const heading = screen.getByRole("heading", { name: /New/ });
+    expect(heading).toHaveTextContent("New");
+    expect(heading).toHaveTextContent("fabric");
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     const checkbox = screen.getByLabelText("Enforce same loader for mods");
@@ -275,5 +283,129 @@ describe("Mods resync", () => {
     expect(headers.length).toBeGreaterThan(0);
     const items = screen.getAllByText("a.jar");
     expect(items.length).toBeGreaterThan(0);
+  });
+});
+
+describe("Mods instance switching", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getToken.mockResolvedValue("t");
+  });
+
+  it("clears stale data when navigating between instances", async () => {
+    const mod1 = {
+      id: 1,
+      name: "Alpha",
+      url: "https://example.com/a",
+      game_version: "1.20",
+      loader: "fabric",
+      current_version: "1.0",
+      available_version: "1.0",
+      channel: "release",
+      instance_id: 1,
+    };
+    const mod2 = {
+      id: 2,
+      name: "Beta",
+      url: "https://example.com/b",
+      game_version: "1.20",
+      loader: "forge",
+      current_version: "1.0",
+      available_version: "1.0",
+      channel: "release",
+      instance_id: 2,
+    };
+    const inst1 = {
+      id: 1,
+      name: "One",
+      loader: "fabric",
+      enforce_same_loader: true,
+      created_at: "",
+      mod_count: 1,
+    };
+    const inst2 = {
+      id: 2,
+      name: "Two",
+      loader: "forge",
+      enforce_same_loader: true,
+      created_at: "",
+      mod_count: 1,
+    };
+
+    getMods.mockImplementation((id) => {
+      if (id === 1) return Promise.resolve([mod1]);
+      if (id === 2) return Promise.resolve([mod2]);
+    });
+
+    getInstance.mockImplementation((id) => {
+      if (id === 1) return Promise.resolve(inst1);
+      if (id === 2) return Promise.resolve(inst2);
+    });
+
+    const router = createMemoryRouter(
+      [{ path: "/instances/:id", element: <Mods /> }],
+      { initialEntries: ["/instances/1"] },
+    );
+
+    const { container, findByText } = render(
+      <RouterProvider router={router} />,
+    );
+
+    expect(await findByText("Alpha")).toBeInTheDocument();
+
+    await act(async () => {
+      await router.navigate("/instances/2");
+    });
+
+    await waitFor(() => expect(getMods).toHaveBeenCalledWith(2));
+    expect(await findByText("Beta")).toBeInTheDocument();
+    const rows = container.querySelectorAll("tbody tr");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent("Beta");
+  });
+});
+
+describe("Mods warnings", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getMods.mockResolvedValue([]);
+    getInstance.mockResolvedValue({
+      id: 1,
+      name: "Srv",
+      loader: "fabric",
+      enforce_same_loader: true,
+      created_at: "",
+      mod_count: 0,
+    });
+    getToken.mockResolvedValue("token");
+  });
+
+  it("shows token missing warning", async () => {
+    getToken.mockResolvedValue(null);
+    renderPage();
+    expect(
+      await screen.findByText(
+        "Set a Modrinth token in Settings to enable update checks.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows unsynced PufferPanel warning", async () => {
+    getToken.mockResolvedValue("token");
+    getInstance.mockResolvedValueOnce({
+      id: 1,
+      name: "Srv",
+      loader: "fabric",
+      enforce_same_loader: true,
+      created_at: "",
+      mod_count: 0,
+      pufferpanel_server_id: "srv1",
+    });
+    renderPage();
+    expect(
+      await screen.findByText(
+        "Instance has never been synced from PufferPanel.",
+      ),
+    ).toBeInTheDocument();
   });
 });
