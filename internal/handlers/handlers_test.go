@@ -698,6 +698,40 @@ func TestSecurityMiddleware(t *testing.T) {
 	}
 }
 
+func TestSecurityMiddleware_NoAdminToken(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	var dist embed.FS
+	h := New(db, dist)
+
+	req1 := httptest.NewRequest(http.MethodGet, "/api/settings/secret/modrinth/status", nil)
+	w1 := httptest.NewRecorder()
+	h.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("status %d", w1.Code)
+	}
+	var csrf string
+	for _, c := range w1.Result().Cookies() {
+		if c.Name == "csrf_token" {
+			csrf = c.Value
+		}
+	}
+	if csrf == "" {
+		t.Fatalf("missing csrf cookie")
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/api/settings/secret/modrinth", strings.NewReader(`{"token":"abcd1234"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-CSRF-Token", csrf)
+	req2.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusNoContent {
+		t.Fatalf("set status %d", w2.Code)
+	}
+}
+
 func TestMetadataHandler_Proxy(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
