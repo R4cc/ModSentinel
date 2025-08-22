@@ -189,6 +189,7 @@ func New(db *sql.DB, dist embed.FS) http.Handler {
 	r.Get("/api/mods", listModsHandler(db))
 	r.Post("/api/mods/metadata", metadataHandler())
 	r.Post("/api/mods", createModHandler(db))
+	r.Get("/api/mods/{id}/check", checkModHandler(db))
 	r.Put("/api/mods/{id}", updateModHandler(db))
 	r.Delete("/api/mods/{id}", deleteModHandler(db))
 	r.Post("/api/mods/{id}/update", applyUpdateHandler(db))
@@ -454,6 +455,34 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
 			Mods    []dbpkg.Mod `json:"mods"`
 			Warning string      `json:"warning,omitempty"`
 		}{mods, warning})
+	}
+}
+
+func checkModHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid id"))
+			return
+		}
+		m, err := dbpkg.GetMod(db, id)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		slug, err := parseModrinthSlug(m.URL)
+		if err != nil {
+			httpx.Write(w, r, httpx.BadRequest(err.Error()))
+			return
+		}
+		if err := populateAvailableVersion(r.Context(), m, slug); err != nil {
+			writeModrinthError(w, r, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		json.NewEncoder(w).Encode(m)
 	}
 }
 

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import usePreferences from '@/hooks/usePreferences.js';
 import Header from './Header.jsx';
 import Sidebar from './Sidebar.jsx';
-import { Toaster } from 'sonner';
+import { Toaster } from '@/components/ui/Toaster.jsx';
 
 export default function Layout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);

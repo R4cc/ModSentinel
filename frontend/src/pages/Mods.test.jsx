@@ -4,9 +4,10 @@ import {
   fireEvent,
   waitFor,
   act,
+  cleanup,
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("focus-trap-react", () => ({
   default: ({ children }) => children,
@@ -20,18 +21,23 @@ vi.mock("@/lib/api.ts", () => ({
   updateInstance: vi.fn(),
   resyncInstance: vi.fn(),
   getSecretStatus: vi.fn(),
+  checkMod: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+import { toast } from "sonner";
+import { axe } from "vitest-axe";
+
 const confirmMock = vi.fn();
 vi.mock("@/hooks/useConfirm.jsx", () => ({
   useConfirm: () => ({ confirm: confirmMock, ConfirmModal: null }),
 }));
-
 import Mods from "./Mods.jsx";
+
+afterEach(() => cleanup());
 import {
   MemoryRouter,
   Route,
@@ -47,6 +53,7 @@ import {
   deleteMod,
   resyncInstance,
   getSecretStatus,
+  checkMod,
 } from "@/lib/api.ts";
 
 function renderPage() {
@@ -186,12 +193,16 @@ describe("Mods instance scoping", () => {
   it("handles refresh and delete within the instance", async () => {
     renderPage();
     fireEvent.click(await screen.findByLabelText("Check for updates"));
-    await waitFor(() =>
+    await waitFor(() => {
       expect(refreshMod).toHaveBeenCalledWith(
         1,
         expect.objectContaining({ instance_id: 1 }),
-      ),
-    );
+      );
+      expect(toast.success).toHaveBeenCalledWith("Mod is up to date", {
+        id: "mod-uptodate-1",
+      });
+      expect(toast.success).toHaveBeenCalledTimes(1);
+    });
     fireEvent.click(screen.getAllByLabelText("Delete mod")[0]);
     await waitFor(() => expect(deleteMod).toHaveBeenCalledWith(1, 1));
   });
@@ -240,12 +251,41 @@ describe("Mods instance scoping", () => {
     expect(btn).toBeDefined();
     expect(btn).toBeDisabled();
     expect(btn).not.toHaveAttribute("href");
-    expect(btn).toHaveAttribute(
-      "title",
-      "Project page available only for Modrinth mods",
-    );
     const row = btn.closest("tr");
     expect(row.querySelector('a[aria-label="Open project page"]')).toBeNull();
+  });
+
+  it("shows tooltips on hover and focus", async () => {
+    renderPage();
+    const refresh = await screen.findByLabelText("Check for updates");
+    expect(
+      screen.queryByRole("tooltip", { name: "Check for updates" }),
+    ).toBeNull();
+    fireEvent.focus(refresh);
+    expect(
+      screen.getByRole("tooltip", { name: "Check for updates" }),
+    ).toBeInTheDocument();
+    fireEvent.blur(refresh);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("tooltip", { name: "Check for updates" }),
+      ).toBeNull(),
+    );
+    fireEvent.mouseEnter(refresh);
+    expect(
+      screen.getByRole("tooltip", { name: "Check for updates" }),
+    ).toBeInTheDocument();
+  });
+
+  it("has no critical accessibility issues", async () => {
+    const { container } = renderPage();
+    await screen.findByLabelText("Check for updates");
+    const results = await axe(container, {
+      rules: { "color-contrast": { enabled: false } },
+    });
+    expect(
+      results.violations.filter((v) => v.impact === "critical"),
+    ).toHaveLength(0);
   });
 
   it("navigates back to instances", async () => {
@@ -519,6 +559,210 @@ describe("Mods warnings", () => {
       await screen.findByText(
         "Instance has never been synced from PufferPanel.",
       ),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("Mod icons", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
+    getInstance.mockResolvedValue({
+      id: 1,
+      name: "Srv",
+      loader: "fabric",
+      enforce_same_loader: true,
+      created_at: "",
+      mod_count: 1,
+    });
+  });
+
+  it("renders icon when URL provided", async () => {
+    const mod = {
+      id: 1,
+      name: "Alpha",
+      url: "https://example.com/a",
+      icon_url: "https://cdn.modrinth.com/data/AANobbMI/icon.png",
+      game_version: "1.20",
+      loader: "fabric",
+      current_version: "1.0",
+      available_version: "1.0",
+      channel: "release",
+      download_url: "",
+      instance_id: 1,
+    };
+    getMods.mockResolvedValueOnce([mod]);
+    renderPage();
+    await screen.findAllByText("Alpha");
+    const img = document.querySelector("tbody img");
+    expect(img).not.toBeNull();
+    expect(img.getAttribute("src")).toContain(mod.icon_url);
+    expect(img).toHaveAttribute("loading", "lazy");
+  });
+
+  it("shows placeholder when icon missing", async () => {
+    const mod = {
+      id: 1,
+      name: "Alpha",
+      url: "https://example.com/a",
+      icon_url: "",
+      game_version: "1.20",
+      loader: "fabric",
+      current_version: "1.0",
+      available_version: "1.0",
+      channel: "release",
+      download_url: "",
+      instance_id: 1,
+    };
+    getMods.mockResolvedValueOnce([mod]);
+    renderPage();
+    await screen.findAllByText("Alpha");
+    const tdPlaceholder = document.querySelector(
+      'tbody [data-testid="icon-placeholder"]',
+    );
+    expect(document.querySelector("tbody img")).toBeNull();
+    expect(tdPlaceholder).not.toBeNull();
+  });
+
+  it("shows placeholder when icon URL invalid", async () => {
+    const mod = {
+      id: 1,
+      name: "Alpha",
+      url: "https://example.com/a",
+      icon_url: "http://",
+      game_version: "1.20",
+      loader: "fabric",
+      current_version: "1.0",
+      available_version: "1.0",
+      channel: "release",
+      download_url: "",
+      instance_id: 1,
+    };
+    getMods.mockResolvedValueOnce([mod]);
+    renderPage();
+    await screen.findAllByText("Alpha");
+    expect(document.querySelector("tbody img")).toBeNull();
+    expect(
+      document.querySelector('tbody [data-testid="icon-placeholder"]'),
+    ).not.toBeNull();
+  });
+
+  it("falls back to placeholder on error", async () => {
+    const mod = {
+      id: 1,
+      name: "Alpha",
+      url: "https://example.com/a",
+      icon_url: "https://cdn.modrinth.com/data/AANobbMI/icon.png",
+      game_version: "1.20",
+      loader: "fabric",
+      current_version: "1.0",
+      available_version: "1.0",
+      channel: "release",
+      download_url: "",
+      instance_id: 1,
+    };
+    getMods.mockResolvedValueOnce([mod]);
+    renderPage();
+    await screen.findAllByText("Alpha");
+    const img = document.querySelector("tbody img");
+    fireEvent.error(img);
+    await waitFor(() => {
+      expect(
+        document.querySelector('tbody [data-testid="icon-placeholder"]'),
+      ).not.toBeNull();
+    });
+  });
+});
+
+describe("Check for updates", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
+    getInstance.mockResolvedValue({
+      id: 1,
+      name: "Inst",
+      loader: "fabric",
+      enforce_same_loader: true,
+      created_at: "",
+      mod_count: 3,
+    });
+  });
+
+  it("scans mods and shows summary", async () => {
+    const mods = [
+      {
+        id: 1,
+        name: "Alpha",
+        url: "a",
+        icon_url: "",
+        game_version: "1.20",
+        loader: "fabric",
+        current_version: "1.0",
+        available_version: "1.0",
+        channel: "release",
+        download_url: "",
+        instance_id: 1,
+      },
+      {
+        id: 2,
+        name: "Beta",
+        url: "b",
+        icon_url: "",
+        game_version: "1.20",
+        loader: "fabric",
+        current_version: "1.0",
+        available_version: "1.0",
+        channel: "release",
+        download_url: "",
+        instance_id: 1,
+      },
+      {
+        id: 3,
+        name: "Gamma",
+        url: "c",
+        icon_url: "",
+        game_version: "1.20",
+        loader: "fabric",
+        current_version: "1.0",
+        available_version: "1.0",
+        channel: "release",
+        download_url: "",
+        instance_id: 1,
+      },
+    ];
+    getMods.mockResolvedValueOnce(mods);
+    checkMod.mockImplementation((id) => {
+      if (id === 1) return Promise.resolve(mods[0]);
+      if (id === 2)
+        return Promise.resolve({ ...mods[1], available_version: "2.0" });
+      if (id === 3) return Promise.reject(new Error("boom"));
+    });
+    renderPage();
+    await screen.findByText("Alpha");
+    fireEvent.click(screen.getByRole("button", { name: "Check for Updates" }));
+    await waitFor(() => expect(checkMod).toHaveBeenCalledTimes(3));
+    expect(refreshMod).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        screen.getByText("Up to date: 1, Outdated: 1, Errors: 1"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText("Alpha: Up to date"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Beta: Update 2.0 available"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Gamma: Error: boom"),
     ).toBeInTheDocument();
   });
 });

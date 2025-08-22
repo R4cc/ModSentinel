@@ -28,6 +28,8 @@ import {
 } from "@/components/ui/Table.jsx";
 import { Skeleton } from "@/components/ui/Skeleton.jsx";
 import { EmptyState } from "@/components/ui/EmptyState.jsx";
+import ModIcon from "@/components/ModIcon.jsx";
+import { Tooltip } from "@/components/ui/Tooltip.jsx";
 import {
   getMods,
   refreshMod,
@@ -36,6 +38,7 @@ import {
   updateInstance,
   resyncInstance,
   getSecretStatus,
+  checkMod,
 } from "@/lib/api.ts";
 import { cn } from "@/lib/utils.js";
 import { toast } from "sonner";
@@ -65,6 +68,15 @@ export default function Mods() {
   const [enforce, setEnforce] = useState(true);
   const [unmatched, setUnmatched] = useState([]);
   const [resyncing, setResyncing] = useState(false);
+  const [checkOpen, setCheckOpen] = useState(false);
+  const [checkingAll, setCheckingAll] = useState(false);
+  const [checkProgress, setCheckProgress] = useState(0);
+  const [checkResults, setCheckResults] = useState([]);
+  const [checkSummary, setCheckSummary] = useState({
+    updated: 0,
+    outdated: 0,
+    errors: 0,
+  });
 
   useEffect(() => {
     getSecretStatus("modrinth")
@@ -139,6 +151,53 @@ export default function Mods() {
     }
   }
 
+  async function handleCheckAll() {
+    if (mods.length === 0) return;
+    setCheckOpen(true);
+    setCheckingAll(true);
+    setCheckProgress(0);
+    setCheckResults([]);
+    setCheckSummary({ updated: 0, outdated: 0, errors: 0 });
+    const limit = 3;
+    let index = 0;
+    async function worker() {
+      while (index < mods.length) {
+        const mod = mods[index++];
+        try {
+          const res = await checkMod(mod.id);
+          const up = res.available_version === res.current_version;
+          setCheckResults((prev) => [
+            ...prev,
+            {
+              id: mod.id,
+              name: mod.name || mod.url,
+              status: up ? "updated" : "outdated",
+              available_version: res.available_version,
+            },
+          ]);
+          setCheckSummary((s) => ({
+            ...s,
+            updated: s.updated + (up ? 1 : 0),
+            outdated: s.outdated + (up ? 0 : 1),
+          }));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Failed to check";
+          setCheckResults((prev) => [
+            ...prev,
+            { id: mod.id, name: mod.name || mod.url, status: "error", error: msg },
+          ]);
+          setCheckSummary((s) => ({ ...s, errors: s.errors + 1 }));
+        } finally {
+          setCheckProgress((p) => p + 1);
+        }
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(limit, mods.length) }, () => worker()),
+    );
+    setCheckingAll(false);
+  }
+
   useEffect(() => {
     setPage(1);
   }, [filter, sort, status, instanceId]);
@@ -172,9 +231,13 @@ export default function Mods() {
       setMods(data);
       const updated = data.find((x) => x.id === m.id);
       if (updated && updated.available_version !== updated.current_version) {
-        toast.info(`New version ${updated.available_version} available`);
+        toast.info(`New version ${updated.available_version} available`, {
+          id: `mod-update-${m.id}`,
+        });
       } else {
-        toast.success("Mod is up to date");
+        toast.success("Mod is up to date", {
+          id: `mod-uptodate-${m.id}`,
+        });
       }
     } catch (err) {
       if (err instanceof Error && err.message === "token required") {
@@ -269,6 +332,29 @@ export default function Mods() {
   return (
     <div className="space-y-md">
       {ConfirmModal}
+      <Modal open={checkOpen} onClose={() => setCheckOpen(false)}>
+        <h2 className="mb-sm text-lg font-medium">Check for Updates</h2>
+        <p className="text-sm mb-sm">
+          {checkProgress} / {mods.length} checked
+        </p>
+        <ul className="max-h-60 overflow-y-auto space-y-xs">
+          {checkResults.map((r) => (
+            <li key={r.id} className="text-sm">
+              {r.name}: {r.status === "error" ? `Error: ${r.error}` : r.status === "outdated" ? `Update ${r.available_version} available` : "Up to date"}
+            </li>
+          ))}
+        </ul>
+        {checkProgress === mods.length && (
+          <p className="mt-sm text-sm">
+            Up to date: {checkSummary.updated}, Outdated: {checkSummary.outdated}, Errors: {checkSummary.errors}
+          </p>
+        )}
+        <div className="mt-sm flex justify-end">
+          <Button size="sm" onClick={() => setCheckOpen(false)} disabled={checkingAll}>
+            Close
+          </Button>
+        </div>
+      </Modal>
       <Link
         to="/instances"
         className="inline-flex items-center gap-xs text-sm text-muted-foreground hover:underline"
@@ -312,6 +398,14 @@ export default function Mods() {
             </h1>
           )}
           <div className="flex flex-wrap items-center gap-sm ml-auto">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={handleCheckAll}
+              disabled={checkingAll || !hasToken || mods.length === 0}
+            >
+              Check for Updates
+            </Button>
             {!editingName && (
               <Button
                 size="sm"
@@ -501,13 +595,14 @@ export default function Mods() {
                 return (
                   <TableRow key={m.id}>
                     <TableCell className="flex items-center gap-sm font-medium">
-                      {m.icon_url && (
-                        <img
-                          src={m.icon_url}
-                          alt=""
-                          className="h-6 w-6 rounded-sm"
-                        />
-                      )}
+                      <ModIcon
+                        url={m.icon_url}
+                        cacheKey={
+                          m.available_version ||
+                          m.current_version ||
+                          String(m.id)
+                        }
+                      />
                       {m.name || m.url}
                     </TableCell>
                     <TableCell>{m.game_version}</TableCell>
@@ -515,40 +610,47 @@ export default function Mods() {
                     <TableCell>{m.current_version}</TableCell>
                     <TableCell>{m.available_version}</TableCell>
                     <TableCell className="flex gap-xs">
-                      <Button
-                        variant="outline"
-                        onClick={() => handleCheck(m)}
-                        aria-label="Check for updates"
-                        className="h-8 px-sm"
-                        disabled={!hasToken}
-                      >
-                        <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                      </Button>
-                      <Button
-                        variant="outline"
-                        as={projectUrl ? "a" : "button"}
-                        href={projectUrl || undefined}
-                        target={projectUrl ? "_blank" : undefined}
-                        rel={projectUrl ? "noopener" : undefined}
-                        aria-label="Open project page"
-                        className="h-8 px-sm"
-                        disabled={!isModrinth}
-                        title={
+                      <Tooltip text="Check for updates">
+                        <Button
+                          variant="outline"
+                          onClick={() => handleCheck(m)}
+                          aria-label="Check for updates"
+                          className="h-8 px-sm"
+                          disabled={!hasToken}
+                        >
+                          <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                        </Button>
+                      </Tooltip>
+                      <Tooltip
+                        text={
                           isModrinth
                             ? "Open project page"
                             : "Project page available only for Modrinth mods"
                         }
                       >
-                        <ExternalLink className="h-4 w-4" aria-hidden="true" />
-                      </Button>
-                      <Button
-                        variant="outline"
-                        onClick={() => handleDelete(m.id)}
-                        aria-label="Delete mod"
-                        className="h-8 px-sm"
-                      >
-                        <Trash2 className="h-4 w-4" aria-hidden="true" />
-                      </Button>
+                        <Button
+                          variant="outline"
+                          as={projectUrl ? "a" : "button"}
+                          href={projectUrl || undefined}
+                          target={projectUrl ? "_blank" : undefined}
+                          rel={projectUrl ? "noopener" : undefined}
+                          aria-label="Open project page"
+                          className="h-8 px-sm"
+                          disabled={!isModrinth}
+                        >
+                          <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                        </Button>
+                      </Tooltip>
+                      <Tooltip text="Delete mod">
+                        <Button
+                          variant="outline"
+                          onClick={() => handleDelete(m.id)}
+                          aria-label="Delete mod"
+                          className="h-8 px-sm"
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        </Button>
+                      </Tooltip>
                     </TableCell>
                   </TableRow>
                 );
