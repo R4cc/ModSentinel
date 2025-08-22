@@ -43,10 +43,10 @@ func fetchToken(ctx context.Context, c Credentials) (string, time.Time, error) {
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", time.Time{}, errors.New(resp.Status)
+		return "", time.Time{}, parseError(resp)
 	}
+	defer resp.Body.Close()
 	var res struct {
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int    `json:"expires_in"`

@@ -8,8 +8,10 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -26,6 +28,9 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+//go:embed testdata/**
+var testFS embed.FS
 
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -702,7 +707,7 @@ func TestSecurityMiddleware_NoAdminToken(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	var dist embed.FS
+	dist := testFS
 	h := New(db, dist)
 
 	req1 := httptest.NewRequest(http.MethodGet, "/api/settings/secret/modrinth/status", nil)
@@ -729,6 +734,72 @@ func TestSecurityMiddleware_NoAdminToken(t *testing.T) {
 	h.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusNoContent {
 		t.Fatalf("set status %d", w2.Code)
+	}
+}
+
+func TestSecurityHeaders_CSP(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	dist, err := fs.Sub(testFS, "testdata")
+	if err != nil {
+		t.Fatalf("sub fs: %v", err)
+	}
+
+	t.Setenv("APP_ENV", "development")
+	h := New(db, dist)
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: "https://pp.example.com"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/instances", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	csp := w.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "style-src 'self' 'unsafe-inline'") {
+		t.Fatalf("dev csp missing unsafe-inline: %s", csp)
+	}
+	if !strings.Contains(csp, "connect-src 'self' https://pp.example.com") {
+		t.Fatalf("dev csp missing connect-src: %s", csp)
+	}
+	if !strings.Contains(csp, "img-src 'self' data: https:") {
+		t.Fatalf("dev csp missing img-src: %s", csp)
+	}
+
+	t.Setenv("APP_ENV", "production")
+	h = New(db, dist)
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: "https://pp.example.com"}); err != nil {
+		t.Fatalf("set creds prod: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/instances", nil)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	csp = w.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "style-src 'self' 'nonce-") {
+		t.Fatalf("prod csp missing nonce: %s", csp)
+	}
+	if strings.Contains(csp, "unsafe-inline") {
+		t.Fatalf("prod csp should not allow unsafe-inline: %s", csp)
+	}
+	if !strings.Contains(csp, "connect-src 'self' https://pp.example.com") {
+		t.Fatalf("prod csp missing connect-src: %s", csp)
+	}
+	if !strings.Contains(csp, "img-src 'self' data: https:") {
+		t.Fatalf("prod csp missing img-src: %s", csp)
+	}
+
+	// index should include the style nonce meta tag
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	body := w.Body.String()
+	prodCSP := w.Header().Get("Content-Security-Policy")
+	re := regexp.MustCompile(`nonce-([^']+)`)
+	m := re.FindStringSubmatch(prodCSP)
+	if len(m) < 2 {
+		t.Fatalf("could not extract nonce from csp: %s", prodCSP)
+	}
+	if !strings.Contains(body, "<meta name=\"csp-nonce\" content=\""+m[1]+"\">") {
+		t.Fatalf("missing nonce meta: %s", body)
 	}
 }
 
@@ -860,5 +931,147 @@ func TestMetadataHandler_MissingToken(t *testing.T) {
 	h(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status %d", w.Code)
+	}
+}
+
+func TestTestPufferHandler_ReturnsJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	h := testPufferHandler()
+	body := fmt.Sprintf(`{"base_url":%q,"client_id":"id","client_secret":"secret"}`, srv.URL)
+	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/test", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type %s", ct)
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["message"] != "ok" {
+		t.Fatalf("unexpected resp %+v", resp)
+	}
+}
+
+func TestListServersHandler_OK(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	initSecrets(t, db)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case "/api/servers":
+			fmt.Fprint(w, `{"paging":{"page":0,"size":2,"total":2},"servers":[{"id":"1","name":"One"},{"id":"2","name":"Two"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	h := listServersHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/servers", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var servers []pppkg.Server
+	if err := json.NewDecoder(w.Body).Decode(&servers); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(servers) != 2 || servers[0].ID != "1" || servers[1].ID != "2" {
+		t.Fatalf("unexpected servers %+v", servers)
+	}
+}
+
+func TestListServersHandler_PropagatesError(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	initSecrets(t, db)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case "/api/servers":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"code":403,"message":"nope","requestId":"x"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	h := listServersHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/servers", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status %d", w.Code)
+	}
+	var e httpx.Error
+	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if e.Code != "forbidden" || e.Message != "nope" {
+		t.Fatalf("unexpected error %+v", e)
+	}
+}
+
+func TestListServersHandler_Upstream5xx(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	initSecrets(t, db)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case "/api/servers":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"code":500,"message":"broken","requestId":"x"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	h := listServersHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/servers", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type %s", ct)
+	}
+	var e httpx.Error
+	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if e.Code != "bad_gateway" || e.Message != "broken" {
+		t.Fatalf("unexpected error %+v", e)
 	}
 }

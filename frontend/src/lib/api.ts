@@ -59,16 +59,22 @@ export interface ModUpdate {
   updated_at: string;
 }
 
-async function parseError(res: Response, fallback: string): Promise<Error> {
+async function parseJSON(res: Response): Promise<any> {
+  const text = await res.text();
+  if (!text) return undefined;
   try {
-    const err = await res.json();
-    if (err?.code && err?.message) {
-      return new Error(`${err.code}: ${err.message}`);
-    }
-    if (err?.message) return new Error(err.message);
+    return JSON.parse(text);
   } catch {
-    // ignore
+    return undefined;
   }
+}
+
+async function parseError(res: Response, fallback: string): Promise<Error> {
+  const err = await parseJSON(res);
+  if (err?.code && err?.message) {
+    return new Error(`${err.code}: ${err.message}`);
+  }
+  if (err?.message) return new Error(err.message);
   return new Error(fallback);
 }
 
@@ -80,7 +86,7 @@ export async function getModMetadata(url: string): Promise<ModMetadata> {
   });
   if (res.status === 401) throw new Error("token required");
   if (!res.ok) throw await parseError(res, "Failed to fetch metadata");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function getMods(instanceId: number): Promise<Mod[]> {
@@ -88,19 +94,19 @@ export async function getMods(instanceId: number): Promise<Mod[]> {
     cache: "no-store",
   });
   if (!res.ok) throw await parseError(res, "Failed to fetch mods");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function getInstances(): Promise<Instance[]> {
   const res = await fetch("/api/instances", { cache: "no-store" });
   if (!res.ok) throw await parseError(res, "Failed to fetch instances");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function getInstance(id: number): Promise<Instance> {
   const res = await fetch(`/api/instances/${id}`, { cache: "no-store" });
   if (!res.ok) throw await parseError(res, "Failed to fetch instance");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function deleteInstance(
@@ -147,7 +153,7 @@ export async function addMod(payload: NewMod): Promise<AddModResponse> {
   });
   if (res.status === 401) throw new Error("token required");
   if (!res.ok) throw await parseError(res, "Failed to add mod");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function addInstance(payload: NewInstance): Promise<Instance> {
@@ -157,7 +163,7 @@ export async function addInstance(payload: NewInstance): Promise<Instance> {
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw await parseError(res, "Failed to add instance");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function updateInstance(
@@ -170,7 +176,7 @@ export async function updateInstance(
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw await parseError(res, "Failed to update instance");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function refreshMod(id: number, payload: NewMod): Promise<Mod[]> {
@@ -181,20 +187,20 @@ export async function refreshMod(id: number, payload: NewMod): Promise<Mod[]> {
   });
   if (res.status === 401) throw new Error("token required");
   if (!res.ok) throw await parseError(res, "Failed to update mod");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function checkMod(id: number): Promise<Mod> {
   const res = await fetch(`/api/mods/${id}/check`, { cache: "no-store" });
   if (res.status === 401) throw new Error("token required");
   if (!res.ok) throw await parseError(res, "Failed to check mod");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function updateModVersion(id: number): Promise<Mod> {
   const res = await fetch(`/api/mods/${id}/update`, { method: "POST" });
   if (!res.ok) throw await parseError(res, "Failed to update mod");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function deleteMod(
@@ -206,7 +212,7 @@ export async function deleteMod(
     cache: "no-store",
   });
   if (!res.ok) throw await parseError(res, "Failed to delete mod");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function getDashboard(): Promise<DashboardData> {
@@ -214,7 +220,7 @@ export async function getDashboard(): Promise<DashboardData> {
   if (res.status === 401) throw new Error("token required");
   if (res.status === 429) throw new Error("rate limited");
   if (!res.ok) throw await parseError(res, "Failed to fetch dashboard");
-  return res.json();
+  return parseJSON(res);
 }
 
 export interface PufferCreds {
@@ -238,13 +244,13 @@ export interface SyncResult {
 export async function resyncInstance(id: number): Promise<SyncResult> {
   const res = await fetch(`/api/instances/${id}/resync`, { method: "POST" });
   if (!res.ok) throw await parseError(res, "Failed to resync");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function getPufferCreds(): Promise<PufferCreds> {
   const res = await fetch("/api/pufferpanel");
   if (!res.ok) throw await parseError(res, "Failed to fetch credentials");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function testPufferCreds(creds: PufferCreds): Promise<void> {
@@ -259,7 +265,7 @@ export async function testPufferCreds(creds: PufferCreds): Promise<void> {
 export async function getPufferServers(): Promise<PufferServer[]> {
   const res = await fetch("/api/pufferpanel/servers");
   if (!res.ok) throw await parseError(res, "Failed to fetch servers");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function syncInstances(server?: string): Promise<SyncResult> {
@@ -268,7 +274,7 @@ export async function syncInstances(server?: string): Promise<SyncResult> {
     : "/api/pufferpanel/sync";
   const res = await fetch(url, { method: "POST" });
   if (!res.ok) throw await parseError(res, "Failed to sync");
-  return res.json();
+  return parseJSON(res);
 }
 
 export interface SecretStatus {
@@ -284,7 +290,7 @@ export async function getSecretStatus(type: string): Promise<SecretStatus> {
     credentials: "same-origin",
   });
   if (!res.ok) throw await parseError(res, "Failed to fetch status");
-  return res.json();
+  return parseJSON(res);
 }
 
 export async function saveSecret(type: string, payload: any): Promise<void> {

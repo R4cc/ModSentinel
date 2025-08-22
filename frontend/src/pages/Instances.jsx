@@ -48,6 +48,7 @@ export default function Instances() {
   const [servers, setServers] = useState([]);
   const [selectedServer, setSelectedServer] = useState("");
   const [loadingServers, setLoadingServers] = useState(false);
+  const [serverError, setServerError] = useState("");
   const [scanning, setScanning] = useState(false);
   const navigate = useNavigate();
 
@@ -72,19 +73,27 @@ export default function Instances() {
       .catch(() => setHasToken(false));
   }, []);
 
+  async function fetchServers() {
+    setLoadingServers(true);
+    setServerError("");
+    try {
+      const s = await getPufferServers();
+      setServers(s);
+    } catch (err) {
+      setServerError(
+        err instanceof Error ? err.message : "Failed to load servers",
+      );
+    } finally {
+      setLoadingServers(false);
+    }
+  }
+
   useEffect(() => {
     if (syncFromPuffer) {
-      setLoadingServers(true);
-      getPufferServers()
-        .then((s) => setServers(s))
-        .catch((err) =>
-          toast.error(
-            err instanceof Error ? err.message : "Failed to load servers",
-          ),
-        )
-        .finally(() => setLoadingServers(false));
+      fetchServers();
     } else {
       setSelectedServer("");
+      setServerError("");
     }
   }, [syncFromPuffer]);
 
@@ -122,6 +131,7 @@ export default function Instances() {
     setSyncFromPuffer(false);
     setServers([]);
     setSelectedServer("");
+    setServerError("");
     setOpen(true);
   }
 
@@ -129,6 +139,7 @@ export default function Instances() {
     setEditing(inst);
     setName(inst.name);
     setSyncFromPuffer(false);
+    setServerError("");
     setOpen(true);
   }
 
@@ -350,7 +361,7 @@ export default function Instances() {
                 <Checkbox
                   id="syncPuffer"
                   checked={syncFromPuffer}
-                  disabled={!hasPuffer}
+                  disabled={!hasPuffer || loadingServers}
                   onChange={(e) => setSyncFromPuffer(e.target.checked)}
                 />
                 <label htmlFor="syncPuffer" className="text-sm">
@@ -366,25 +377,39 @@ export default function Instances() {
           )}
           {syncFromPuffer ? (
             <>
-              <div className="space-y-xs">
-                <label htmlFor="server" className="text-sm font-medium">
-                  Server
-                </label>
-                <Select
-                  id="server"
-                  value={selectedServer}
-                  onChange={(e) => setSelectedServer(e.target.value)}
-                  disabled={loadingServers}
-                  aria-busy={loadingServers}
-                >
-                  <option value="">Select a server</option>
-                  {servers.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </Select>
-              </div>
+              {serverError ? (
+                <div className="space-y-xs">
+                  <p className="text-sm">{serverError}</p>
+                  <Button
+                    type="button"
+                    onClick={fetchServers}
+                    disabled={loadingServers}
+                    aria-busy={loadingServers}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-xs">
+                  <label htmlFor="server" className="text-sm font-medium">
+                    Server
+                  </label>
+                  <Select
+                    id="server"
+                    value={selectedServer}
+                    onChange={(e) => setSelectedServer(e.target.value)}
+                    disabled={loadingServers}
+                    aria-busy={loadingServers}
+                  >
+                    <option value="">Select a server</option>
+                    {servers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              )}
               {scanning && <p className="text-sm">Scanning...</p>}
             </>
           ) : (

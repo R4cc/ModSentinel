@@ -355,6 +355,51 @@ describe("Instances page", () => {
     await waitFor(() => expect(syncInstances).toHaveBeenCalledWith("1"));
   });
 
+  it("disables toggle while loading servers", async () => {
+    getInstances.mockResolvedValueOnce([]);
+    let resolve;
+    getPufferServers.mockReturnValueOnce(
+      new Promise((res) => {
+        resolve = res;
+      }),
+    );
+    render(
+      <MemoryRouter>
+        <Instances />
+      </MemoryRouter>,
+    );
+    const [addBtn] = await screen.findAllByRole("button", {
+      name: /add instance/i,
+    });
+    fireEvent.click(addBtn);
+    const toggle = screen.getByLabelText("Sync from PufferPanel");
+    fireEvent.click(toggle);
+    expect(toggle).toBeDisabled();
+    resolve([]);
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+  });
+
+  it("shows inline error with retry on server load failure", async () => {
+    getInstances.mockResolvedValueOnce([]);
+    getPufferServers
+      .mockImplementationOnce(() => Promise.reject(new Error("boom")))
+      .mockImplementationOnce(() =>
+        Promise.resolve([{ id: "1", name: "One" }]),
+      );
+    render(
+      <MemoryRouter>
+        <Instances />
+      </MemoryRouter>,
+    );
+    const [addBtn] = await screen.findAllByRole("button", {
+      name: /add instance/i,
+    });
+    fireEvent.click(addBtn);
+    fireEvent.click(screen.getByLabelText("Sync from PufferPanel"));
+    await screen.findAllByRole("button", { name: /retry/i });
+    expect(screen.getAllByText("boom")[0]).toBeInTheDocument();
+  });
+
   it("shows scanning progress during sync", async () => {
     getInstances.mockResolvedValueOnce([]);
     getSecretStatus.mockResolvedValueOnce({

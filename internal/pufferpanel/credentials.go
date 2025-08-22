@@ -3,6 +3,8 @@ package pufferpanel
 import (
 	"context"
 	"encoding/json"
+	"net/url"
+	"sync/atomic"
 
 	"modsentinel/internal/secrets"
 )
@@ -15,7 +17,10 @@ type Credentials struct {
 	DeepScan     bool   `json:"deep_scan"`
 }
 
-var svc *secrets.Service
+var (
+	svc     *secrets.Service
+	baseURL atomic.Value // string
+)
 
 // Init sets the secrets service used for credential storage.
 func Init(s *secrets.Service) { svc = s }
@@ -30,6 +35,7 @@ func Set(c Credentials) error {
 		return err
 	}
 	resetToken()
+	baseURL.Store(parseHost(c.BaseURL))
 	return svc.Set(context.Background(), "pufferpanel", b)
 }
 
@@ -76,6 +82,7 @@ func Clear() error {
 		return nil
 	}
 	resetToken()
+	baseURL.Store("")
 	return svc.Delete(context.Background(), "pufferpanel")
 }
 
@@ -83,4 +90,33 @@ func Clear() error {
 func TestConnection(ctx context.Context, c Credentials) error {
 	_, _, err := fetchToken(ctx, c)
 	return err
+}
+
+func parseHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	u.Path = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
+// APIHost returns the PufferPanel base URL host for CSP connect-src directives.
+func APIHost() string {
+	if v := baseURL.Load(); v != nil {
+		if s, ok := v.(string); ok {
+			if s != "" {
+				return s
+			}
+		}
+	}
+	c, err := Get()
+	if err != nil {
+		return ""
+	}
+	h := parseHost(c.BaseURL)
+	baseURL.Store(h)
+	return h
 }

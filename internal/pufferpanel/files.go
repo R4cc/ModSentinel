@@ -48,13 +48,14 @@ func listFiles(ctx context.Context, serverID, path string) ([]FileEntry, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
 		return nil, os.ErrNotExist
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New(resp.Status)
+		return nil, parseError(resp)
 	}
+	defer resp.Body.Close()
 	var files []FileEntry
 	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
 		return nil, err
@@ -91,14 +92,16 @@ func FetchFile(ctx context.Context, serverID, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
 		return nil, os.ErrNotExist
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New(resp.Status)
+		return nil, parseError(resp)
 	}
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return data, err
 }
 
 // ListJarFiles returns .jar files under mods/ or plugins/ for the server.
