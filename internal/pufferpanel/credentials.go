@@ -56,6 +56,20 @@ func Get() (Credentials, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return Credentials{}, err
 	}
+	orig := c.BaseURL
+	if err := validateCreds(&c); err != nil {
+		return Credentials{}, err
+	}
+	if c.BaseURL != orig {
+		nb, err := json.Marshal(c)
+		if err != nil {
+			return Credentials{}, err
+		}
+		if err := svc.Set(context.Background(), "pufferpanel", nb); err != nil {
+			return Credentials{}, err
+		}
+	}
+	baseURL.Store(parseHost(c.BaseURL))
 	return c, nil
 }
 

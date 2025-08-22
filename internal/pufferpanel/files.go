@@ -9,7 +9,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 )
 
 // FileEntry represents a file or directory returned by PufferPanel's file listing API.
@@ -36,7 +35,7 @@ func listFiles(ctx context.Context, serverID, path string) ([]FileEntry, error) 
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newClient(u)
 	status, body, err := doAuthRequest(ctx, client, req)
 	if err != nil {
 		return nil, err
@@ -72,7 +71,7 @@ func FetchFile(ctx context.Context, serverID, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newClient(u)
 	status, body, err := doAuthRequest(ctx, client, req)
 	if err != nil {
 		return nil, err
