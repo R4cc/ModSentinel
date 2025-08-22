@@ -11,13 +11,7 @@ import { Select } from "@/components/ui/Select.jsx";
 import { Input } from "@/components/ui/Input.jsx";
 import { Button } from "@/components/ui/Button.jsx";
 import { Checkbox } from "@/components/ui/Checkbox.jsx";
-import {
-  getSecretStatus,
-  saveSecret,
-  clearSecret,
-  getPufferCreds,
-  testPufferCreds,
-} from "@/lib/api.ts";
+import { getSecretStatus, saveSecret, clearSecret } from "@/lib/api.ts";
 
 export default function Settings() {
   const { theme, setTheme, interval, setInterval } = usePreferences();
@@ -38,13 +32,6 @@ export default function Settings() {
       .then((s) => {
         setHasToken(s.exists);
         setTokenLast4(s.last4);
-      })
-      .catch(() => {});
-    getPufferCreds()
-      .then((c) => {
-        setBaseUrl(c.base_url || "");
-        setClientId(c.client_id || "");
-        setDeepScan(!!c.deep_scan);
       })
       .catch(() => {});
     getSecretStatus("pufferpanel")
@@ -123,20 +110,6 @@ export default function Settings() {
       toast.error(
         err instanceof Error ? err.message : "Failed to clear credentials",
       );
-    }
-  }
-
-  async function handlePufferTest() {
-    try {
-      await testPufferCreds({
-        base_url: baseUrl,
-        client_id: clientId,
-        client_secret: clientSecret,
-        deep_scan: deepScan,
-      });
-      toast.success("Connection successful");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Connection failed");
     }
   }
 
@@ -308,13 +281,6 @@ export default function Settings() {
               disabled={!hasPuffer}
             >
               Revoke & Clear
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={handlePufferTest}
-              disabled={!baseUrl || !clientId || !clientSecret}
-            >
-              Test
             </Button>
           </div>
         </CardContent>

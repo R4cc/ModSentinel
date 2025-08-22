@@ -29,6 +29,7 @@ import (
 
 	"fmt"
 
+	singleflight "golang.org/x/sync/singleflight"
 	rate "golang.org/x/time/rate"
 	dbpkg "modsentinel/internal/db"
 	"modsentinel/internal/httpx"
@@ -60,6 +61,17 @@ var writeLimiter = rate.NewLimiter(rate.Every(time.Second), 5)
 
 var csrfToken string
 
+var (
+	listServersTTL   = 2 * time.Second
+	listServersSF    singleflight.Group
+	listServersCache sync.Map // map[baseURL]listServersEntry
+)
+
+type listServersEntry struct {
+	servers []pppkg.Server
+	exp     time.Time
+}
+
 type nonceCtxKey struct{}
 
 func init() {
@@ -82,29 +94,34 @@ func writeModrinthError(w http.ResponseWriter, r *http.Request, err error) {
 	httpx.Write(w, r, httpx.BadRequest(err.Error()))
 }
 
-func writePPError(w http.ResponseWriter, r *http.Request, err error) {
+func writePPError(w http.ResponseWriter, r *http.Request, err error) int {
 	var ce *pppkg.ConfigError
 	if errors.As(err, &ce) {
 		httpx.Write(w, r, httpx.BadRequest(ce.Error()))
-		return
+		return http.StatusBadRequest
 	}
 	var pe *pppkg.Error
 	if errors.As(err, &pe) {
 		switch {
 		case pe.Status == http.StatusBadRequest:
 			httpx.Write(w, r, httpx.BadRequest("bad request to PufferPanel; check base URL"))
+			return http.StatusBadRequest
 		case pe.Status == http.StatusUnauthorized:
 			httpx.Write(w, r, httpx.Unauthorized("invalid PufferPanel credentials"))
+			return http.StatusUnauthorized
 		case pe.Status == http.StatusForbidden:
 			httpx.Write(w, r, httpx.Forbidden("insufficient PufferPanel permissions"))
+			return http.StatusForbidden
 		case pe.Status >= 500:
 			httpx.Write(w, r, httpx.BadGateway(pe.Error()))
+			return http.StatusBadGateway
 		default:
 			httpx.Write(w, r, httpx.BadGateway(pe.Error()))
+			return http.StatusBadGateway
 		}
-		return
 	}
 	httpx.Write(w, r, httpx.BadGateway(err.Error()))
+	return http.StatusBadGateway
 }
 
 type metadataRequest struct {
@@ -235,6 +252,23 @@ func requireAdmin() func(http.Handler) http.Handler {
 	}
 }
 
+func requireAuth() func(http.Handler) http.Handler {
+	token := os.Getenv("ADMIN_TOKEN")
+	if token == "" {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := r.Header.Get("Authorization")
+			if !strings.HasPrefix(h, "Bearer ") || strings.TrimPrefix(h, "Bearer ") != token {
+				httpx.Write(w, r, httpx.Unauthorized("token required"))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // New builds a router with all HTTP handlers.
 func New(db *sql.DB, dist fs.FS) http.Handler {
 	km, err := secrets.Load(context.Background())
@@ -259,6 +293,8 @@ func New(db *sql.DB, dist fs.FS) http.Handler {
 	r.Put("/api/instances/{id}", updateInstanceHandler(db))
 	r.Post("/api/instances/{id}/resync", resyncInstanceHandler(db))
 	r.Delete("/api/instances/{id}", deleteInstanceHandler(db))
+	r.With(requireAuth()).Post("/api/instances/sync", listServersHandler())
+	r.With(requireAuth()).Post("/api/instances/{id}/sync", syncHandler(db))
 	r.Get("/api/mods", listModsHandler(db))
 	r.Post("/api/mods/metadata", metadataHandler())
 	r.Post("/api/mods", createModHandler(db))
@@ -266,10 +302,6 @@ func New(db *sql.DB, dist fs.FS) http.Handler {
 	r.Put("/api/mods/{id}", updateModHandler(db))
 	r.Delete("/api/mods/{id}", deleteModHandler(db))
 	r.Post("/api/mods/{id}/update", applyUpdateHandler(db))
-	r.Get("/api/pufferpanel", getPufferHandler())
-	r.Post("/api/pufferpanel/test", testPufferHandler())
-	r.Get("/api/pufferpanel/servers", listServersHandler())
-	r.Post("/api/pufferpanel/sync", syncHandler(db))
 
 	r.Group(func(g chi.Router) {
 		g.Use(requireAdmin())
@@ -663,18 +695,6 @@ type pufferRequest struct {
 	DeepScan     bool   `json:"deep_scan"`
 }
 
-func getPufferHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		creds, err := pppkg.Config()
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(creds)
-	}
-}
-
 func setSecretHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !writeLimiter.Allow() {
@@ -784,33 +804,54 @@ func secretStatusHandler(svc *secrets.Service) http.HandlerFunc {
 	}
 }
 
-func testPufferHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req pufferRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpx.Write(w, r, httpx.BadRequest("invalid json"))
-			return
-		}
-		if err := validatePayload(&req); err != nil {
-			httpx.Write(w, r, err)
-			return
-		}
-		if err := pppkg.TestConnection(r.Context(), pppkg.Credentials{BaseURL: req.BaseURL, ClientID: req.ClientID, ClientSecret: req.ClientSecret, DeepScan: req.DeepScan}); err != nil {
-			writePPError(w, r, err)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"message": "ok"})
-	}
-}
-
 func listServersHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		servers, err := pppkg.ListServers(r.Context())
+		start := time.Now()
+		status := http.StatusOK
+		cacheHit := false
+		deduped := false
+		upstreamStatus := 0
+		defer func() {
+			telemetry.Event("instances_sync", map[string]string{
+				"status":          strconv.Itoa(status),
+				"duration_ms":     strconv.FormatInt(time.Since(start).Milliseconds(), 10),
+				"deduped":         strconv.FormatBool(deduped),
+				"cache_hit":       strconv.FormatBool(cacheHit),
+				"upstream_status": strconv.Itoa(upstreamStatus),
+			})
+		}()
+
+		creds, err := pppkg.Config()
 		if err != nil {
-			writePPError(w, r, err)
+			status = writePPError(w, r, err)
 			return
 		}
+		if v, ok := listServersCache.Load(creds.BaseURL); ok {
+			ent := v.(listServersEntry)
+			if time.Now().Before(ent.exp) {
+				cacheHit = true
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(ent.servers)
+				return
+			}
+		}
+		var shared bool
+		var v any
+		v, err, shared = listServersSF.Do(creds.BaseURL, func() (any, error) {
+			svs, us, err := pppkg.ListServersWithStatus(r.Context())
+			upstreamStatus = us
+			if err != nil {
+				return nil, err
+			}
+			return svs, nil
+		})
+		deduped = shared
+		if err != nil {
+			status = writePPError(w, r, err)
+			return
+		}
+		servers := v.([]pppkg.Server)
+		listServersCache.Store(creds.BaseURL, listServersEntry{servers: servers, exp: time.Now().Add(listServersTTL)})
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(servers)
 	}
@@ -819,8 +860,7 @@ func listServersHandler() http.HandlerFunc {
 func syncHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			ServerID   string `json:"serverId" validate:"required"`
-			InstanceID int    `json:"instanceId" validate:"required"`
+			ServerID string `json:"serverId" validate:"required"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpx.Write(w, r, httpx.BadRequest("invalid json"))
@@ -830,12 +870,18 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			httpx.Write(w, r, err)
 			return
 		}
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
 		srv, err := pppkg.GetServer(r.Context(), req.ServerID)
 		if err != nil {
 			writePPError(w, r, err)
 			return
 		}
-		inst, err := dbpkg.GetInstance(db, req.InstanceID)
+		inst, err := dbpkg.GetInstance(db, id)
 		if err != nil {
 			http.NotFound(w, r)
 			return

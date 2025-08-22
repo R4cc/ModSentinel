@@ -395,7 +395,9 @@ describe("Instances page", () => {
   it("shows inline error with retry on server load failure", async () => {
     getInstances.mockResolvedValueOnce([]);
     getPufferServers
-      .mockImplementationOnce(() => Promise.reject(new Error("boom")))
+      .mockImplementationOnce(() =>
+        Promise.reject(new Error("invalid PufferPanel credentials")),
+      )
       .mockImplementationOnce(() =>
         Promise.resolve([{ id: "1", name: "One" }]),
       );
@@ -410,7 +412,48 @@ describe("Instances page", () => {
     fireEvent.click(addBtn);
     fireEvent.click(screen.getByLabelText("Sync from PufferPanel"));
     await screen.findAllByRole("button", { name: /retry/i });
-    expect(screen.getAllByText("boom")[0]).toBeInTheDocument();
+    expect(
+      screen.getAllByText("invalid PufferPanel credentials")[0],
+    ).toBeInTheDocument();
+  });
+
+  it("shows toast error on sync failure", async () => {
+    getInstances.mockResolvedValueOnce([]);
+    getSecretStatus.mockResolvedValueOnce({
+      exists: true,
+      last4: "1234",
+      updated_at: "",
+    });
+    getPufferServers.mockResolvedValueOnce([{ id: "1", name: "One" }]);
+    addInstance.mockResolvedValueOnce({
+      id: 1,
+      name: "",
+      loader: "",
+      enforce_same_loader: true,
+      pufferpanel_server_id: "1",
+      mod_count: 0,
+    });
+    syncInstances.mockRejectedValueOnce(
+      new Error("insufficient PufferPanel permissions"),
+    );
+    render(
+      <MemoryRouter>
+        <Instances />
+      </MemoryRouter>,
+    );
+    const [addBtn] = await screen.findAllByRole("button", {
+      name: /add instance/i,
+    });
+    fireEvent.click(addBtn);
+    fireEvent.click(screen.getByLabelText("Sync from PufferPanel"));
+    const select = await screen.findByLabelText("Server");
+    fireEvent.change(select, { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "insufficient PufferPanel permissions",
+      ),
+    );
   });
 
   it("shows scanning progress during sync", async () => {

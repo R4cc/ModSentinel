@@ -46,7 +46,15 @@ type cacheEntry struct {
 }
 
 // ListServers fetches available servers from PufferPanel.
-func ListServers(ctx context.Context) (servers []Server, err error) {
+func ListServers(ctx context.Context) ([]Server, error) {
+	svs, _, err := ListServersWithStatus(ctx)
+	return svs, err
+}
+
+// ListServersWithStatus fetches available servers from PufferPanel and also
+// returns the upstream HTTP status code. If the data came from cache,
+// upstreamStatus will be 0.
+func ListServersWithStatus(ctx context.Context) (servers []Server, upstreamStatus int, err error) {
 	start := time.Now()
 	cacheHit := false
 	deduped := false
@@ -66,57 +74,60 @@ func ListServers(ctx context.Context) (servers []Server, err error) {
 
 	creds, err := getCreds()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if v, ok := serverCache.Load(creds.BaseURL); ok {
 		ent := v.(cacheEntry)
 		if time.Now().Before(ent.exp) {
 			cacheHit = true
-			return ent.servers, nil
+			return ent.servers, 0, nil
 		}
 	}
 	var shared bool
 	var v any
 	v, err, shared = serverGroup.Do(creds.BaseURL, func() (any, error) {
-		svs, err := fetchServers(ctx, creds)
+		svs, status, err := fetchServers(ctx, creds)
 		if err != nil {
+			upstreamStatus = status
 			return nil, err
 		}
+		upstreamStatus = status
 		serverCache.Store(creds.BaseURL, cacheEntry{servers: svs, exp: time.Now().Add(serverTTL)})
 		return svs, nil
 	})
 	deduped = shared
 	if err != nil {
-		return nil, err
+		return nil, upstreamStatus, err
 	}
 	servers = v.([]Server)
-	return servers, nil
+	return servers, upstreamStatus, nil
 }
 
-func fetchServers(ctx context.Context, creds Credentials) ([]Server, error) {
+func fetchServers(ctx context.Context, creds Credentials) ([]Server, int, error) {
 	base, err := url.Parse(creds.BaseURL)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	nextURL := *base
 	nextURL.Path = strings.TrimSuffix(nextURL.Path, "/") + "/api/servers"
 	client := newClient(base)
 	var all []Server
+	status := 0
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, nextURL.String(), nil)
 		if err != nil {
-			return nil, err
+			return nil, status, err
 		}
 		status, body, err := doAuthRequest(ctx, client, req)
 		if err != nil {
-			return nil, err
+			return nil, status, err
 		}
 		if status < 200 || status >= 300 {
-			return nil, parseError(status, body)
+			return nil, status, parseError(status, body)
 		}
 		var res serverList
 		if err := json.Unmarshal(body, &res); err != nil {
-			return nil, err
+			return nil, status, err
 		}
 		all = append(all, res.Servers...)
 		if len(all) >= res.Paging.Total || len(res.Servers) == 0 || len(all) >= maxServers || res.Paging.Next == "" {
@@ -127,7 +138,7 @@ func fetchServers(ctx context.Context, creds Credentials) ([]Server, error) {
 		}
 		u, err := url.Parse(res.Paging.Next)
 		if err != nil {
-			return nil, err
+			return nil, status, err
 		}
 		if u.IsAbs() {
 			u.Scheme = base.Scheme
@@ -137,7 +148,7 @@ func fetchServers(ctx context.Context, creds Credentials) ([]Server, error) {
 		}
 		nextURL = *u
 	}
-	return all, nil
+	return all, status, nil
 }
 
 // ServerDetail includes server info with environment type.

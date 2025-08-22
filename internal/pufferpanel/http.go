@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -22,6 +23,7 @@ func doRequest(ctx context.Context, client *http.Client, req *http.Request) (int
 	if len(logBody) > 1024 {
 		logBody = logBody[:1024]
 	}
+	logBody = urlRE.ReplaceAll(logBody, []byte("[redacted]"))
 	log.Ctx(ctx).Info().
 		Str("requestId", requestIDFromContext(ctx)).
 		Int("upstream_code", resp.StatusCode).
@@ -29,6 +31,8 @@ func doRequest(ctx context.Context, client *http.Client, req *http.Request) (int
 		Msg("pufferpanel response")
 	return resp.StatusCode, body, err
 }
+
+var urlRE = regexp.MustCompile(`https?://[^"\s]+`)
 
 // newClient creates an HTTP client that rewrites redirect destinations to the base host.
 func newClient(base *url.URL) *http.Client {
