@@ -13,7 +13,10 @@ const originalFetch = global.fetch;
 describe("proxy API calls", () => {
   it("does not send tokens when fetching mod metadata", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ versions: [] }), { status: 200 }),
+      new Response(JSON.stringify({ versions: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
     );
     // @ts-ignore
     global.fetch = fetchMock;
@@ -30,7 +33,10 @@ describe("proxy API calls", () => {
 
   it("does not send tokens when listing PufferPanel servers", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify([]), { status: 200 }),
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
     );
     // @ts-ignore
     global.fetch = fetchMock;
@@ -50,20 +56,44 @@ describe('safe JSON parsing', () => {
   });
 
   it('handles empty success body', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 200 })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 200, headers: { 'Content-Type': 'application/json' } }))); 
+    // @ts-ignore
+    await expect(getPufferServers()).resolves.toBeUndefined();
+  });
+
+  it('handles invalid json success body', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('oops', { status: 200, headers: { 'Content-Type': 'application/json' } }))); 
     // @ts-ignore
     await expect(getPufferServers()).resolves.toBeUndefined();
   });
 
   it('handles empty error body', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 400 })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 400 }))); 
     // @ts-ignore
-    await expect(getPufferServers()).rejects.toThrow('Failed to fetch servers');
+    await expect(getPufferServers()).rejects.toThrow('400');
   });
 
   it('handles non-json error body', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('oops', { status: 500 })));
     // @ts-ignore
-    await expect(getPufferServers()).rejects.toThrow('Failed to fetch servers');
+    await expect(getPufferServers()).rejects.toThrow('500 oops');
+  });
+
+  it('uses server message and request id', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            code: 'bad_request',
+            message: 'bad',
+            requestId: 'abc123',
+          }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+    // @ts-ignore
+    await expect(getPufferServers()).rejects.toThrow('bad (request abc123)');
   });
 });

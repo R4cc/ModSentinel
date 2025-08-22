@@ -13,6 +13,7 @@ import (
 	"net/http"
 	urlpkg "net/url"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
 	"fmt"
@@ -81,16 +83,21 @@ func writeModrinthError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func writePPError(w http.ResponseWriter, r *http.Request, err error) {
+	var ce *pppkg.ConfigError
+	if errors.As(err, &ce) {
+		httpx.Write(w, r, httpx.BadRequest(ce.Error()))
+		return
+	}
 	var pe *pppkg.Error
 	if errors.As(err, &pe) {
-		switch pe.Status {
-		case http.StatusBadRequest:
+		switch {
+		case pe.Status == http.StatusBadRequest:
 			httpx.Write(w, r, httpx.BadRequest(pe.Error()))
-		case http.StatusUnauthorized:
+		case pe.Status == http.StatusUnauthorized:
 			httpx.Write(w, r, httpx.Unauthorized(pe.Error()))
-		case http.StatusForbidden:
+		case pe.Status == http.StatusForbidden:
 			httpx.Write(w, r, httpx.Forbidden(pe.Error()))
-		case http.StatusInternalServerError:
+		case pe.Status >= 500:
 			httpx.Write(w, r, httpx.BadGateway(pe.Error()))
 		default:
 			httpx.Write(w, r, httpx.BadGateway(pe.Error()))
@@ -108,11 +115,22 @@ func validatePayload(v interface{}) *httpx.HTTPError {
 	if err := validate.Struct(v); err != nil {
 		var ve validator.ValidationErrors
 		if errors.As(err, &ve) {
+			rt := reflect.TypeOf(v)
+			if rt.Kind() == reflect.Ptr {
+				rt = rt.Elem()
+			}
 			fields := make(map[string]string, len(ve))
 			for _, fe := range ve {
-				fields[strings.ToLower(fe.Field())] = fe.Tag()
+				name := strings.ToLower(fe.Field())
+				if f, ok := rt.FieldByName(fe.StructField()); ok {
+					tag := f.Tag.Get("json")
+					if tag != "" {
+						name = strings.Split(tag, ",")[0]
+					}
+				}
+				fields[name] = fe.Tag()
 			}
-			return httpx.BadRequest("validation failed").WithFields(fields)
+			return httpx.BadRequest("validation failed").WithDetails(fields)
 		}
 		return httpx.Internal(err)
 	}
@@ -141,6 +159,14 @@ func recordLatency(next http.Handler) http.Handler {
 			idx = len(samples) - 1
 		}
 		latencyP95.Store(samples[idx])
+	})
+}
+
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := uuid.NewString()
+		ctx := pppkg.WithRequestID(r.Context(), id)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -224,6 +250,7 @@ func New(db *sql.DB, dist fs.FS) http.Handler {
 	r.Use(securityHeaders)
 	r.Use(recordLatency)
 	r.Use(telemetry.HTTP)
+	r.Use(requestIDMiddleware)
 
 	r.Get("/favicon.ico", serveFavicon(dist))
 	r.Get("/api/instances", listInstancesHandler(db))
@@ -739,7 +766,11 @@ func secretStatusHandler(svc *secrets.Service) http.HandlerFunc {
 		typ := chi.URLParam(r, "type")
 		exists, last4, updatedAt, err := svc.Status(r.Context(), typ)
 		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
+			if exists {
+				httpx.Write(w, r, httpx.NotFound("secret invalid"))
+			} else {
+				httpx.Write(w, r, httpx.Internal(err))
+			}
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -787,30 +818,40 @@ func listServersHandler() http.HandlerFunc {
 
 func syncHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		serverID := r.URL.Query().Get("server")
-		if serverID == "" {
-			httpx.Write(w, r, httpx.BadRequest("server required"))
+		var req struct {
+			ServerID   string `json:"serverId" validate:"required"`
+			InstanceID int    `json:"instanceId" validate:"required"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid json"))
 			return
 		}
-		srv, err := pppkg.GetServer(r.Context(), serverID)
+		if err := validatePayload(&req); err != nil {
+			httpx.Write(w, r, err)
+			return
+		}
+		srv, err := pppkg.GetServer(r.Context(), req.ServerID)
 		if err != nil {
 			writePPError(w, r, err)
 			return
 		}
-		inst := dbpkg.Instance{
-			Name:                srv.Name,
-			Loader:              strings.ToLower(srv.Environment.Type),
-			PufferpanelServerID: serverID,
-			EnforceSameLoader:   true,
+		inst, err := dbpkg.GetInstance(db, req.InstanceID)
+		if err != nil {
+			http.NotFound(w, r)
+			return
 		}
+		inst.Name = srv.Name
+		inst.Loader = strings.ToLower(srv.Environment.Type)
+		inst.PufferpanelServerID = req.ServerID
+		inst.EnforceSameLoader = true
 		if inst.Loader == "" {
 			inst.Loader = "fabric"
 		}
-		if err := validatePayload(&inst); err != nil {
+		if err := validatePayload(inst); err != nil {
 			httpx.Write(w, r, err)
 			return
 		}
-		if err := dbpkg.InsertInstance(db, &inst); err != nil {
+		if _, err := db.Exec(`UPDATE instances SET name=?, loader=?, enforce_same_loader=?, pufferpanel_server_id=? WHERE id=?`, inst.Name, inst.Loader, inst.EnforceSameLoader, inst.PufferpanelServerID, inst.ID); err != nil {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
@@ -819,7 +860,7 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
-		files, err := pppkg.ListJarFiles(r.Context(), serverID)
+		files, err := pppkg.ListJarFiles(r.Context(), req.ServerID)
 		if err != nil {
 			writePPError(w, r, err)
 			return
@@ -832,9 +873,9 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			if creds.DeepScan && (slug == "" || ver == "") {
 				scanned = true
 				time.Sleep(100 * time.Millisecond)
-				data, err := pppkg.FetchFile(r.Context(), serverID, "mods/"+f)
+				data, err := pppkg.FetchFile(r.Context(), req.ServerID, "mods/"+f)
 				if errors.Is(err, os.ErrNotExist) {
-					data, err = pppkg.FetchFile(r.Context(), serverID, "plugins/"+f)
+					data, err = pppkg.FetchFile(r.Context(), req.ServerID, "plugins/"+f)
 				}
 				if err == nil {
 					s2, v2 := parseJarMetadata(data)
@@ -850,9 +891,9 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			res, err := modClient.Search(r.Context(), slug)
 			if (err != nil || len(res.Hits) == 0) && creds.DeepScan && !scanned {
 				time.Sleep(100 * time.Millisecond)
-				data, err := pppkg.FetchFile(r.Context(), serverID, "mods/"+f)
+				data, err := pppkg.FetchFile(r.Context(), req.ServerID, "mods/"+f)
 				if errors.Is(err, os.ErrNotExist) {
-					data, err = pppkg.FetchFile(r.Context(), serverID, "plugins/"+f)
+					data, err = pppkg.FetchFile(r.Context(), req.ServerID, "plugins/"+f)
 				}
 				if err == nil {
 					s2, v2 := parseJarMetadata(data)

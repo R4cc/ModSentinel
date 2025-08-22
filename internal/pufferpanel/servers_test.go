@@ -67,13 +67,14 @@ func TestListServers(t *testing.T) {
 }
 
 func TestListServersErrors(t *testing.T) {
-	cases := []struct {
-		status  int
-		message string
-	}{
-		{http.StatusForbidden, "nope"},
-		{http.StatusInternalServerError, "broken"},
-	}
+        cases := []struct {
+                status  int
+                message string
+        }{
+                {http.StatusUnauthorized, "unauth"},
+                {http.StatusForbidden, "nope"},
+                {http.StatusInternalServerError, "broken"},
+        }
 	for _, tc := range cases {
 		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -158,5 +159,39 @@ func TestListServersDebounce(t *testing.T) {
 	wg.Wait()
 	if calls.Load() != 1 {
 		t.Fatalf("calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestListServersRefreshesTokenOnUnauthorized(t *testing.T) {
+	var tokenCalls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			n := tokenCalls.Add(1)
+			fmt.Fprintf(w, `{"access_token":"tok%d","expires_in":3600}`, n)
+		case "/api/servers":
+			if r.Header.Get("Authorization") == "Bearer tok1" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			fmt.Fprint(w, `{"paging":{"page":0,"size":1,"total":1},"servers":[{"id":"1","name":"One"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setupCreds(t, srv.URL)
+	ctx := context.Background()
+	if _, err := ListServers(ctx); err != nil {
+		t.Fatalf("ListServers: %v", err)
+	}
+	if tokenCalls.Load() != 2 {
+		t.Fatalf("token calls = %d, want 2", tokenCalls.Load())
+	}
+	if _, err := ListServers(ctx); err != nil {
+		t.Fatalf("ListServers 2: %v", err)
+	}
+	if tokenCalls.Load() != 2 {
+		t.Fatalf("token calls after second list = %d, want 2", tokenCalls.Load())
 	}
 }

@@ -287,9 +287,14 @@ func TestSyncHandler_ScansMods(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-
+	inst := dbpkg.Instance{Name: "", Loader: "", EnforceSameLoader: true}
+	if err := dbpkg.InsertInstance(db, &inst); err != nil {
+		t.Fatalf("insert inst: %v", err)
+	}
 	h := syncHandler(db)
-	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync?server=1", nil)
+	body := fmt.Sprintf(`{"serverId":"1","instanceId":%d}`, inst.ID)
+	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h(w, req)
 
@@ -334,13 +339,18 @@ func TestSyncHandler_MatchesMods(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-
+	inst := dbpkg.Instance{Name: "", Loader: "", EnforceSameLoader: true}
+	if err := dbpkg.InsertInstance(db, &inst); err != nil {
+		t.Fatalf("insert inst: %v", err)
+	}
 	oldClient := modClient
 	modClient = matchClient{}
 	defer func() { modClient = oldClient }()
 
 	h := syncHandler(db)
-	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync?server=1", nil)
+	body := fmt.Sprintf(`{"serverId":"1","instanceId":%d}`, inst.ID)
+	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h(w, req)
 
@@ -393,13 +403,18 @@ func TestSyncHandler_DeepScanMatches(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret", DeepScan: true}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-
+	inst := dbpkg.Instance{Name: "", Loader: "", EnforceSameLoader: true}
+	if err := dbpkg.InsertInstance(db, &inst); err != nil {
+		t.Fatalf("insert inst: %v", err)
+	}
 	oldClient := modClient
 	modClient = matchClient{}
 	defer func() { modClient = oldClient }()
 
 	h := syncHandler(db)
-	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync?server=1", nil)
+	body := fmt.Sprintf(`{"serverId":"1","instanceId":%d}`, inst.ID)
+	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h(rec, req)
 
@@ -419,6 +434,28 @@ func TestSyncHandler_DeepScanMatches(t *testing.T) {
 	}
 	if len(resp.Mods) != 1 || resp.Mods[0].CurrentVersion != "1.0" {
 		t.Fatalf("unexpected mods %+v", resp.Mods)
+	}
+}
+
+func TestSyncHandler_Validation(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	h := syncHandler(db)
+	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d", w.Code)
+	}
+	var resp httpx.Error
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Details["serverId"] == "" || resp.Details["instanceId"] == "" {
+		t.Fatalf("details %v", resp.Details)
 	}
 }
 
@@ -748,7 +785,7 @@ func TestSecurityHeaders_CSP(t *testing.T) {
 
 	t.Setenv("APP_ENV", "development")
 	h := New(db, dist)
-	if err := pppkg.Set(pppkg.Credentials{BaseURL: "https://pp.example.com"}); err != nil {
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: "https://pp.example.com", ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/instances", nil)
@@ -767,7 +804,7 @@ func TestSecurityHeaders_CSP(t *testing.T) {
 
 	t.Setenv("APP_ENV", "production")
 	h = New(db, dist)
-	if err := pppkg.Set(pppkg.Credentials{BaseURL: "https://pp.example.com"}); err != nil {
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: "https://pp.example.com", ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds prod: %v", err)
 	}
 	req = httptest.NewRequest(http.MethodGet, "/api/instances", nil)
@@ -1034,6 +1071,89 @@ func TestListServersHandler_PropagatesError(t *testing.T) {
 	if e.Code != "forbidden" || e.Message != "nope" {
 		t.Fatalf("unexpected error %+v", e)
 	}
+	if e.RequestID == "" {
+		t.Fatal("missing requestId")
+	}
+}
+
+func TestListServersHandler_Upstream400(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	initSecrets(t, db)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case "/api/servers":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"code":400,"message":"bad","requestId":"x"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	h := listServersHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/servers", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d", w.Code)
+	}
+	var e httpx.Error
+	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if e.Code != "bad_request" || e.Message != "bad" {
+		t.Fatalf("unexpected error %+v", e)
+	}
+	if e.RequestID == "" {
+		t.Fatal("missing requestId")
+	}
+}
+
+func TestListServersHandler_Upstream401(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	initSecrets(t, db)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case "/api/servers":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"code":401,"message":"unauth","requestId":"x"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	h := listServersHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/servers", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status %d", w.Code)
+	}
+	var e httpx.Error
+	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if e.Code != "token_required" || e.Message != "unauth" {
+		t.Fatalf("unexpected error %+v", e)
+	}
+	if e.RequestID == "" {
+		t.Fatal("missing requestId")
+	}
 }
 
 func TestListServersHandler_Upstream5xx(t *testing.T) {
@@ -1073,5 +1193,135 @@ func TestListServersHandler_Upstream5xx(t *testing.T) {
 	}
 	if e.Code != "bad_gateway" || e.Message != "broken" {
 		t.Fatalf("unexpected error %+v", e)
+	}
+	if e.RequestID == "" {
+		t.Fatal("missing requestId")
+	}
+}
+
+func TestTestPufferHandler_InvalidBaseURL(t *testing.T) {
+	h := testPufferHandler()
+	body := `{"base_url":"ftp://example.com","client_id":"id","client_secret":"secret"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/test", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d", w.Code)
+	}
+	var e httpx.Error
+	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if e.Message != "invalid base_url scheme" {
+		t.Fatalf("unexpected error %+v", e)
+	}
+}
+
+func TestListServersHandler_BadConfig(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	initSecrets(t, db)
+	h := listServersHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/servers", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d", w.Code)
+	}
+	var e httpx.Error
+	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if e.Message != "base_url required" {
+		t.Fatalf("unexpected error %+v", e)
+	}
+}
+
+func TestSetCredentials_TrimsSlash(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	initSecrets(t, db)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	raw := srv.URL + "/"
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: raw, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	c, err := pppkg.Config()
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	if c.BaseURL != srv.URL {
+		t.Fatalf("base url %s", c.BaseURL)
+	}
+}
+
+func TestSecretStatus_PufferpanelMissing(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	km, err := secrets.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load keys: %v", err)
+	}
+	svc := secrets.NewService(db, km)
+	h := secretStatusHandler(svc)
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/secret/pufferpanel/status", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("type", "pufferpanel")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var st struct {
+		Exists bool `json:"exists"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&st); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if st.Exists {
+		t.Fatalf("expected not exists")
+	}
+}
+
+func TestSecretStatus_PufferpanelInvalid(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	km1, err := secrets.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load keys1: %v", err)
+	}
+	svc1 := secrets.NewService(db, km1)
+	pppkg.Init(svc1)
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: "http://panel", ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	t.Setenv("SECRET_KEYSET", `{"primary":"2","keys":{"2":"202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"}}`)
+	km2, err := secrets.Load(context.Background())
+	if err != nil {
+		t.Fatalf("load keys2: %v", err)
+	}
+	svc2 := secrets.NewService(db, km2)
+	h := secretStatusHandler(svc2)
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/secret/pufferpanel/status", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("type", "pufferpanel")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status %d", w.Code)
+	}
+	var e httpx.Error
+	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if e.Code != "not_found" {
+		t.Fatalf("code %s", e.Code)
 	}
 }

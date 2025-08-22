@@ -5,11 +5,11 @@ This guide explains how to connect ModSentinel to a PufferPanel server and how t
 ## Connecting
 
 1. Open **Settings** → **PufferPanel**.
-2. Enter the Base URL of your panel along with a client ID and secret.
+2. Enter the Base URL (must start with `http://` or `https://` and omit any trailing slash) along with a client ID and secret.
 3. Grant the application the following scopes:
    - `server.view`
    - `server.files.view`
-4. Test the connection, then save the credentials.
+4. Test the connection, then save the credentials. Errors return JSON `{code, message, requestId}`; the request ID also appears in the UI for log correlation.
 
 Once saved, ModSentinel will enable the **Sync from PufferPanel** option when creating or resyncing instances.
 
