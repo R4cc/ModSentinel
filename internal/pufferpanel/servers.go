@@ -57,7 +57,8 @@ func fetchServers(ctx context.Context) ([]Server, error) {
 	u.Path = strings.TrimSuffix(u.Path, "/") + "/api/servers"
 	client := &http.Client{Timeout: 10 * time.Second}
 	var all []Server
-	for page := 0; ; page++ {
+	// PufferPanel pagination starts at 1, so begin with page 1.
+	for page := 1; ; page++ {
 		reqURL := *u
 		q := reqURL.Query()
 		q.Set("page", strconv.Itoa(page))

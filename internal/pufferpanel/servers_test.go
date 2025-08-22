@@ -44,12 +44,12 @@ func TestListServers(t *testing.T) {
 			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
 		case "/api/servers":
 			switch r.URL.Query().Get("page") {
-			case "", "0":
-				fmt.Fprint(w, `{"paging":{"page":0,"size":1,"total":2},"servers":[{"id":"1","name":"One"}]}`)
-			case "1":
-				fmt.Fprint(w, `{"paging":{"page":1,"size":1,"total":2},"servers":[{"id":"2","name":"Two"}]}`)
+			case "", "1":
+				fmt.Fprint(w, `{"paging":{"page":1,"size":1,"total":2},"servers":[{"id":"1","name":"One"}]}`)
+			case "2":
+				fmt.Fprint(w, `{"paging":{"page":2,"size":1,"total":2},"servers":[{"id":"2","name":"Two"}]}`)
 			default:
-				fmt.Fprint(w, `{"paging":{"page":2,"size":1,"total":2},"servers":[]}`)
+				fmt.Fprint(w, `{"paging":{"page":3,"size":1,"total":2},"servers":[]}`)
 			}
 		default:
 			http.NotFound(w, r)
@@ -67,14 +67,14 @@ func TestListServers(t *testing.T) {
 }
 
 func TestListServersErrors(t *testing.T) {
-        cases := []struct {
-                status  int
-                message string
-        }{
-                {http.StatusUnauthorized, "unauth"},
-                {http.StatusForbidden, "nope"},
-                {http.StatusInternalServerError, "broken"},
-        }
+	cases := []struct {
+		status  int
+		message string
+	}{
+		{http.StatusUnauthorized, "unauth"},
+		{http.StatusForbidden, "nope"},
+		{http.StatusInternalServerError, "broken"},
+	}
 	for _, tc := range cases {
 		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -134,11 +134,11 @@ func TestListServersDebounce(t *testing.T) {
 		case "/oauth2/token":
 			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
 		case "/api/servers":
-			if p := r.URL.Query().Get("page"); p == "" || p == "0" {
+			if p := r.URL.Query().Get("page"); p == "" || p == "1" {
 				calls.Add(1)
-				fmt.Fprint(w, `{"paging":{"page":0,"size":1,"total":1},"servers":[{"id":"1","name":"One"}]}`)
+				fmt.Fprint(w, `{"paging":{"page":1,"size":1,"total":1},"servers":[{"id":"1","name":"One"}]}`)
 			} else {
-				fmt.Fprint(w, `{"paging":{"page":1,"size":1,"total":1},"servers":[]}`)
+				fmt.Fprint(w, `{"paging":{"page":2,"size":1,"total":1},"servers":[]}`)
 			}
 		default:
 			http.NotFound(w, r)
@@ -174,7 +174,7 @@ func TestListServersRefreshesTokenOnUnauthorized(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			fmt.Fprint(w, `{"paging":{"page":0,"size":1,"total":1},"servers":[{"id":"1","name":"One"}]}`)
+			fmt.Fprint(w, `{"paging":{"page":1,"size":1,"total":1},"servers":[{"id":"1","name":"One"}]}`)
 		default:
 			http.NotFound(w, r)
 		}
