@@ -29,8 +29,20 @@ ModSentinel can sync mod lists directly from a [PufferPanel](https://pufferpanel
 2. The OAuth client must have the scopes `server.view` and `server.files.view`.
 3. During sync ModSentinel scans the `mods/` directory, falling back to `plugins/` if no jars are found.
 4. Enabling **Deep Scan** downloads each jar to read embedded metadata; this increases bandwidth and API usage.
+5. PufferPanel's `/api/servers` endpoint returns an object with `servers` and `paging` fields; ModSentinel walks `paging.next` until all pages (up to 1,000 servers) are fetched.
 
 See [docs/PUFFERPANEL.md](docs/PUFFERPANEL.md) for details.
+
+## Content Security Policy
+
+Development builds allow `'unsafe-inline'` styles for convenience.
+Production adds a nonce to runtime style tags so `style-src` can be `'self' 'nonce-<random>'` without `unsafe-inline`.
+`connect-src` is restricted to the configured PufferPanel host and `img-src` permits only `data:` and `https:` URLs.
+
+## Error responses
+
+All HTTP errors return JSON with the shape `{code, message, details?, requestId}`.
+`details` may be omitted. PufferPanel failures map to the proper 400/401/403/502/500 codes so clients never see empty bodies.
 
 ## Secret storage & rotation
 

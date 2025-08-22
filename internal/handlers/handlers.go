@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
-	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -59,6 +58,8 @@ var writeLimiter = rate.NewLimiter(rate.Every(time.Second), 5)
 
 var csrfToken string
 
+type nonceCtxKey struct{}
+
 func init() {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -77,6 +78,26 @@ func writeModrinthError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	httpx.Write(w, r, httpx.BadRequest(err.Error()))
+}
+
+func writePPError(w http.ResponseWriter, r *http.Request, err error) {
+	var pe *pppkg.Error
+	if errors.As(err, &pe) {
+		switch pe.Status {
+		case http.StatusBadRequest:
+			httpx.Write(w, r, httpx.BadRequest(pe.Error()))
+		case http.StatusUnauthorized:
+			httpx.Write(w, r, httpx.Unauthorized(pe.Error()))
+		case http.StatusForbidden:
+			httpx.Write(w, r, httpx.Forbidden(pe.Error()))
+		case http.StatusInternalServerError:
+			httpx.Write(w, r, httpx.BadGateway(pe.Error()))
+		default:
+			httpx.Write(w, r, httpx.BadGateway(pe.Error()))
+		}
+		return
+	}
+	httpx.Write(w, r, httpx.BadGateway(err.Error()))
 }
 
 type metadataRequest struct {
@@ -125,8 +146,32 @@ func recordLatency(next http.Handler) http.Handler {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'")
-		next.ServeHTTP(w, r)
+		style := "style-src 'self'"
+		ctx := r.Context()
+		if os.Getenv("APP_ENV") == "production" {
+			nonceBytes := make([]byte, 16)
+			if _, err := rand.Read(nonceBytes); err == nil {
+				nonce := base64.StdEncoding.EncodeToString(nonceBytes)
+				style += " 'nonce-" + nonce + "'"
+				ctx = context.WithValue(ctx, nonceCtxKey{}, nonce)
+			}
+		} else {
+			style += " 'unsafe-inline'"
+		}
+		connect := "connect-src 'self'"
+		if host := pppkg.APIHost(); host != "" {
+			connect += " " + host
+		}
+		csp := strings.Join([]string{
+			"default-src 'self'",
+			"frame-ancestors 'none'",
+			"base-uri 'none'",
+			style,
+			connect,
+			"img-src 'self' data: https:",
+		}, "; ")
+		w.Header().Set("Content-Security-Policy", csp)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -165,7 +210,7 @@ func requireAdmin() func(http.Handler) http.Handler {
 }
 
 // New builds a router with all HTTP handlers.
-func New(db *sql.DB, dist embed.FS) http.Handler {
+func New(db *sql.DB, dist fs.FS) http.Handler {
 	km, err := secrets.Load(context.Background())
 	if err != nil {
 		log.Fatal().Err(err).Msg("load secrets")
@@ -178,6 +223,7 @@ func New(db *sql.DB, dist embed.FS) http.Handler {
 
 	r.Use(securityHeaders)
 	r.Use(recordLatency)
+	r.Use(telemetry.HTTP)
 
 	r.Get("/favicon.ico", serveFavicon(dist))
 	r.Get("/api/instances", listInstancesHandler(db))
@@ -213,7 +259,7 @@ func New(db *sql.DB, dist embed.FS) http.Handler {
 	return r
 }
 
-func serveFavicon(dist embed.FS) http.HandlerFunc {
+func serveFavicon(dist fs.FS) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		data, err := fs.ReadFile(dist, "favicon.ico")
 		if err != nil {
@@ -719,10 +765,11 @@ func testPufferHandler() http.HandlerFunc {
 			return
 		}
 		if err := pppkg.TestConnection(r.Context(), pppkg.Credentials{BaseURL: req.BaseURL, ClientID: req.ClientID, ClientSecret: req.ClientSecret, DeepScan: req.DeepScan}); err != nil {
-			httpx.Write(w, r, httpx.BadRequest(err.Error()))
+			writePPError(w, r, err)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"message": "ok"})
 	}
 }
 
@@ -730,7 +777,7 @@ func listServersHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		servers, err := pppkg.ListServers(r.Context())
 		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
+			writePPError(w, r, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -742,12 +789,12 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		serverID := r.URL.Query().Get("server")
 		if serverID == "" {
-			w.WriteHeader(http.StatusNoContent)
+			httpx.Write(w, r, httpx.BadRequest("server required"))
 			return
 		}
 		srv, err := pppkg.GetServer(r.Context(), serverID)
 		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
+			writePPError(w, r, err)
 			return
 		}
 		inst := dbpkg.Instance{
@@ -774,7 +821,7 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 		}
 		files, err := pppkg.ListJarFiles(r.Context(), serverID)
 		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
+			writePPError(w, r, err)
 			return
 		}
 		matched := make([]dbpkg.Mod, 0)
@@ -914,7 +961,7 @@ func resyncInstanceHandler(db *sql.DB) http.HandlerFunc {
 		}
 		files, err := pppkg.ListJarFiles(r.Context(), inst.PufferpanelServerID)
 		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
+			writePPError(w, r, err)
 			return
 		}
 		existing, err := dbpkg.ListMods(db, inst.ID)
@@ -1118,6 +1165,12 @@ func serveStatic(static fs.FS) http.HandlerFunc {
 		if err != nil {
 			http.NotFound(w, r)
 			return
+		}
+		if path == "/index.html" {
+			if nonce, ok := r.Context().Value(nonceCtxKey{}).(string); ok && nonce != "" {
+				meta := []byte("<meta name=\"csp-nonce\" content=\"" + nonce + "\">")
+				data = bytes.Replace(data, []byte("<head>"), []byte("<head>\n    "+string(meta)), 1)
+			}
 		}
 		http.ServeContent(w, r, path, time.Now(), bytes.NewReader(data))
 	}

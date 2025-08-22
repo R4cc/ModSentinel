@@ -51,6 +51,11 @@ func Forbidden(msg string) *HTTPError {
 	return &HTTPError{status: http.StatusForbidden, code: "forbidden", message: msg}
 }
 
+// BadGateway returns a 502 HTTPError.
+func BadGateway(msg string) *HTTPError {
+	return &HTTPError{status: http.StatusBadGateway, code: "bad_gateway", message: msg}
+}
+
 // TooManyRequests returns a 429 HTTPError.
 func TooManyRequests(msg string) *HTTPError {
 	return &HTTPError{status: http.StatusTooManyRequests, code: "rate_limited", message: msg}

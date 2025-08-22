@@ -88,15 +88,24 @@ func TestFetchFile(t *testing.T) {
 }
 
 func TestListJarFilesErrors(t *testing.T) {
-	statuses := []int{http.StatusForbidden, http.StatusInternalServerError}
-	for _, code := range statuses {
-		t.Run(strconv.Itoa(code), func(t *testing.T) {
+	cases := []struct {
+		status  int
+		message string
+	}{
+		{http.StatusForbidden, "nope"},
+		{http.StatusInternalServerError, "broken"},
+	}
+	for _, tc := range cases {
+		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.URL.Path == "/oauth2/token":
+					w.Header().Set("Content-Type", "application/json")
 					fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
 				case r.URL.Path == "/api/servers/1/files/list":
-					w.WriteHeader(code)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tc.status)
+					fmt.Fprintf(w, `{"code":%d,"message":"%s","requestId":"x"}`, tc.status, tc.message)
 				default:
 					http.NotFound(w, r)
 				}
@@ -108,9 +117,8 @@ func TestListJarFilesErrors(t *testing.T) {
 				t.Fatalf("Set: %v", err)
 			}
 			_, err := ListJarFiles(context.Background(), "1")
-			want := fmt.Sprintf("%d %s", code, http.StatusText(code))
-			if err == nil || err.Error() != want {
-				t.Fatalf("err = %v, want %s", err, want)
+			if err == nil || err.Error() != tc.message {
+				t.Fatalf("err = %v, want %q", err, tc.message)
 			}
 		})
 	}

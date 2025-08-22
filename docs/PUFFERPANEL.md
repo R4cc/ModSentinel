@@ -13,6 +13,21 @@ This guide explains how to connect ModSentinel to a PufferPanel server and how t
 
 Once saved, ModSentinel will enable the **Sync from PufferPanel** option when creating or resyncing instances.
 
+## Server listing
+
+`GET /api/servers` returns a paginated object:
+
+```json
+{
+  "servers": [...],
+  "paging": {"next": "/api/servers?page=2"}
+}
+```
+
+ModSentinel follows `paging.next` until all pages are retrieved or 1,000 servers have been collected.
+
+Listing servers requires the `server.view` scope and reading jar files needs `server.files.view`.
+
 ## Jar discovery paths
 
 During sync ModSentinel lists `.jar` files from the server. It checks the following directories in order:
