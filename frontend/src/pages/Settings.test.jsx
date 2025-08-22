@@ -8,10 +8,6 @@ vi.mock("@/lib/api.ts", () => ({
     .mockResolvedValue({ exists: false, last4: "", updated_at: "" }),
   saveSecret: vi.fn(),
   clearSecret: vi.fn(),
-  getPufferCreds: vi
-    .fn()
-    .mockResolvedValue({ base_url: "", client_id: "", client_secret: "" }),
-  testPufferCreds: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({
@@ -24,7 +20,7 @@ vi.mock("focus-trap-react", () => ({
 
 import { MemoryRouter } from "react-router-dom";
 import Settings from "./Settings.jsx";
-import { saveSecret, clearSecret, testPufferCreds } from "@/lib/api.ts";
+import { saveSecret, clearSecret } from "@/lib/api.ts";
 import { toast } from "sonner";
 
 Object.defineProperty(window, "matchMedia", {
@@ -37,7 +33,7 @@ Object.defineProperty(window, "matchMedia", {
 });
 
 describe("Settings page", () => {
-  it("saves, clears and tests PufferPanel credentials", async () => {
+  it("saves and clears PufferPanel credentials", async () => {
     const { getSecretStatus } = await import("@/lib/api.ts");
     getSecretStatus
       .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" }) // modrinth
@@ -61,15 +57,6 @@ describe("Settings page", () => {
       target: { value: "secret" },
     });
     fireEvent.click(screen.getByLabelText("Enable deep scan"));
-    const testBtn = screen.getByRole("button", { name: "Test" });
-    fireEvent.click(testBtn);
-    expect(testPufferCreds).toHaveBeenCalledWith({
-      base_url: "http://example.com",
-      client_id: "id",
-      client_secret: "secret",
-      deep_scan: true,
-    });
-
     const saveBtn = screen.getAllByRole("button", { name: "Save" })[1];
     fireEvent.click(saveBtn);
     await waitFor(() => expect(saveSecret).toHaveBeenCalled());

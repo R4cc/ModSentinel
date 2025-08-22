@@ -11,13 +11,19 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"sync"
+	"sync/atomic"
+
 	"github.com/go-chi/chi/v5"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 
 	dbpkg "modsentinel/internal/db"
 	"modsentinel/internal/httpx"
@@ -292,9 +298,12 @@ func TestSyncHandler_ScansMods(t *testing.T) {
 		t.Fatalf("insert inst: %v", err)
 	}
 	h := syncHandler(db)
-	body := fmt.Sprintf(`{"serverId":"1","instanceId":%d}`, inst.ID)
-	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync", strings.NewReader(body))
+	body := `{"serverId":"1"}`
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/instances/%d/sync", inst.ID), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(inst.ID))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	w := httptest.NewRecorder()
 	h(w, req)
 
@@ -348,9 +357,12 @@ func TestSyncHandler_MatchesMods(t *testing.T) {
 	defer func() { modClient = oldClient }()
 
 	h := syncHandler(db)
-	body := fmt.Sprintf(`{"serverId":"1","instanceId":%d}`, inst.ID)
-	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync", strings.NewReader(body))
+	body := `{"serverId":"1"}`
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/instances/%d/sync", inst.ID), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(inst.ID))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	w := httptest.NewRecorder()
 	h(w, req)
 
@@ -412,9 +424,12 @@ func TestSyncHandler_DeepScanMatches(t *testing.T) {
 	defer func() { modClient = oldClient }()
 
 	h := syncHandler(db)
-	body := fmt.Sprintf(`{"serverId":"1","instanceId":%d}`, inst.ID)
-	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync", strings.NewReader(body))
+	body := `{"serverId":"1"}`
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/instances/%d/sync", inst.ID), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(inst.ID))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	rec := httptest.NewRecorder()
 	h(rec, req)
 
@@ -442,8 +457,11 @@ func TestSyncHandler_Validation(t *testing.T) {
 	defer db.Close()
 
 	h := syncHandler(db)
-	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/sync", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/1/sync", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	w := httptest.NewRecorder()
 	h(w, req)
 
@@ -454,8 +472,22 @@ func TestSyncHandler_Validation(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Details["serverId"] == "" || resp.Details["instanceId"] == "" {
+	if resp.Details["serverId"] == "" {
 		t.Fatalf("details %v", resp.Details)
+	}
+}
+
+func TestPufferpanelRoutesRemoved(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	h := New(db, os.DirFS("."))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/test", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status %d", w.Code)
 	}
 }
 
@@ -971,38 +1003,7 @@ func TestMetadataHandler_MissingToken(t *testing.T) {
 	}
 }
 
-func TestTestPufferHandler_ReturnsJSON(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/oauth2/token" {
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-
-	h := testPufferHandler()
-	body := fmt.Sprintf(`{"base_url":%q,"client_id":"id","client_secret":"secret"}`, srv.URL)
-	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/test", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status %d", w.Code)
-	}
-	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
-		t.Fatalf("content-type %s", ct)
-	}
-	var resp map[string]string
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp["message"] != "ok" {
-		t.Fatalf("unexpected resp %+v", resp)
-	}
-}
-
-func TestListServersHandler_OK(t *testing.T) {
+func TestInstancesSyncHandler_OK(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 	initSecrets(t, db)
@@ -1021,7 +1022,7 @@ func TestListServersHandler_OK(t *testing.T) {
 		t.Fatalf("set creds: %v", err)
 	}
 	h := listServersHandler()
-	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/servers", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
 	h(w, req)
 	if w.Code != http.StatusOK {
@@ -1036,7 +1037,139 @@ func TestListServersHandler_OK(t *testing.T) {
 	}
 }
 
-func TestListServersHandler_Upstream403(t *testing.T) {
+func TestInstancesSyncHandler_Auth(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	initSecrets(t, db)
+	t.Setenv("ADMIN_TOKEN", "admintok")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case "/api/servers":
+			fmt.Fprint(w, `{"paging":{"page":0,"size":1,"total":1},"servers":[{"id":"1","name":"One"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	h := requireAuth()(listServersHandler())
+
+	req1 := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
+	w1 := httptest.NewRecorder()
+	h.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusUnauthorized {
+		t.Fatalf("unauth status %d", w1.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
+	req2.Header.Set("Authorization", "Bearer admintok")
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("status %d", w2.Code)
+	}
+	var servers []pppkg.Server
+	if err := json.NewDecoder(w2.Body).Decode(&servers); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(servers) != 1 || servers[0].ID != "1" {
+		t.Fatalf("unexpected servers %+v", servers)
+	}
+}
+
+func TestInstancesSyncHandler_DedupeAndCache(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	initSecrets(t, db)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case "/api/servers":
+			atomic.AddInt32(&calls, 1)
+			fmt.Fprint(w, `{"paging":{"page":0,"size":1,"total":1},"servers":[{"id":"1","name":"One"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	h := listServersHandler()
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
+			w := httptest.NewRecorder()
+			h(w, req)
+			if w.Code != http.StatusOK {
+				t.Errorf("status %d", w.Code)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("upstream calls %d", n)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("upstream calls after cache %d", n)
+	}
+}
+
+func TestInstancesSyncHandler_Telemetry(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	initSecrets(t, db)
+
+	var buf bytes.Buffer
+	prev := log.Logger
+	log.Logger = log.Output(zerolog.SyncWriter(&buf))
+	t.Cleanup(func() { log.Logger = prev })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case "/api/servers":
+			fmt.Fprint(w, `{"paging":{"page":1,"size":1,"total":1,"next":""},"servers":[{"id":"1","name":"One"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	h := listServersHandler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "\"event\":\"instances_sync\"") || !strings.Contains(out, "\"status\":\"200\"") || !strings.Contains(out, "\"upstream_status\"") || !strings.Contains(out, "\"deduped\":\"false\"") || !strings.Contains(out, "\"cache_hit\":\"false\"") || !strings.Contains(out, "\"duration_ms\"") {
+		t.Fatalf("missing fields: %s", out)
+	}
+
+}
+
+func TestInstancesSyncHandler_Upstream403(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 	initSecrets(t, db)
@@ -1058,7 +1191,7 @@ func TestListServersHandler_Upstream403(t *testing.T) {
 		t.Fatalf("set creds: %v", err)
 	}
 	h := listServersHandler()
-	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/servers", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
 	h(w, req)
 	if w.Code != http.StatusForbidden {
@@ -1076,7 +1209,7 @@ func TestListServersHandler_Upstream403(t *testing.T) {
 	}
 }
 
-func TestListServersHandler_Upstream400(t *testing.T) {
+func TestInstancesSyncHandler_Upstream400(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 	initSecrets(t, db)
@@ -1098,7 +1231,7 @@ func TestListServersHandler_Upstream400(t *testing.T) {
 		t.Fatalf("set creds: %v", err)
 	}
 	h := listServersHandler()
-	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/servers", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
 	h(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -1116,7 +1249,7 @@ func TestListServersHandler_Upstream400(t *testing.T) {
 	}
 }
 
-func TestListServersHandler_Upstream401(t *testing.T) {
+func TestInstancesSyncHandler_Upstream401(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 	initSecrets(t, db)
@@ -1138,7 +1271,7 @@ func TestListServersHandler_Upstream401(t *testing.T) {
 		t.Fatalf("set creds: %v", err)
 	}
 	h := listServersHandler()
-	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/servers", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
 	h(w, req)
 	if w.Code != http.StatusUnauthorized {
@@ -1156,7 +1289,7 @@ func TestListServersHandler_Upstream401(t *testing.T) {
 	}
 }
 
-func TestListServersHandler_Upstream5xx(t *testing.T) {
+func TestInstancesSyncHandler_Upstream5xx(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 	initSecrets(t, db)
@@ -1178,7 +1311,7 @@ func TestListServersHandler_Upstream5xx(t *testing.T) {
 		t.Fatalf("set creds: %v", err)
 	}
 	h := listServersHandler()
-	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/servers", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
 	h(w, req)
 	if w.Code != http.StatusBadGateway {
@@ -1199,30 +1332,50 @@ func TestListServersHandler_Upstream5xx(t *testing.T) {
 	}
 }
 
-func TestTestPufferHandler_InvalidBaseURL(t *testing.T) {
-	h := testPufferHandler()
-	body := `{"base_url":"ftp://example.com","client_id":"id","client_secret":"secret"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/pufferpanel/test", strings.NewReader(body))
+func TestInstancesSyncHandler_Timeout(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	initSecrets(t, db)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case "/api/servers":
+			time.Sleep(50 * time.Millisecond)
+			fmt.Fprint(w, `{"paging":{"page":0,"size":1,"total":1},"servers":[{"id":"1","name":"One"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	h := listServersHandler()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil).WithContext(ctx)
+	time.Sleep(2 * time.Millisecond)
 	w := httptest.NewRecorder()
 	h(w, req)
-	if w.Code != http.StatusBadRequest {
+	if w.Code != http.StatusBadGateway {
 		t.Fatalf("status %d", w.Code)
 	}
 	var e httpx.Error
 	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if e.Message != "invalid base_url scheme" {
+	if e.Code != "bad_gateway" {
 		t.Fatalf("unexpected error %+v", e)
 	}
 }
 
-func TestListServersHandler_BadConfig(t *testing.T) {
+func TestInstancesSyncHandler_BadConfig(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 	initSecrets(t, db)
 	h := listServersHandler()
-	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/servers", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
 	h(w, req)
 	if w.Code != http.StatusBadRequest {

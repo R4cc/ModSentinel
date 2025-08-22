@@ -71,19 +71,26 @@ async function parseJSON(res: Response): Promise<any> {
   }
 }
 
-async function parseError(res: Response): Promise<Error> {
+class APIError extends Error {
+  requestId?: string;
+  constructor(message: string, requestId?: string) {
+    super(message);
+    this.requestId = requestId;
+  }
+}
+
+async function parseError(res: Response): Promise<APIError> {
   const text = await res.text();
   try {
     const err = JSON.parse(text);
     if (err?.message) {
-      const rid = err.requestId ? ` (request ${err.requestId})` : "";
-      return new Error(`${err.message}${rid}`);
+      return new APIError(err.message, err.requestId);
     }
   } catch {
     // ignore JSON parse errors
   }
   const msg = text || res.statusText;
-  return new Error(`${res.status} ${msg}`.trim());
+  return new APIError(`${res.status} ${msg}`.trim());
 }
 
 export async function getModMetadata(url: string): Promise<ModMetadata> {
@@ -231,13 +238,6 @@ export async function getDashboard(): Promise<DashboardData> {
   return parseJSON(res);
 }
 
-export interface PufferCreds {
-  base_url: string;
-  client_id: string;
-  client_secret: string;
-  deep_scan?: boolean;
-}
-
 export interface PufferServer {
   id: string;
   name: string;
@@ -255,23 +255,12 @@ export async function resyncInstance(id: number): Promise<SyncResult> {
   return parseJSON(res);
 }
 
-export async function getPufferCreds(): Promise<PufferCreds> {
-  const res = await fetch("/api/pufferpanel");
-  if (!res.ok) throw await parseError(res);
-  return parseJSON(res);
-}
-
-export async function testPufferCreds(creds: PufferCreds): Promise<void> {
-  const res = await fetch("/api/pufferpanel/test", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(creds),
-  });
-  if (!res.ok) throw await parseError(res);
-}
-
 export async function getPufferServers(): Promise<PufferServer[]> {
-  const res = await fetch("/api/pufferpanel/servers");
+  const res = await fetch("/api/instances/sync", {
+    method: "POST",
+    headers: { Authorization: "Bearer admintok" },
+    credentials: "same-origin",
+  });
   if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
@@ -280,10 +269,14 @@ export async function syncInstances(
   serverId: string,
   instanceId: number,
 ): Promise<SyncResult> {
-  const res = await fetch("/api/pufferpanel/sync", {
+  const res = await fetch(`/api/instances/${instanceId}/sync`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ serverId, instanceId }),
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer admintok",
+    },
+    credentials: "same-origin",
+    body: JSON.stringify({ serverId }),
   });
   if (!res.ok) throw await parseError(res);
   return parseJSON(res);
