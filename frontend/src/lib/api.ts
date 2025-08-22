@@ -184,6 +184,13 @@ export async function refreshMod(id: number, payload: NewMod): Promise<Mod[]> {
   return res.json();
 }
 
+export async function checkMod(id: number): Promise<Mod> {
+  const res = await fetch(`/api/mods/${id}/check`, { cache: "no-store" });
+  if (res.status === 401) throw new Error("token required");
+  if (!res.ok) throw await parseError(res, "Failed to check mod");
+  return res.json();
+}
+
 export async function updateModVersion(id: number): Promise<Mod> {
   const res = await fetch(`/api/mods/${id}/update`, { method: "POST" });
   if (!res.ok) throw await parseError(res, "Failed to update mod");

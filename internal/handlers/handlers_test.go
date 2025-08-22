@@ -732,6 +732,94 @@ func TestSecurityMiddleware_NoAdminToken(t *testing.T) {
 	}
 }
 
+func TestCheckModHandler_NoWrite(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	inst := &dbpkg.Instance{Name: "A", Loader: "fabric"}
+	if err := dbpkg.InsertInstance(db, inst); err != nil {
+		t.Fatalf("insert inst: %v", err)
+	}
+	mod := &dbpkg.Mod{
+		Name:             "M1",
+		URL:              "https://modrinth.com/mod/fake",
+		GameVersion:      "1.20",
+		Loader:           "fabric",
+		Channel:          "release",
+		CurrentVersion:   "0.9",
+		AvailableVersion: "0.8",
+		InstanceID:       inst.ID,
+	}
+	if err := dbpkg.InsertMod(db, mod); err != nil {
+		t.Fatalf("insert mod: %v", err)
+	}
+
+	oldClient := modClient
+	modClient = fakeModClient{}
+	defer func() { modClient = oldClient }()
+
+	h := checkModHandler(db)
+	req := httptest.NewRequest(http.MethodGet, "/api/mods/"+strconv.Itoa(mod.ID)+"/check", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(mod.ID))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var resp dbpkg.Mod
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.AvailableVersion != "1.0" {
+		t.Fatalf("want available 1.0, got %q", resp.AvailableVersion)
+	}
+	m2, err := dbpkg.GetMod(db, mod.ID)
+	if err != nil {
+		t.Fatalf("get mod: %v", err)
+	}
+	if m2.AvailableVersion != "0.8" {
+		t.Fatalf("db modified to %q", m2.AvailableVersion)
+	}
+}
+
+func TestCheckModHandler_MissingToken(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	inst := &dbpkg.Instance{Name: "A", Loader: "fabric"}
+	if err := dbpkg.InsertInstance(db, inst); err != nil {
+		t.Fatalf("insert inst: %v", err)
+	}
+	mod := &dbpkg.Mod{
+		Name:        "M1",
+		URL:         "https://modrinth.com/mod/fake",
+		GameVersion: "1.20",
+		Loader:      "fabric",
+		Channel:     "release",
+		InstanceID:  inst.ID,
+	}
+	if err := dbpkg.InsertMod(db, mod); err != nil {
+		t.Fatalf("insert mod: %v", err)
+	}
+
+	oldClient := modClient
+	modClient = errClient{}
+	defer func() { modClient = oldClient }()
+
+	h := checkModHandler(db)
+	req := httptest.NewRequest(http.MethodGet, "/api/mods/"+strconv.Itoa(mod.ID)+"/check", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(mod.ID))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status %d", w.Code)
+	}
+}
+
 func TestMetadataHandler_Proxy(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
