@@ -60,6 +60,8 @@ export interface ModUpdate {
 }
 
 async function parseJSON(res: Response): Promise<any> {
+  const ct = res.headers.get("Content-Type") || "";
+  if (!ct.includes("application/json")) return undefined;
   const text = await res.text();
   if (!text) return undefined;
   try {
@@ -69,13 +71,19 @@ async function parseJSON(res: Response): Promise<any> {
   }
 }
 
-async function parseError(res: Response, fallback: string): Promise<Error> {
-  const err = await parseJSON(res);
-  if (err?.code && err?.message) {
-    return new Error(`${err.code}: ${err.message}`);
+async function parseError(res: Response): Promise<Error> {
+  const text = await res.text();
+  try {
+    const err = JSON.parse(text);
+    if (err?.message) {
+      const rid = err.requestId ? ` (request ${err.requestId})` : "";
+      return new Error(`${err.message}${rid}`);
+    }
+  } catch {
+    // ignore JSON parse errors
   }
-  if (err?.message) return new Error(err.message);
-  return new Error(fallback);
+  const msg = text || res.statusText;
+  return new Error(`${res.status} ${msg}`.trim());
 }
 
 export async function getModMetadata(url: string): Promise<ModMetadata> {
@@ -85,7 +93,7 @@ export async function getModMetadata(url: string): Promise<ModMetadata> {
     body: JSON.stringify({ url }),
   });
   if (res.status === 401) throw new Error("token required");
-  if (!res.ok) throw await parseError(res, "Failed to fetch metadata");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
@@ -93,19 +101,19 @@ export async function getMods(instanceId: number): Promise<Mod[]> {
   const res = await fetch(`/api/mods?instance_id=${instanceId}`, {
     cache: "no-store",
   });
-  if (!res.ok) throw await parseError(res, "Failed to fetch mods");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
 export async function getInstances(): Promise<Instance[]> {
   const res = await fetch("/api/instances", { cache: "no-store" });
-  if (!res.ok) throw await parseError(res, "Failed to fetch instances");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
 export async function getInstance(id: number): Promise<Instance> {
   const res = await fetch(`/api/instances/${id}`, { cache: "no-store" });
-  if (!res.ok) throw await parseError(res, "Failed to fetch instance");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
@@ -117,7 +125,7 @@ export async function deleteInstance(
     ? `/api/instances/${id}?target_instance_id=${targetInstanceId}`
     : `/api/instances/${id}`;
   const res = await fetch(url, { method: "DELETE" });
-  if (!res.ok) throw await parseError(res, "Failed to delete instance");
+  if (!res.ok) throw await parseError(res);
 }
 
 export interface NewMod {
@@ -152,7 +160,7 @@ export async function addMod(payload: NewMod): Promise<AddModResponse> {
     body: JSON.stringify(payload),
   });
   if (res.status === 401) throw new Error("token required");
-  if (!res.ok) throw await parseError(res, "Failed to add mod");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
@@ -162,7 +170,7 @@ export async function addInstance(payload: NewInstance): Promise<Instance> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw await parseError(res, "Failed to add instance");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
@@ -175,7 +183,7 @@ export async function updateInstance(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw await parseError(res, "Failed to update instance");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
@@ -186,20 +194,20 @@ export async function refreshMod(id: number, payload: NewMod): Promise<Mod[]> {
     body: JSON.stringify(payload),
   });
   if (res.status === 401) throw new Error("token required");
-  if (!res.ok) throw await parseError(res, "Failed to update mod");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
 export async function checkMod(id: number): Promise<Mod> {
   const res = await fetch(`/api/mods/${id}/check`, { cache: "no-store" });
   if (res.status === 401) throw new Error("token required");
-  if (!res.ok) throw await parseError(res, "Failed to check mod");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
 export async function updateModVersion(id: number): Promise<Mod> {
   const res = await fetch(`/api/mods/${id}/update`, { method: "POST" });
-  if (!res.ok) throw await parseError(res, "Failed to update mod");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
@@ -211,7 +219,7 @@ export async function deleteMod(
     method: "DELETE",
     cache: "no-store",
   });
-  if (!res.ok) throw await parseError(res, "Failed to delete mod");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
@@ -219,7 +227,7 @@ export async function getDashboard(): Promise<DashboardData> {
   const res = await fetch("/api/dashboard");
   if (res.status === 401) throw new Error("token required");
   if (res.status === 429) throw new Error("rate limited");
-  if (!res.ok) throw await parseError(res, "Failed to fetch dashboard");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
@@ -243,13 +251,13 @@ export interface SyncResult {
 
 export async function resyncInstance(id: number): Promise<SyncResult> {
   const res = await fetch(`/api/instances/${id}/resync`, { method: "POST" });
-  if (!res.ok) throw await parseError(res, "Failed to resync");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
 export async function getPufferCreds(): Promise<PufferCreds> {
   const res = await fetch("/api/pufferpanel");
-  if (!res.ok) throw await parseError(res, "Failed to fetch credentials");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
@@ -259,21 +267,25 @@ export async function testPufferCreds(creds: PufferCreds): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(creds),
   });
-  if (!res.ok) throw await parseError(res, "Failed to connect");
+  if (!res.ok) throw await parseError(res);
 }
 
 export async function getPufferServers(): Promise<PufferServer[]> {
   const res = await fetch("/api/pufferpanel/servers");
-  if (!res.ok) throw await parseError(res, "Failed to fetch servers");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
-export async function syncInstances(server?: string): Promise<SyncResult> {
-  const url = server
-    ? `/api/pufferpanel/sync?server=${encodeURIComponent(server)}`
-    : "/api/pufferpanel/sync";
-  const res = await fetch(url, { method: "POST" });
-  if (!res.ok) throw await parseError(res, "Failed to sync");
+export async function syncInstances(
+  serverId: string,
+  instanceId: number,
+): Promise<SyncResult> {
+  const res = await fetch("/api/pufferpanel/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ serverId, instanceId }),
+  });
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
@@ -289,7 +301,7 @@ export async function getSecretStatus(type: string): Promise<SecretStatus> {
     headers: { Authorization: "Bearer admintok" },
     credentials: "same-origin",
   });
-  if (!res.ok) throw await parseError(res, "Failed to fetch status");
+  if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
@@ -299,12 +311,12 @@ export async function saveSecret(type: string, payload: any): Promise<void> {
     headers: {
       "Content-Type": "application/json",
       Authorization: "Bearer admintok",
-      "X-CSRF-Token": (document.cookie.match(/csrf_token=([^;]+)/)?.[1] ?? ""),
+      "X-CSRF-Token": document.cookie.match(/csrf_token=([^;]+)/)?.[1] ?? "",
     },
     credentials: "same-origin",
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw await parseError(res, "Failed to save secret");
+  if (!res.ok) throw await parseError(res);
   window.dispatchEvent(new Event(`${type}-change`));
 }
 
@@ -313,10 +325,10 @@ export async function clearSecret(type: string): Promise<void> {
     method: "DELETE",
     headers: {
       Authorization: "Bearer admintok",
-      "X-CSRF-Token": (document.cookie.match(/csrf_token=([^;]+)/)?.[1] ?? ""),
+      "X-CSRF-Token": document.cookie.match(/csrf_token=([^;]+)/)?.[1] ?? "",
     },
     credentials: "same-origin",
   });
-  if (!res.ok) throw await parseError(res, "Failed to clear secret");
+  if (!res.ok) throw await parseError(res);
   window.dispatchEvent(new Event(`${type}-change`));
 }

@@ -16,7 +16,7 @@ type Error struct {
 	Code      string            `json:"code"`
 	Message   string            `json:"message"`
 	RequestID string            `json:"requestId"`
-	Fields    map[string]string `json:"fields,omitempty"`
+	Details   map[string]string `json:"details,omitempty"`
 }
 
 // HTTPError is an error with an associated HTTP status and code.
@@ -24,15 +24,15 @@ type HTTPError struct {
 	status  int
 	code    string
 	message string
-	fields  map[string]string
+	details map[string]string
 }
 
 func (e *HTTPError) Error() string { return e.message }
 func (e *HTTPError) Status() int   { return e.status }
 func (e *HTTPError) Code() string  { return e.code }
 
-func (e *HTTPError) WithFields(f map[string]string) *HTTPError {
-	e.fields = f
+func (e *HTTPError) WithDetails(d map[string]string) *HTTPError {
+	e.details = d
 	return e
 }
 
@@ -49,6 +49,11 @@ func Unauthorized(msg string) *HTTPError {
 // Forbidden returns a 403 HTTPError.
 func Forbidden(msg string) *HTTPError {
 	return &HTTPError{status: http.StatusForbidden, code: "forbidden", message: msg}
+}
+
+// NotFound returns a 404 HTTPError.
+func NotFound(msg string) *HTTPError {
+	return &HTTPError{status: http.StatusNotFound, code: "not_found", message: msg}
 }
 
 // BadGateway returns a 502 HTTPError.
@@ -79,13 +84,13 @@ func Internal(err error) *HTTPError {
 func Write(w http.ResponseWriter, r *http.Request, err error) {
 	var he *HTTPError
 	if errors.As(err, &he) {
-		write(w, r, he.status, he.code, he.message, he.fields)
+		write(w, r, he.status, he.code, he.message, he.details)
 		return
 	}
 	write(w, r, http.StatusInternalServerError, "internal_error", err.Error(), nil)
 }
 
-func write(w http.ResponseWriter, r *http.Request, status int, code, msg string, fields map[string]string) {
+func write(w http.ResponseWriter, r *http.Request, status int, code, msg string, details map[string]string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	telemetry.Event("api_error", map[string]string{"status": strconv.Itoa(status), "code": code})
@@ -93,7 +98,7 @@ func write(w http.ResponseWriter, r *http.Request, status int, code, msg string,
 		Code:      code,
 		Message:   msg,
 		RequestID: requestID(r),
-		Fields:    fields,
+		Details:   details,
 	})
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,12 +20,9 @@ type FileEntry struct {
 
 // listFiles retrieves the contents of the given path for a server.
 func listFiles(ctx context.Context, serverID, path string) ([]FileEntry, error) {
-	creds, err := Get()
+	creds, err := getCreds()
 	if err != nil {
 		return nil, err
-	}
-	if creds.BaseURL == "" {
-		return nil, errors.New("base url required")
 	}
 	u, err := url.Parse(creds.BaseURL)
 	if err != nil {
@@ -40,24 +36,19 @@ func listFiles(ctx context.Context, serverID, path string) ([]FileEntry, error) 
 	if err != nil {
 		return nil, err
 	}
-	if err := AddAuth(ctx, req); err != nil {
-		return nil, err
-	}
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	status, body, err := doAuthRequest(ctx, client, req)
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode == http.StatusNotFound {
-		resp.Body.Close()
+	if status == http.StatusNotFound {
 		return nil, os.ErrNotExist
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, parseError(resp)
+	if status < 200 || status >= 300 {
+		return nil, parseError(status, body)
 	}
-	defer resp.Body.Close()
 	var files []FileEntry
-	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
+	if err := json.Unmarshal(body, &files); err != nil {
 		return nil, err
 	}
 	return files, nil
@@ -65,12 +56,9 @@ func listFiles(ctx context.Context, serverID, path string) ([]FileEntry, error) 
 
 // FetchFile retrieves raw bytes for the given path on a server.
 func FetchFile(ctx context.Context, serverID, path string) ([]byte, error) {
-	creds, err := Get()
+	creds, err := getCreds()
 	if err != nil {
 		return nil, err
-	}
-	if creds.BaseURL == "" {
-		return nil, errors.New("base url required")
 	}
 	u, err := url.Parse(creds.BaseURL)
 	if err != nil {
@@ -84,24 +72,18 @@ func FetchFile(ctx context.Context, serverID, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := AddAuth(ctx, req); err != nil {
-		return nil, err
-	}
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	status, body, err := doAuthRequest(ctx, client, req)
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode == http.StatusNotFound {
-		resp.Body.Close()
+	if status == http.StatusNotFound {
 		return nil, os.ErrNotExist
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, parseError(resp)
+	if status < 200 || status >= 300 {
+		return nil, parseError(status, body)
 	}
-	data, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	return data, err
+	return body, nil
 }
 
 // ListJarFiles returns .jar files under mods/ or plugins/ for the server.

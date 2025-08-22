@@ -25,11 +25,12 @@ Use at your own risk.
 
 ModSentinel can sync mod lists directly from a [PufferPanel](https://pufferpanel.com) server.
 
-1. Open **Settings** → **PufferPanel** and enter your Base URL, client ID, and client secret.
+1. Open **Settings** → **PufferPanel** and enter your base URL (include `http://` or `https://` and omit the trailing slash), client ID, and client secret.
 2. The OAuth client must have the scopes `server.view` and `server.files.view`.
 3. During sync ModSentinel scans the `mods/` directory, falling back to `plugins/` if no jars are found.
 4. Enabling **Deep Scan** downloads each jar to read embedded metadata; this increases bandwidth and API usage.
 5. PufferPanel's `/api/servers` endpoint returns an object with `servers` and `paging` fields; ModSentinel walks `paging.next` until all pages (up to 1,000 servers) are fetched.
+6. Failed requests surface the backend message and a `requestId` so issues can be traced in server logs.
 
 See [docs/PUFFERPANEL.md](docs/PUFFERPANEL.md) for details.
 

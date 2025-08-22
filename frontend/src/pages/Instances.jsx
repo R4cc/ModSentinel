@@ -89,9 +89,7 @@ export default function Instances() {
   }
 
   useEffect(() => {
-    if (syncFromPuffer) {
-      fetchServers();
-    } else {
+    if (!syncFromPuffer) {
       setSelectedServer("");
       setServerError("");
     }
@@ -113,7 +111,11 @@ export default function Instances() {
   async function handleSync() {
     setSyncing(true);
     try {
-      await syncInstances();
+      await Promise.all(
+        instances
+          .filter((i) => i.pufferpanel_server_id)
+          .map((i) => syncInstances(i.pufferpanel_server_id, i.id)),
+      );
       toast.success("Synced");
       fetchInstances();
     } catch (err) {
@@ -167,8 +169,16 @@ export default function Instances() {
     if (syncFromPuffer) {
       try {
         setScanning(true);
-        const { instance, unmatched, mods } =
-          await syncInstances(selectedServer);
+        const created = await addInstance({
+          name: "",
+          loader: "",
+          enforce_same_loader: true,
+          pufferpanel_server_id: selectedServer,
+        });
+        const { instance, unmatched, mods } = await syncInstances(
+          selectedServer,
+          created.id,
+        );
         toast.success("Synced");
         setOpen(false);
         fetchInstances();
@@ -362,7 +372,11 @@ export default function Instances() {
                   id="syncPuffer"
                   checked={syncFromPuffer}
                   disabled={!hasPuffer || loadingServers}
-                  onChange={(e) => setSyncFromPuffer(e.target.checked)}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setSyncFromPuffer(checked);
+                    if (checked) fetchServers();
+                  }}
                 />
                 <label htmlFor="syncPuffer" className="text-sm">
                   Sync from PufferPanel
@@ -377,7 +391,9 @@ export default function Instances() {
           )}
           {syncFromPuffer ? (
             <>
-              {serverError ? (
+              {loadingServers ? (
+                <p className="text-sm">Loading...</p>
+              ) : serverError ? (
                 <div className="space-y-xs">
                   <p className="text-sm">{serverError}</p>
                   <Button

@@ -20,8 +20,8 @@ var (
 
 // fetchToken retrieves an access token using the client credentials.
 func fetchToken(ctx context.Context, c Credentials) (string, time.Time, error) {
-	if c.BaseURL == "" {
-		return "", time.Time{}, errors.New("base url required")
+	if err := validateCreds(&c); err != nil {
+		return "", time.Time{}, err
 	}
 	u, err := url.Parse(c.BaseURL)
 	if err != nil {
@@ -39,19 +39,18 @@ func fetchToken(ctx context.Context, c Credentials) (string, time.Time, error) {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	status, body, err := doRequest(ctx, client, req)
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", time.Time{}, parseError(resp)
+	if status < 200 || status >= 300 {
+		return "", time.Time{}, parseError(status, body)
 	}
-	defer resp.Body.Close()
 	var res struct {
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int    `json:"expires_in"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := json.Unmarshal(body, &res); err != nil {
 		return "", time.Time{}, err
 	}
 	if res.AccessToken == "" {
@@ -68,7 +67,7 @@ func getToken(ctx context.Context) (string, error) {
 	if cachedToken != "" && time.Now().Before(tokenExpiry.Add(-10*time.Second)) {
 		return cachedToken, nil
 	}
-	creds, err := Get()
+	creds, err := getCreds()
 	if err != nil {
 		return "", err
 	}
@@ -89,6 +88,25 @@ func AddAuth(ctx context.Context, req *http.Request) error {
 	}
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", tok))
 	return nil
+}
+
+// doAuthRequest attaches a bearer token and retries once on 401.
+func doAuthRequest(ctx context.Context, client *http.Client, req *http.Request) (int, []byte, error) {
+	if err := AddAuth(ctx, req); err != nil {
+		return 0, nil, err
+	}
+	status, body, err := doRequest(ctx, client, req)
+	if err != nil {
+		return status, body, err
+	}
+	if status == http.StatusUnauthorized {
+		resetToken()
+		if err := AddAuth(ctx, req); err != nil {
+			return 0, nil, err
+		}
+		return doRequest(ctx, client, req)
+	}
+	return status, body, nil
 }
 
 // resetToken clears the cached token.

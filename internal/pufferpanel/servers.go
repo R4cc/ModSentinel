@@ -3,7 +3,6 @@ package pufferpanel
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,6 +16,17 @@ import (
 type Server struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+type paging struct {
+	Page  int `json:"page"`
+	Size  int `json:"size"`
+	Total int `json:"total"`
+}
+
+type serverList struct {
+	Paging  paging   `json:"paging"`
+	Servers []Server `json:"servers"`
 }
 
 var (
@@ -36,12 +46,9 @@ func ListServers(ctx context.Context) ([]Server, error) {
 }
 
 func fetchServers(ctx context.Context) ([]Server, error) {
-	creds, err := Get()
+	creds, err := getCreds()
 	if err != nil {
 		return nil, err
-	}
-	if creds.BaseURL == "" {
-		return nil, errors.New("base url required")
 	}
 	u, err := url.Parse(creds.BaseURL)
 	if err != nil {
@@ -59,28 +66,17 @@ func fetchServers(ctx context.Context) ([]Server, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := AddAuth(ctx, req); err != nil {
-			return nil, err
-		}
-		resp, err := client.Do(req)
+		status, body, err := doAuthRequest(ctx, client, req)
 		if err != nil {
 			return nil, err
 		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, parseError(resp)
+		if status < 200 || status >= 300 {
+			return nil, parseError(status, body)
 		}
-		var res struct {
-			Paging struct {
-				Page  int `json:"page"`
-				Size  int `json:"size"`
-				Total int `json:"total"`
-			} `json:"paging"`
-			Servers []Server `json:"servers"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		var res serverList
+		if err := json.Unmarshal(body, &res); err != nil {
 			return nil, err
 		}
-		resp.Body.Close()
 		all = append(all, res.Servers...)
 		if len(all) >= res.Paging.Total || len(res.Servers) == 0 || len(all) >= maxServers {
 			if len(all) > maxServers {
@@ -103,12 +99,9 @@ type ServerDetail struct {
 
 // GetServer fetches details for a single server.
 func GetServer(ctx context.Context, id string) (*ServerDetail, error) {
-	creds, err := Get()
+	creds, err := getCreds()
 	if err != nil {
 		return nil, err
-	}
-	if creds.BaseURL == "" {
-		return nil, errors.New("base url required")
 	}
 	u, err := url.Parse(creds.BaseURL)
 	if err != nil {
@@ -119,20 +112,16 @@ func GetServer(ctx context.Context, id string) (*ServerDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := AddAuth(ctx, req); err != nil {
-		return nil, err
-	}
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	status, body, err := doAuthRequest(ctx, client, req)
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, parseError(resp)
+	if status < 200 || status >= 300 {
+		return nil, parseError(status, body)
 	}
-	defer resp.Body.Close()
 	var d ServerDetail
-	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+	if err := json.Unmarshal(body, &d); err != nil {
 		return nil, err
 	}
 	return &d, nil

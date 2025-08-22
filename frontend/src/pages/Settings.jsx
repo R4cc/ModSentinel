@@ -235,8 +235,10 @@ export default function Settings() {
         </CardHeader>
         <CardContent className="space-y-md">
           <p className="text-sm text-muted-foreground">
-            Requires scopes <code>server.view</code> and
-            <code> server.files.view</code>.
+            Base URL must include <code>http://</code> or <code>https://</code>
+            with no trailing slash. Requires scopes
+            <code>server.view</code> and <code>server.files.view</code>. Errors
+            include a <code>requestId</code> for log correlation.
           </p>
           <div className="space-y-xs">
             <label htmlFor="pp-base" className="text-sm font-medium">

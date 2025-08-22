@@ -296,7 +296,7 @@ describe("Instances page", () => {
 
   it("disables PufferPanel sync without credentials", async () => {
     getInstances.mockResolvedValueOnce([]);
-    getSecretStatus.mockResolvedValueOnce({
+    getSecretStatus.mockResolvedValue({
       exists: false,
       last4: "",
       updated_at: "",
@@ -310,7 +310,8 @@ describe("Instances page", () => {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
-    screen.getByLabelText("Sync from PufferPanel");
+    await screen.findByLabelText("Sync from PufferPanel");
+    expect(getPufferServers).not.toHaveBeenCalled();
     expect(
       screen.getAllByText(/pufferpanel credentials/i).length,
     ).toBeGreaterThan(0);
@@ -324,6 +325,14 @@ describe("Instances page", () => {
       updated_at: "",
     });
     getPufferServers.mockResolvedValueOnce([{ id: "1", name: "One" }]);
+    addInstance.mockResolvedValueOnce({
+      id: 1,
+      name: "",
+      loader: "",
+      enforce_same_loader: true,
+      pufferpanel_server_id: "1",
+      mod_count: 0,
+    });
     syncInstances.mockResolvedValueOnce({
       instance: {
         id: 1,
@@ -352,10 +361,10 @@ describe("Instances page", () => {
     fireEvent.change(select, { target: { value: "1" } });
     expect(add).not.toBeDisabled();
     fireEvent.click(add);
-    await waitFor(() => expect(syncInstances).toHaveBeenCalledWith("1"));
+    await waitFor(() => expect(syncInstances).toHaveBeenCalledWith("1", 1));
   });
 
-  it("disables toggle while loading servers", async () => {
+  it("shows loading state while fetching servers", async () => {
     getInstances.mockResolvedValueOnce([]);
     let resolve;
     getPufferServers.mockReturnValueOnce(
@@ -375,7 +384,11 @@ describe("Instances page", () => {
     const toggle = screen.getByLabelText("Sync from PufferPanel");
     fireEvent.click(toggle);
     expect(toggle).toBeDisabled();
+    screen.getByText(/loading/i);
+    expect(screen.queryByLabelText("Server")).not.toBeInTheDocument();
     resolve([]);
+    const select = await screen.findByLabelText("Server");
+    expect(select).toBeInTheDocument();
     await waitFor(() => expect(toggle).not.toBeDisabled());
   });
 
@@ -408,6 +421,14 @@ describe("Instances page", () => {
       updated_at: "",
     });
     getPufferServers.mockResolvedValueOnce([{ id: "1", name: "One" }]);
+    addInstance.mockResolvedValueOnce({
+      id: 1,
+      name: "",
+      loader: "",
+      enforce_same_loader: true,
+      pufferpanel_server_id: "1",
+      mod_count: 0,
+    });
     let resolveSync;
     syncInstances.mockReturnValueOnce(
       new Promise((res) => {
@@ -428,6 +449,7 @@ describe("Instances page", () => {
     fireEvent.change(select, { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(screen.getByText(/scanning/i)).toBeInTheDocument();
+    await waitFor(() => expect(syncInstances).toHaveBeenCalledWith("1", 1));
     resolveSync({
       instance: {
         id: 1,

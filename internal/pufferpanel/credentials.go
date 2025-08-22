@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"strings"
 	"sync/atomic"
 
 	"modsentinel/internal/secrets"
@@ -29,6 +30,9 @@ func Init(s *secrets.Service) { svc = s }
 func Set(c Credentials) error {
 	if svc == nil {
 		return nil
+	}
+	if err := validateCreds(&c); err != nil {
+		return err
 	}
 	b, err := json.Marshal(c)
 	if err != nil {
@@ -88,6 +92,9 @@ func Clear() error {
 
 // TestConnection attempts to authenticate against PufferPanel using the provided credentials.
 func TestConnection(ctx context.Context, c Credentials) error {
+	if err := validateCreds(&c); err != nil {
+		return err
+	}
 	_, _, err := fetchToken(ctx, c)
 	return err
 }
@@ -101,6 +108,41 @@ func parseHost(raw string) string {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u.String()
+}
+
+func validateCreds(c *Credentials) error {
+	if c.BaseURL == "" {
+		return &ConfigError{Reason: "base_url required"}
+	}
+	u, err := url.Parse(c.BaseURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return &ConfigError{Reason: "invalid base_url"}
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return &ConfigError{Reason: "invalid base_url scheme"}
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/")
+	u.RawQuery = ""
+	u.Fragment = ""
+	c.BaseURL = u.String()
+	if c.ClientID == "" {
+		return &ConfigError{Reason: "client_id required"}
+	}
+	if c.ClientSecret == "" {
+		return &ConfigError{Reason: "client_secret required"}
+	}
+	return nil
+}
+
+func getCreds() (Credentials, error) {
+	c, err := Get()
+	if err != nil {
+		return Credentials{}, err
+	}
+	if err := validateCreds(&c); err != nil {
+		return Credentials{}, err
+	}
+	return c, nil
 }
 
 // APIHost returns the PufferPanel base URL host for CSP connect-src directives.
