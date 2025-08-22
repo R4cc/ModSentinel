@@ -1036,7 +1036,7 @@ func TestListServersHandler_OK(t *testing.T) {
 	}
 }
 
-func TestListServersHandler_PropagatesError(t *testing.T) {
+func TestListServersHandler_Upstream403(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 	initSecrets(t, db)
@@ -1068,7 +1068,7 @@ func TestListServersHandler_PropagatesError(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if e.Code != "forbidden" || e.Message != "nope" {
+	if e.Code != "forbidden" || e.Message != "insufficient PufferPanel permissions" {
 		t.Fatalf("unexpected error %+v", e)
 	}
 	if e.RequestID == "" {
@@ -1108,7 +1108,7 @@ func TestListServersHandler_Upstream400(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if e.Code != "bad_request" || e.Message != "bad" {
+	if e.Code != "bad_request" || e.Message != "bad request to PufferPanel; check base URL" {
 		t.Fatalf("unexpected error %+v", e)
 	}
 	if e.RequestID == "" {
@@ -1148,7 +1148,7 @@ func TestListServersHandler_Upstream401(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if e.Code != "token_required" || e.Message != "unauth" {
+	if e.Code != "unauthorized" || e.Message != "invalid PufferPanel credentials" {
 		t.Fatalf("unexpected error %+v", e)
 	}
 	if e.RequestID == "" {

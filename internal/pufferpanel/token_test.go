@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -146,5 +148,53 @@ func TestClearRevokesCachedToken(t *testing.T) {
 	}
 	if tokenCalls != 1 {
 		t.Fatalf("token endpoint called after clear")
+	}
+}
+
+func TestFetchTokenRedirectSameOrigin(t *testing.T) {
+	setup(t)
+	var tokenCalls atomic.Int64
+	var redirectHost string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			http.Redirect(w, r, "https://evil.com/oauth2/token2", http.StatusFound)
+		case "/oauth2/token2":
+			tokenCalls.Add(1)
+			redirectHost = r.Host
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	tok, _, err := fetchToken(context.Background(), Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"})
+	if err != nil {
+		t.Fatalf("fetchToken: %v", err)
+	}
+	base, _ := url.Parse(srv.URL)
+	if tok != "tok" || tokenCalls.Load() != 1 || redirectHost != base.Host {
+		t.Fatalf("tok=%q calls=%d host=%s want host %s", tok, tokenCalls.Load(), redirectHost, base.Host)
+	}
+}
+
+func TestFetchTokenBypassesProxy(t *testing.T) {
+	setup(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	tok, _, err := fetchToken(context.Background(), Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"})
+	if err != nil {
+		t.Fatalf("fetchToken: %v", err)
+	}
+	if tok != "tok" {
+		t.Fatalf("tok=%q, want tok", tok)
 	}
 }

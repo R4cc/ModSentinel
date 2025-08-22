@@ -92,11 +92,11 @@ func writePPError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.As(err, &pe) {
 		switch {
 		case pe.Status == http.StatusBadRequest:
-			httpx.Write(w, r, httpx.BadRequest(pe.Error()))
+			httpx.Write(w, r, httpx.BadRequest("bad request to PufferPanel; check base URL"))
 		case pe.Status == http.StatusUnauthorized:
-			httpx.Write(w, r, httpx.Unauthorized(pe.Error()))
+			httpx.Write(w, r, httpx.Unauthorized("invalid PufferPanel credentials"))
 		case pe.Status == http.StatusForbidden:
-			httpx.Write(w, r, httpx.Forbidden(pe.Error()))
+			httpx.Write(w, r, httpx.Forbidden("insufficient PufferPanel permissions"))
 		case pe.Status >= 500:
 			httpx.Write(w, r, httpx.BadGateway(pe.Error()))
 		default:

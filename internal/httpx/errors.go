@@ -43,7 +43,7 @@ func BadRequest(msg string) *HTTPError {
 
 // Unauthorized returns a 401 HTTPError.
 func Unauthorized(msg string) *HTTPError {
-	return &HTTPError{status: http.StatusUnauthorized, code: "token_required", message: msg}
+	return &HTTPError{status: http.StatusUnauthorized, code: "unauthorized", message: msg}
 }
 
 // Forbidden returns a 403 HTTPError.

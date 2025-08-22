@@ -38,7 +38,7 @@ func fetchToken(ctx context.Context, c Credentials) (string, time.Time, error) {
 		return "", time.Time{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := newClient(u)
 	status, body, err := doRequest(ctx, client, req)
 	if err != nil {
 		return "", time.Time{}, err
