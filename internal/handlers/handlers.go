@@ -100,6 +100,14 @@ func writePPError(w http.ResponseWriter, r *http.Request, err error) int {
 		httpx.Write(w, r, httpx.BadRequest(ce.Error()))
 		return http.StatusBadRequest
 	}
+	if errors.Is(err, pppkg.ErrForbidden) {
+		httpx.Write(w, r, httpx.Forbidden("insufficient PufferPanel permissions"))
+		return http.StatusForbidden
+	}
+	if errors.Is(err, pppkg.ErrNotFound) {
+		http.NotFound(w, r)
+		return http.StatusNotFound
+	}
 	var pe *pppkg.Error
 	if errors.As(err, &pe) {
 		switch {
@@ -293,7 +301,7 @@ func New(db *sql.DB, dist fs.FS) http.Handler {
 	r.Put("/api/instances/{id}", updateInstanceHandler(db))
 	r.Post("/api/instances/{id}/resync", resyncInstanceHandler(db))
 	r.Delete("/api/instances/{id}", deleteInstanceHandler(db))
-	r.With(requireAuth()).Post("/api/instances/sync", listServersHandler())
+	r.With(requireAuth()).Post("/api/instances/sync", listServersHandler(db))
 	r.With(requireAuth()).Post("/api/instances/{id}/sync", syncHandler(db))
 	r.Get("/api/mods", listModsHandler(db))
 	r.Post("/api/mods/metadata", metadataHandler())
@@ -692,6 +700,7 @@ type pufferRequest struct {
 	BaseURL      string `json:"base_url" validate:"required,url"`
 	ClientID     string `json:"client_id" validate:"required"`
 	ClientSecret string `json:"client_secret" validate:"required"`
+	Scopes       string `json:"scopes"`
 	DeepScan     bool   `json:"deep_scan"`
 }
 
@@ -738,7 +747,7 @@ func setSecretHandler() http.HandlerFunc {
 			} else {
 				last4 = req.ClientSecret
 			}
-			if err := pppkg.Set(pppkg.Credentials{BaseURL: req.BaseURL, ClientID: req.ClientID, ClientSecret: req.ClientSecret, DeepScan: req.DeepScan}); err != nil {
+			if err := pppkg.Set(pppkg.Credentials{BaseURL: req.BaseURL, ClientID: req.ClientID, ClientSecret: req.ClientSecret, Scopes: req.Scopes, DeepScan: req.DeepScan}); err != nil {
 				httpx.Write(w, r, httpx.Internal(err))
 				return
 			}
@@ -804,7 +813,7 @@ func secretStatusHandler(svc *secrets.Service) http.HandlerFunc {
 	}
 }
 
-func listServersHandler() http.HandlerFunc {
+func listServersHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		status := http.StatusOK
@@ -826,32 +835,40 @@ func listServersHandler() http.HandlerFunc {
 			status = writePPError(w, r, err)
 			return
 		}
+		var servers []pppkg.Server
 		if v, ok := listServersCache.Load(creds.BaseURL); ok {
 			ent := v.(listServersEntry)
 			if time.Now().Before(ent.exp) {
 				cacheHit = true
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(ent.servers)
+				servers = ent.servers
+			}
+		}
+		if servers == nil {
+			var shared bool
+			var v any
+			v, err, shared = listServersSF.Do(creds.BaseURL, func() (any, error) {
+				svs, us, err := pppkg.ListServersWithStatus(r.Context())
+				upstreamStatus = us
+				if err != nil {
+					return nil, err
+				}
+				return svs, nil
+			})
+			deduped = shared
+			if err != nil {
+				status = writePPError(w, r, err)
+				return
+			}
+			servers = v.([]pppkg.Server)
+			listServersCache.Store(creds.BaseURL, listServersEntry{servers: servers, exp: time.Now().Add(listServersTTL)})
+		}
+		for _, s := range servers {
+			if _, err := db.Exec(`UPDATE instances SET name=? WHERE pufferpanel_server_id=?`, s.Name, s.ID); err != nil {
+				status = http.StatusInternalServerError
+				httpx.Write(w, r, httpx.Internal(err))
 				return
 			}
 		}
-		var shared bool
-		var v any
-		v, err, shared = listServersSF.Do(creds.BaseURL, func() (any, error) {
-			svs, us, err := pppkg.ListServersWithStatus(r.Context())
-			upstreamStatus = us
-			if err != nil {
-				return nil, err
-			}
-			return svs, nil
-		})
-		deduped = shared
-		if err != nil {
-			status = writePPError(w, r, err)
-			return
-		}
-		servers := v.([]pppkg.Server)
-		listServersCache.Store(creds.BaseURL, listServersEntry{servers: servers, exp: time.Now().Add(listServersTTL)})
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(servers)
 	}
@@ -906,11 +923,31 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
-		files, err := pppkg.ListJarFiles(r.Context(), req.ServerID)
+		folder := "mods/"
+		switch inst.Loader {
+		case "paper", "spigot":
+			folder = "plugins/"
+		}
+		entries, err := pppkg.ListPath(r.Context(), req.ServerID, folder)
 		if err != nil {
+			if errors.Is(err, pppkg.ErrNotFound) {
+				msg := strings.TrimSuffix(folder, "/") + " folder missing"
+				httpx.Write(w, r, httpx.NotFound(msg))
+				return
+			}
 			writePPError(w, r, err)
 			return
 		}
+		files := make([]string, 0, len(entries))
+		for _, e := range entries {
+			if e.IsDir {
+				continue
+			}
+			if strings.HasSuffix(strings.ToLower(e.Name), ".jar") {
+				files = append(files, e.Name)
+			}
+		}
+		sort.Strings(files)
 		matched := make([]dbpkg.Mod, 0)
 		unmatched := make([]string, 0, len(files))
 		for _, f := range files {
@@ -919,10 +956,7 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			if creds.DeepScan && (slug == "" || ver == "") {
 				scanned = true
 				time.Sleep(100 * time.Millisecond)
-				data, err := pppkg.FetchFile(r.Context(), req.ServerID, "mods/"+f)
-				if errors.Is(err, os.ErrNotExist) {
-					data, err = pppkg.FetchFile(r.Context(), req.ServerID, "plugins/"+f)
-				}
+				data, err := pppkg.FetchFile(r.Context(), req.ServerID, folder+f)
 				if err == nil {
 					s2, v2 := parseJarMetadata(data)
 					if s2 != "" && v2 != "" {
@@ -937,10 +971,7 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			res, err := modClient.Search(r.Context(), slug)
 			if (err != nil || len(res.Hits) == 0) && creds.DeepScan && !scanned {
 				time.Sleep(100 * time.Millisecond)
-				data, err := pppkg.FetchFile(r.Context(), req.ServerID, "mods/"+f)
-				if errors.Is(err, os.ErrNotExist) {
-					data, err = pppkg.FetchFile(r.Context(), req.ServerID, "plugins/"+f)
-				}
+				data, err := pppkg.FetchFile(r.Context(), req.ServerID, folder+f)
 				if err == nil {
 					s2, v2 := parseJarMetadata(data)
 					if s2 != "" && v2 != "" {
@@ -1070,7 +1101,7 @@ func resyncInstanceHandler(db *sql.DB) http.HandlerFunc {
 				scanned = true
 				time.Sleep(100 * time.Millisecond)
 				data, err := pppkg.FetchFile(r.Context(), inst.PufferpanelServerID, "mods/"+f)
-				if errors.Is(err, os.ErrNotExist) {
+				if errors.Is(err, pppkg.ErrNotFound) {
 					data, err = pppkg.FetchFile(r.Context(), inst.PufferpanelServerID, "plugins/"+f)
 				}
 				if err == nil {
@@ -1088,7 +1119,7 @@ func resyncInstanceHandler(db *sql.DB) http.HandlerFunc {
 			if (err != nil || len(res.Hits) == 0) && creds.DeepScan && !scanned {
 				time.Sleep(100 * time.Millisecond)
 				data, err := pppkg.FetchFile(r.Context(), inst.PufferpanelServerID, "mods/"+f)
-				if errors.Is(err, os.ErrNotExist) {
+				if errors.Is(err, pppkg.ErrNotFound) {
 					data, err = pppkg.FetchFile(r.Context(), inst.PufferpanelServerID, "plugins/"+f)
 				}
 				if err == nil {

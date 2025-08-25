@@ -15,8 +15,11 @@ type Credentials struct {
 	BaseURL      string `json:"base_url"`
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
+	Scopes       string `json:"scopes"`
 	DeepScan     bool   `json:"deep_scan"`
 }
+
+const defaultScopes = "server.view server.files.view server.files.edit"
 
 var (
 	svc     *secrets.Service
@@ -82,6 +85,7 @@ func Config() (Credentials, error) {
 	if c == (Credentials{}) {
 		return c, nil
 	}
+	c.ClientID = ""
 	c.ClientSecret = ""
 	return c, nil
 }
@@ -144,6 +148,9 @@ func validateCreds(c *Credentials) error {
 	}
 	if c.ClientSecret == "" {
 		return &ConfigError{Reason: "client_secret required"}
+	}
+	if strings.TrimSpace(c.Scopes) == "" {
+		c.Scopes = defaultScopes
 	}
 	return nil
 }

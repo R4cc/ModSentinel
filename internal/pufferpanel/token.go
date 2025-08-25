@@ -33,6 +33,9 @@ func fetchToken(ctx context.Context, c Credentials) (string, time.Time, error) {
 		"client_id":     {c.ClientID},
 		"client_secret": {c.ClientSecret},
 	}
+	if c.Scopes != "" {
+		data.Set("scope", c.Scopes)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), strings.NewReader(data.Encode()))
 	if err != nil {
 		return "", time.Time{}, err
@@ -44,6 +47,27 @@ func fetchToken(ctx context.Context, c Credentials) (string, time.Time, error) {
 		return "", time.Time{}, err
 	}
 	if status < 200 || status >= 300 {
+		if status >= http.StatusInternalServerError {
+			return "", time.Time{}, parseError(status, body)
+		}
+		var oe struct {
+			Error       string `json:"error"`
+			Description string `json:"error_description"`
+		}
+		if json.Unmarshal(body, &oe) == nil && oe.Error != "" {
+			switch oe.Error {
+			case "invalid_client":
+				return "", time.Time{}, &Error{Status: http.StatusUnauthorized, Message: "invalid client credentials"}
+			case "invalid_scope":
+				return "", time.Time{}, &Error{Status: http.StatusForbidden, Message: "invalid scope"}
+			default:
+				msg := oe.Description
+				if msg == "" {
+					msg = oe.Error
+				}
+				return "", time.Time{}, &Error{Status: status, Message: msg}
+			}
+		}
 		return "", time.Time{}, parseError(status, body)
 	}
 	var res struct {

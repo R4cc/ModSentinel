@@ -8,6 +8,7 @@ vi.mock("@/lib/api.ts", () => ({
     .mockResolvedValue({ exists: false, last4: "", updated_at: "" }),
   saveSecret: vi.fn(),
   clearSecret: vi.fn(),
+  testPuffer: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({
@@ -20,7 +21,7 @@ vi.mock("focus-trap-react", () => ({
 
 import { MemoryRouter } from "react-router-dom";
 import Settings from "./Settings.jsx";
-import { saveSecret, clearSecret } from "@/lib/api.ts";
+import { saveSecret, clearSecret, testPuffer } from "@/lib/api.ts";
 import { toast } from "sonner";
 
 Object.defineProperty(window, "matchMedia", {
@@ -47,6 +48,7 @@ describe("Settings page", () => {
     expect(screen.getByText(/Requires scopes/)).toBeInTheDocument();
     expect(screen.getByText("server.view")).toBeInTheDocument();
     expect(screen.getByText("server.files.view")).toBeInTheDocument();
+    expect(screen.getByText("server.files.edit")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Base URL"), {
       target: { value: "http://example.com" },
     });
@@ -64,6 +66,7 @@ describe("Settings page", () => {
       base_url: "http://example.com",
       client_id: "id",
       client_secret: "secret",
+      scopes: "server.view server.files.view server.files.edit",
       deep_scan: true,
     });
 
@@ -75,5 +78,37 @@ describe("Settings page", () => {
       expect(clearSecret).toHaveBeenCalledWith("pufferpanel"),
     );
     expect(toast.success).toHaveBeenCalledWith("Credentials cleared");
+  });
+
+  it("tests PufferPanel connection", async () => {
+    const { getSecretStatus } = await import("@/lib/api.ts");
+    getSecretStatus
+      .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" }) // modrinth
+      .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" }); // puffer
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>,
+    );
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "http://example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Client ID"), {
+      target: { value: "id" },
+    });
+    fireEvent.change(screen.getByLabelText("Client Secret"), {
+      target: { value: "secret" },
+    });
+    const btn = screen.getAllByRole("button", { name: /test connection/i })[0];
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect(testPuffer).toHaveBeenCalledWith({
+        base_url: "http://example.com",
+        client_id: "id",
+        client_secret: "secret",
+        scopes: "server.view server.files.view server.files.edit",
+      }),
+    );
+    expect(toast.success).toHaveBeenCalledWith("Connection ok");
   });
 });

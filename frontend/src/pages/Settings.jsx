@@ -11,7 +11,12 @@ import { Select } from "@/components/ui/Select.jsx";
 import { Input } from "@/components/ui/Input.jsx";
 import { Button } from "@/components/ui/Button.jsx";
 import { Checkbox } from "@/components/ui/Checkbox.jsx";
-import { getSecretStatus, saveSecret, clearSecret } from "@/lib/api.ts";
+import {
+  getSecretStatus,
+  saveSecret,
+  clearSecret,
+  testPuffer,
+} from "@/lib/api.ts";
 
 export default function Settings() {
   const { theme, setTheme, interval, setInterval } = usePreferences();
@@ -24,6 +29,9 @@ export default function Settings() {
   const [clientSecret, setClientSecret] = useState("");
   const [showSecret, setShowSecret] = useState(false);
   const [deepScan, setDeepScan] = useState(false);
+  const [scopes, setScopes] = useState(
+    "server.view server.files.view server.files.edit",
+  );
   const [pufferLast4, setPufferLast4] = useState("");
   const [hasPuffer, setHasPuffer] = useState(false);
 
@@ -81,6 +89,7 @@ export default function Settings() {
         base_url: baseUrl,
         client_id: clientId,
         client_secret: clientSecret,
+        scopes,
         deep_scan: deepScan,
       });
       setClientSecret("");
@@ -103,12 +112,33 @@ export default function Settings() {
       setClientId("");
       setClientSecret("");
       setDeepScan(false);
+      setScopes("server.view server.files.view server.files.edit");
       setPufferLast4("");
       setHasPuffer(false);
       toast.success("Credentials cleared");
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Failed to clear credentials",
+      );
+    }
+  }
+
+  async function handlePufferTest() {
+    if (!baseUrl || !clientId || !clientSecret) {
+      toast.error("All fields required");
+      return;
+    }
+    try {
+      await testPuffer({
+        base_url: baseUrl,
+        client_id: clientId,
+        client_secret: clientSecret,
+        scopes,
+      });
+      toast.success("Connection ok");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to test connection",
       );
     }
   }
@@ -210,8 +240,10 @@ export default function Settings() {
           <p className="text-sm text-muted-foreground">
             Base URL must include <code>http://</code> or <code>https://</code>
             with no trailing slash. Requires scopes
-            <code>server.view</code> and <code>server.files.view</code>. Errors
-            include a <code>requestId</code> for log correlation.
+            <code>server.view</code>, <code>server.files.view</code>, and
+            <code>server.files.edit</code>. Errors include a{" "}
+            <code>requestId</code>
+            for log correlation.
           </p>
           <div className="space-y-xs">
             <label htmlFor="pp-base" className="text-sm font-medium">
@@ -258,6 +290,16 @@ export default function Settings() {
               </Button>
             </div>
           </div>
+          <div className="space-y-xs">
+            <label htmlFor="pp-scopes" className="text-sm font-medium">
+              Scopes
+            </label>
+            <Input
+              id="pp-scopes"
+              value={scopes}
+              onChange={(e) => setScopes(e.target.value)}
+            />
+          </div>
           <div className="flex items-center gap-sm">
             <Checkbox
               id="pp-deep"
@@ -269,6 +311,13 @@ export default function Settings() {
             </label>
           </div>
           <div className="flex gap-sm">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={handlePufferTest}
+            >
+              Test Connection
+            </Button>
             <Button
               onClick={handlePufferSave}
               disabled={!baseUrl || !clientId || !clientSecret}

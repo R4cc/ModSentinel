@@ -2,6 +2,7 @@ package pufferpanel
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -24,6 +25,12 @@ func (e *Error) Error() string {
 
 // parseError constructs an Error from status and body.
 func parseError(status int, body []byte) error {
+	switch status {
+	case http.StatusNotFound:
+		return ErrNotFound
+	case http.StatusForbidden:
+		return ErrForbidden
+	}
 	e := &Error{Status: status}
 	if err := json.Unmarshal(body, e); err == nil {
 		if e.Message == "" {
@@ -42,3 +49,10 @@ func parseError(status int, body []byte) error {
 type ConfigError struct{ Reason string }
 
 func (e *ConfigError) Error() string { return e.Reason }
+
+var (
+	// ErrNotFound is returned when the requested resource does not exist.
+	ErrNotFound = errors.New("not_found")
+	// ErrForbidden is returned when access is denied.
+	ErrForbidden = errors.New("forbidden")
+)

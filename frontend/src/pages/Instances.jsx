@@ -44,7 +44,6 @@ export default function Instances() {
   const [hasToken, setHasToken] = useState(true);
   const [hasPuffer, setHasPuffer] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [syncFromPuffer, setSyncFromPuffer] = useState(false);
   const [servers, setServers] = useState([]);
   const [selectedServer, setSelectedServer] = useState("");
   const [loadingServers, setLoadingServers] = useState(false);
@@ -88,13 +87,6 @@ export default function Instances() {
     }
   }
 
-  useEffect(() => {
-    if (!syncFromPuffer) {
-      setSelectedServer("");
-      setServerError("");
-    }
-  }, [syncFromPuffer]);
-
   async function fetchInstances() {
     setLoading(true);
     setError("");
@@ -130,27 +122,58 @@ export default function Instances() {
     setName("");
     setLoader(loaders[0].id);
     setEnforce(true);
-    setSyncFromPuffer(false);
     setServers([]);
     setSelectedServer("");
     setServerError("");
     setOpen(true);
+    if (hasPuffer) fetchServers();
   }
 
   function openEdit(inst) {
     setEditing(inst);
     setName(inst.name);
-    setSyncFromPuffer(false);
+    setEnforce(inst.enforce_same_loader);
+    setSelectedServer(inst.pufferpanel_server_id || "");
     setServerError("");
     setOpen(true);
+    if (hasPuffer) fetchServers();
   }
 
   async function handleSave(e) {
     e.preventDefault();
-    if (!syncFromPuffer && !name.trim()) {
+    if (!selectedServer && !name.trim()) {
       toast.error("Name required");
       return;
     }
+    if (selectedServer) {
+      try {
+        setScanning(true);
+        let res;
+        if (editing) {
+          res = await syncInstances(selectedServer, editing.id);
+        } else {
+          const created = await addInstance({
+            name: "",
+            loader: "",
+            enforce_same_loader: true,
+            pufferpanel_server_id: selectedServer,
+          });
+          res = await syncInstances(selectedServer, created.id);
+        }
+        toast.success("Synced");
+        setOpen(false);
+        fetchInstances();
+        navigate(`/instances/${res.instance.id}`, {
+          state: { unmatched: res.unmatched, mods: res.mods },
+        });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to sync");
+      } finally {
+        setScanning(false);
+      }
+      return;
+    }
+
     if (editing) {
       try {
         const updated = await updateInstance(editing.id, { name });
@@ -163,30 +186,6 @@ export default function Instances() {
         toast.error(
           err instanceof Error ? err.message : "Failed to save instance",
         );
-      }
-      return;
-    }
-    if (syncFromPuffer) {
-      try {
-        setScanning(true);
-        const created = await addInstance({
-          name: "",
-          loader: "",
-          enforce_same_loader: true,
-          pufferpanel_server_id: selectedServer,
-        });
-        const { instance, unmatched, mods } = await syncInstances(
-          selectedServer,
-          created.id,
-        );
-        toast.success("Synced");
-        setOpen(false);
-        fetchInstances();
-        navigate(`/instances/${instance.id}`, { state: { unmatched, mods } });
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to sync");
-      } finally {
-        setScanning(false);
       }
       return;
     }
@@ -365,32 +364,11 @@ export default function Instances() {
 
       <Modal open={open} onClose={() => setOpen(false)}>
         <form className="space-y-md" onSubmit={handleSave}>
-          {!editing && (
+          {hasPuffer && (
             <div className="space-y-xs">
-              <div className="flex items-center gap-sm">
-                <Checkbox
-                  id="syncPuffer"
-                  checked={syncFromPuffer}
-                  disabled={!hasPuffer || loadingServers}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    setSyncFromPuffer(checked);
-                    if (checked) fetchServers();
-                  }}
-                />
-                <label htmlFor="syncPuffer" className="text-sm">
-                  Sync from PufferPanel
-                </label>
-              </div>
-              {!hasPuffer && (
-                <p className="text-xs text-muted-foreground">
-                  Set PufferPanel credentials in Settings
-                </p>
-              )}
-            </div>
-          )}
-          {syncFromPuffer ? (
-            <>
+              <label htmlFor="server" className="text-sm font-medium">
+                Server
+              </label>
               {loadingServers ? (
                 <p className="text-sm">Loading...</p>
               ) : serverError ? (
@@ -406,28 +384,25 @@ export default function Instances() {
                   </Button>
                 </div>
               ) : (
-                <div className="space-y-xs">
-                  <label htmlFor="server" className="text-sm font-medium">
-                    Server
-                  </label>
-                  <Select
-                    id="server"
-                    value={selectedServer}
-                    onChange={(e) => setSelectedServer(e.target.value)}
-                    disabled={loadingServers}
-                    aria-busy={loadingServers}
-                  >
-                    <option value="">Select a server</option>
-                    {servers.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
+                <Select
+                  id="server"
+                  value={selectedServer}
+                  onChange={(e) => setSelectedServer(e.target.value)}
+                  disabled={loadingServers}
+                  aria-busy={loadingServers}
+                >
+                  <option value="">None</option>
+                  {servers.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </Select>
               )}
-              {scanning && <p className="text-sm">Scanning...</p>}
-            </>
+            </div>
+          )}
+          {selectedServer ? (
+            scanning && <p className="text-sm">Scanning...</p>
           ) : (
             <>
               <div className="space-y-xs">
@@ -482,7 +457,11 @@ export default function Instances() {
             </Button>
             <Button
               type="submit"
-              disabled={(syncFromPuffer && !selectedServer) || scanning}
+              disabled={
+                scanning ||
+                loadingServers ||
+                (!selectedServer && !name.trim())
+              }
               aria-busy={scanning}
             >
               {editing ? "Save" : "Add"}

@@ -57,17 +57,19 @@ describe("Instances PufferPanel fetch", () => {
         <Instances />
       </MemoryRouter>,
     );
-
+    await waitFor(() =>
+      expect(getSecretStatus).toHaveBeenCalledWith("pufferpanel"),
+    );
     const addBtn = await screen.findByRole("button", { name: /add instance/i });
     fireEvent.click(addBtn);
-    const toggle = await screen.findByLabelText("Sync from PufferPanel");
-    fireEvent.click(toggle);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
     const urls = fetchMock.mock.calls.map((c) => c[0]);
-    expect(urls).toContain("/api/instances/sync");
-    expect(urls.some((u) => u.startsWith("/api/pufferpanel/"))).toBe(false);
+    expect(urls).toContain(`${window.location.origin}/api/instances/sync`);
+    expect(
+      urls.some((u) => u.startsWith(`${window.location.origin}/api/pufferpanel/`)),
+    ).toBe(false);
 
     // @ts-ignore
     global.fetch = origFetch;

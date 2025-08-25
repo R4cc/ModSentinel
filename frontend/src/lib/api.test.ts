@@ -25,7 +25,7 @@ describe("proxy API calls", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/mods/metadata");
+    expect(url).toBe(`${window.location.origin}/api/mods/metadata`);
     expect(opts.method).toBe("POST");
     expect(opts.headers?.Authorization).toBeUndefined();
     expect(String(opts.body)).not.toContain("token");
@@ -45,7 +45,7 @@ describe("proxy API calls", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/instances/sync");
+    expect(url).toBe(`${window.location.origin}/api/instances/sync`);
     expect(opts?.method).toBe("POST");
     expect(opts?.headers?.Authorization).toBe("Bearer admintok");
     expect(opts?.credentials).toBe("same-origin");

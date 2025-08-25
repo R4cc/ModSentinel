@@ -52,6 +52,7 @@ describe("Instances page", () => {
       last4: "",
       updated_at: "",
     });
+    getPufferServers.mockResolvedValue([]);
   });
 
   it("shows empty state when no instances", async () => {
@@ -154,10 +155,14 @@ describe("Instances page", () => {
       </MemoryRouter>,
     );
 
+    await waitFor(() =>
+      expect(getSecretStatus).toHaveBeenCalledWith("pufferpanel"),
+    );
     const [addBtn] = await screen.findAllByRole("button", {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
+    await screen.findByLabelText("Server");
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "Test" },
     });
@@ -268,7 +273,8 @@ describe("Instances page", () => {
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "One!" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const save = screen.getAllByRole("button", { name: "Save" }).pop();
+    fireEvent.click(save);
 
     await waitFor(() =>
       expect(updateInstance).toHaveBeenCalledWith(1, {
@@ -310,7 +316,6 @@ describe("Instances page", () => {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
-    await screen.findByLabelText("Sync from PufferPanel");
     expect(getPufferServers).not.toHaveBeenCalled();
     expect(
       screen.getAllByText(/pufferpanel credentials/i).length,
@@ -349,12 +354,13 @@ describe("Instances page", () => {
         <Instances />
       </MemoryRouter>,
     );
+    await waitFor(() =>
+      expect(getSecretStatus).toHaveBeenCalledWith("pufferpanel"),
+    );
     const [addBtn] = await screen.findAllByRole("button", {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
-    const toggle = screen.getByLabelText("Sync from PufferPanel");
-    fireEvent.click(toggle);
     const select = await screen.findByLabelText("Server");
     const add = screen.getByRole("button", { name: "Add" });
     expect(add).toBeDisabled();
@@ -377,19 +383,18 @@ describe("Instances page", () => {
         <Instances />
       </MemoryRouter>,
     );
+    await waitFor(() =>
+      expect(getSecretStatus).toHaveBeenCalledWith("pufferpanel"),
+    );
     const [addBtn] = await screen.findAllByRole("button", {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
-    const toggle = screen.getByLabelText("Sync from PufferPanel");
-    fireEvent.click(toggle);
-    expect(toggle).toBeDisabled();
     screen.getByText(/loading/i);
     expect(screen.queryByLabelText("Server")).not.toBeInTheDocument();
     resolve([]);
     const select = await screen.findByLabelText("Server");
     expect(select).toBeInTheDocument();
-    await waitFor(() => expect(toggle).not.toBeDisabled());
   });
 
   it("shows inline error with retry on server load failure", async () => {
@@ -406,11 +411,13 @@ describe("Instances page", () => {
         <Instances />
       </MemoryRouter>,
     );
+    await waitFor(() =>
+      expect(getSecretStatus).toHaveBeenCalledWith("pufferpanel"),
+    );
     const [addBtn] = await screen.findAllByRole("button", {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
-    fireEvent.click(screen.getByLabelText("Sync from PufferPanel"));
     await screen.findAllByRole("button", { name: /retry/i });
     expect(
       screen.getAllByText("invalid PufferPanel credentials")[0],
@@ -433,26 +440,24 @@ describe("Instances page", () => {
       pufferpanel_server_id: "1",
       mod_count: 0,
     });
-    syncInstances.mockRejectedValueOnce(
-      new Error("insufficient PufferPanel permissions"),
-    );
+    syncInstances.mockRejectedValueOnce(new Error("mods folder missing"));
     render(
       <MemoryRouter>
         <Instances />
       </MemoryRouter>,
     );
+    await waitFor(() =>
+      expect(getSecretStatus).toHaveBeenCalledWith("pufferpanel"),
+    );
     const [addBtn] = await screen.findAllByRole("button", {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
-    fireEvent.click(screen.getByLabelText("Sync from PufferPanel"));
     const select = await screen.findByLabelText("Server");
     fireEvent.change(select, { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith(
-        "insufficient PufferPanel permissions",
-      ),
+      expect(toast.error).toHaveBeenCalledWith("mods folder missing"),
     );
   });
 
@@ -483,11 +488,13 @@ describe("Instances page", () => {
         <Instances />
       </MemoryRouter>,
     );
+    await waitFor(() =>
+      expect(getSecretStatus).toHaveBeenCalledWith("pufferpanel"),
+    );
     const [addBtn] = await screen.findAllByRole("button", {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
-    fireEvent.click(screen.getByLabelText("Sync from PufferPanel"));
     const select = await screen.findByLabelText("Server");
     fireEvent.change(select, { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));

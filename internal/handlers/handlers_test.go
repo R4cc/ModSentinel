@@ -272,16 +272,13 @@ func TestSyncHandler_ScansMods(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 
-	// mock pufferpanel server
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/oauth2/token":
 			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
 		case r.URL.Path == "/api/servers/1":
 			fmt.Fprint(w, `{"id":"1","name":"Srv","environment":{"type":"fabric"}}`)
-		case r.URL.Path == "/api/servers/1/files/list" && r.URL.Query().Get("path") == "mods":
-			http.NotFound(w, r)
-		case r.URL.Path == "/api/servers/1/files/list" && r.URL.Query().Get("path") == "plugins":
+		case r.URL.Path == "/api/servers/1/file/mods%2F":
 			fmt.Fprint(w, `[{"name":"mod.jar","is_dir":false},{"name":"other.txt","is_dir":false}]`)
 		default:
 			http.NotFound(w, r)
@@ -326,6 +323,54 @@ func TestSyncHandler_ScansMods(t *testing.T) {
 	}
 }
 
+func TestSyncHandler_MissingFolder(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/oauth2/token":
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case r.URL.Path == "/api/servers/1":
+			fmt.Fprint(w, `{"id":"1","name":"Srv","environment":{"type":"fabric"}}`)
+		case r.URL.Path == "/api/servers/1/file/mods%2F":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	initSecrets(t, db)
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	inst := dbpkg.Instance{Name: "", Loader: "", EnforceSameLoader: true}
+	if err := dbpkg.InsertInstance(db, &inst); err != nil {
+		t.Fatalf("insert inst: %v", err)
+	}
+	h := syncHandler(db)
+	body := `{"serverId":"1"}`
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/instances/%d/sync", inst.ID), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(inst.ID))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status %d", w.Code)
+	}
+	var e httpx.Error
+	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if e.Code != "not_found" || !strings.Contains(e.Message, "mods") {
+		t.Fatalf("unexpected error %+v", e)
+	}
+}
+
 func TestSyncHandler_MatchesMods(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
@@ -336,7 +381,7 @@ func TestSyncHandler_MatchesMods(t *testing.T) {
 			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
 		case r.URL.Path == "/api/servers/1":
 			fmt.Fprint(w, `{"id":"1","name":"Srv","environment":{"type":"fabric"}}`)
-		case r.URL.Path == "/api/servers/1/files/list" && r.URL.Query().Get("path") == "mods":
+		case r.URL.Path == "/api/servers/1/file/mods%2F":
 			fmt.Fprint(w, `[{"name":"sodium-1.0.jar","is_dir":false}]`)
 		default:
 			http.NotFound(w, r)
@@ -377,12 +422,19 @@ func TestSyncHandler_MatchesMods(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Unmatched) != 0 {
-		t.Fatalf("unexpected unmatched %v", resp.Unmatched)
-	}
-	if len(resp.Mods) != 1 || resp.Mods[0].CurrentVersion != "1.0" {
-		t.Fatalf("unexpected mods %+v", resp.Mods)
-	}
+        if len(resp.Unmatched) != 0 {
+                t.Fatalf("unexpected unmatched %v", resp.Unmatched)
+        }
+        if len(resp.Mods) != 1 || resp.Mods[0].CurrentVersion != "1.0" {
+                t.Fatalf("unexpected mods %+v", resp.Mods)
+        }
+        mods, err := dbpkg.ListMods(db, inst.ID)
+        if err != nil {
+                t.Fatalf("list mods: %v", err)
+        }
+        if len(mods) != 1 || mods[0].Name != "Sodium" || mods[0].CurrentVersion != "1.0" {
+                t.Fatalf("db mods %+v", mods)
+        }
 }
 
 func TestSyncHandler_DeepScanMatches(t *testing.T) {
@@ -401,7 +453,7 @@ func TestSyncHandler_DeepScanMatches(t *testing.T) {
 			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
 		case r.URL.Path == "/api/servers/1":
 			fmt.Fprint(w, `{"id":"1","name":"Srv","environment":{"type":"fabric"}}`)
-		case r.URL.Path == "/api/servers/1/files/list" && r.URL.Query().Get("path") == "mods":
+		case r.URL.Path == "/api/servers/1/file/mods%2F":
 			fmt.Fprint(w, `[{"name":"m.jar","is_dir":false}]`)
 		case r.URL.Path == "/api/servers/1/files/contents" && r.URL.Query().Get("path") == "mods/m.jar":
 			w.Write(buf.Bytes())
@@ -1021,7 +1073,12 @@ func TestInstancesSyncHandler_OK(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	h := listServersHandler()
+	// pre-insert instance to verify DB update
+	inst := dbpkg.Instance{Name: "Old", Loader: "fabric", EnforceSameLoader: true, PufferpanelServerID: "1"}
+	if err := dbpkg.InsertInstance(db, &inst); err != nil {
+		t.Fatalf("insert inst: %v", err)
+	}
+	h := listServersHandler(db)
 	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
 	h(w, req)
@@ -1034,6 +1091,13 @@ func TestInstancesSyncHandler_OK(t *testing.T) {
 	}
 	if len(servers) != 2 || servers[0].ID != "1" || servers[1].ID != "2" {
 		t.Fatalf("unexpected servers %+v", servers)
+	}
+	inst2, err := dbpkg.GetInstance(db, inst.ID)
+	if err != nil {
+		t.Fatalf("get inst: %v", err)
+	}
+	if inst2.Name != "One" {
+		t.Fatalf("instance name %s", inst2.Name)
 	}
 }
 
@@ -1056,7 +1120,7 @@ func TestInstancesSyncHandler_Auth(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	h := requireAuth()(listServersHandler())
+	h := requireAuth()(listServersHandler(db))
 
 	req1 := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w1 := httptest.NewRecorder()
@@ -1101,7 +1165,7 @@ func TestInstancesSyncHandler_DedupeAndCache(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	h := listServersHandler()
+	h := listServersHandler(db)
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
@@ -1154,7 +1218,7 @@ func TestInstancesSyncHandler_Telemetry(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	h := listServersHandler()
+	h := listServersHandler(db)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
@@ -1190,7 +1254,7 @@ func TestInstancesSyncHandler_Upstream403(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	h := listServersHandler()
+	h := listServersHandler(db)
 	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
 	h(w, req)
@@ -1230,7 +1294,7 @@ func TestInstancesSyncHandler_Upstream400(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	h := listServersHandler()
+	h := listServersHandler(db)
 	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
 	h(w, req)
@@ -1270,7 +1334,7 @@ func TestInstancesSyncHandler_Upstream401(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	h := listServersHandler()
+	h := listServersHandler(db)
 	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
 	h(w, req)
@@ -1310,7 +1374,7 @@ func TestInstancesSyncHandler_Upstream5xx(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	h := listServersHandler()
+	h := listServersHandler(db)
 	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
 	h(w, req)
@@ -1351,7 +1415,7 @@ func TestInstancesSyncHandler_Timeout(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	h := listServersHandler()
+	h := listServersHandler(db)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
 	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil).WithContext(ctx)
@@ -1374,7 +1438,7 @@ func TestInstancesSyncHandler_BadConfig(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 	initSecrets(t, db)
-	h := listServersHandler()
+	h := listServersHandler(db)
 	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
 	h(w, req)

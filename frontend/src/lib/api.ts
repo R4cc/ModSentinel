@@ -79,6 +79,12 @@ class APIError extends Error {
   }
 }
 
+const API_ORIGIN = window.location.origin;
+
+function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${API_ORIGIN}${path}`, init);
+}
+
 async function parseError(res: Response): Promise<APIError> {
   const text = await res.text();
   try {
@@ -94,7 +100,7 @@ async function parseError(res: Response): Promise<APIError> {
 }
 
 export async function getModMetadata(url: string): Promise<ModMetadata> {
-  const res = await fetch("/api/mods/metadata", {
+  const res = await apiFetch("/api/mods/metadata", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url }),
@@ -105,7 +111,7 @@ export async function getModMetadata(url: string): Promise<ModMetadata> {
 }
 
 export async function getMods(instanceId: number): Promise<Mod[]> {
-  const res = await fetch(`/api/mods?instance_id=${instanceId}`, {
+  const res = await apiFetch(`/api/mods?instance_id=${instanceId}`, {
     cache: "no-store",
   });
   if (!res.ok) throw await parseError(res);
@@ -113,13 +119,13 @@ export async function getMods(instanceId: number): Promise<Mod[]> {
 }
 
 export async function getInstances(): Promise<Instance[]> {
-  const res = await fetch("/api/instances", { cache: "no-store" });
+  const res = await apiFetch("/api/instances", { cache: "no-store" });
   if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
 export async function getInstance(id: number): Promise<Instance> {
-  const res = await fetch(`/api/instances/${id}`, { cache: "no-store" });
+  const res = await apiFetch(`/api/instances/${id}`, { cache: "no-store" });
   if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
@@ -131,7 +137,7 @@ export async function deleteInstance(
   const url = targetInstanceId
     ? `/api/instances/${id}?target_instance_id=${targetInstanceId}`
     : `/api/instances/${id}`;
-  const res = await fetch(url, { method: "DELETE" });
+  const res = await apiFetch(url, { method: "DELETE" });
   if (!res.ok) throw await parseError(res);
 }
 
@@ -161,7 +167,7 @@ export interface AddModResponse {
 }
 
 export async function addMod(payload: NewMod): Promise<AddModResponse> {
-  const res = await fetch("/api/mods", {
+  const res = await apiFetch("/api/mods", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -172,7 +178,7 @@ export async function addMod(payload: NewMod): Promise<AddModResponse> {
 }
 
 export async function addInstance(payload: NewInstance): Promise<Instance> {
-  const res = await fetch("/api/instances", {
+  const res = await apiFetch("/api/instances", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -185,7 +191,7 @@ export async function updateInstance(
   id: number,
   payload: UpdateInstance,
 ): Promise<Instance> {
-  const res = await fetch(`/api/instances/${id}`, {
+  const res = await apiFetch(`/api/instances/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -195,7 +201,7 @@ export async function updateInstance(
 }
 
 export async function refreshMod(id: number, payload: NewMod): Promise<Mod[]> {
-  const res = await fetch(`/api/mods/${id}`, {
+  const res = await apiFetch(`/api/mods/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -206,14 +212,14 @@ export async function refreshMod(id: number, payload: NewMod): Promise<Mod[]> {
 }
 
 export async function checkMod(id: number): Promise<Mod> {
-  const res = await fetch(`/api/mods/${id}/check`, { cache: "no-store" });
+  const res = await apiFetch(`/api/mods/${id}/check`, { cache: "no-store" });
   if (res.status === 401) throw new Error("token required");
   if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
 export async function updateModVersion(id: number): Promise<Mod> {
-  const res = await fetch(`/api/mods/${id}/update`, { method: "POST" });
+  const res = await apiFetch(`/api/mods/${id}/update`, { method: "POST" });
   if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
@@ -222,7 +228,7 @@ export async function deleteMod(
   id: number,
   instanceId: number,
 ): Promise<Mod[]> {
-  const res = await fetch(`/api/mods/${id}?instance_id=${instanceId}`, {
+  const res = await apiFetch(`/api/mods/${id}?instance_id=${instanceId}`, {
     method: "DELETE",
     cache: "no-store",
   });
@@ -231,7 +237,7 @@ export async function deleteMod(
 }
 
 export async function getDashboard(): Promise<DashboardData> {
-  const res = await fetch("/api/dashboard");
+  const res = await apiFetch("/api/dashboard");
   if (res.status === 401) throw new Error("token required");
   if (res.status === 429) throw new Error("rate limited");
   if (!res.ok) throw await parseError(res);
@@ -250,13 +256,13 @@ export interface SyncResult {
 }
 
 export async function resyncInstance(id: number): Promise<SyncResult> {
-  const res = await fetch(`/api/instances/${id}/resync`, { method: "POST" });
+  const res = await apiFetch(`/api/instances/${id}/resync`, { method: "POST" });
   if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
 export async function getPufferServers(): Promise<PufferServer[]> {
-  const res = await fetch("/api/instances/sync", {
+  const res = await apiFetch("/api/instances/sync", {
     method: "POST",
     headers: { Authorization: "Bearer admintok" },
     credentials: "same-origin",
@@ -269,7 +275,7 @@ export async function syncInstances(
   serverId: string,
   instanceId: number,
 ): Promise<SyncResult> {
-  const res = await fetch(`/api/instances/${instanceId}/sync`, {
+  const res = await apiFetch(`/api/instances/${instanceId}/sync`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -289,7 +295,7 @@ export interface SecretStatus {
 }
 
 export async function getSecretStatus(type: string): Promise<SecretStatus> {
-  const res = await fetch(`/api/settings/secret/${type}/status`, {
+  const res = await apiFetch(`/api/settings/secret/${type}/status`, {
     cache: "no-store",
     headers: { Authorization: "Bearer admintok" },
     credentials: "same-origin",
@@ -299,7 +305,7 @@ export async function getSecretStatus(type: string): Promise<SecretStatus> {
 }
 
 export async function saveSecret(type: string, payload: any): Promise<void> {
-  const res = await fetch(`/api/settings/secret/${type}`, {
+  const res = await apiFetch(`/api/settings/secret/${type}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -314,7 +320,7 @@ export async function saveSecret(type: string, payload: any): Promise<void> {
 }
 
 export async function clearSecret(type: string): Promise<void> {
-  const res = await fetch(`/api/settings/secret/${type}`, {
+  const res = await apiFetch(`/api/settings/secret/${type}`, {
     method: "DELETE",
     headers: {
       Authorization: "Bearer admintok",
@@ -324,4 +330,26 @@ export async function clearSecret(type: string): Promise<void> {
   });
   if (!res.ok) throw await parseError(res);
   window.dispatchEvent(new Event(`${type}-change`));
+}
+
+export interface PufferTestPayload {
+  base_url: string;
+  client_id: string;
+  client_secret: string;
+  scopes: string;
+}
+
+export async function testPuffer(
+  payload: PufferTestPayload,
+): Promise<void> {
+  const res = await apiFetch("/api/pufferpanel/test", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer admintok",
+    },
+    credentials: "same-origin",
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw await parseError(res);
 }
