@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast.ts';
 import { getModMetadata } from '@/lib/api.ts';
 
 function parseModKey(url) {

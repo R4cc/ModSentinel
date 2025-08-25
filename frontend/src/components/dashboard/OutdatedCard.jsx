@@ -2,7 +2,7 @@ import { useState, useCallback, memo } from 'react';
 import { Button } from '@/components/ui/Button.jsx';
 import { Skeleton } from '@/components/ui/Skeleton.jsx';
 import { useDashboardStore } from '@/stores/dashboardStore.js';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast.ts';
 
 function OutdatedCard({ data, loading, error }) {
   const update = useDashboardStore((s) => s.update);

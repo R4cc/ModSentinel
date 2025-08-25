@@ -41,7 +41,7 @@ import {
   checkMod,
 } from "@/lib/api.ts";
 import { cn } from "@/lib/utils.js";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast.ts";
 import { useConfirm } from "@/hooks/useConfirm.jsx";
 import { useOpenAddMod } from "@/hooks/useOpenAddMod.js";
 

@@ -22,7 +22,7 @@ vi.mock("@/lib/api.ts", () => ({
   getMods: vi.fn(),
 }));
 
-vi.mock("sonner", () => ({
+vi.mock("@/lib/toast.ts", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
@@ -42,7 +42,7 @@ import {
   getPufferServers,
   getMods,
 } from "@/lib/api.ts";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast.ts";
 
 describe("Instances page", () => {
   beforeEach(() => {

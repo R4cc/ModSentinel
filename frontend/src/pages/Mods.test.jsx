@@ -24,11 +24,11 @@ vi.mock("@/lib/api.ts", () => ({
   checkMod: vi.fn(),
 }));
 
-vi.mock("sonner", () => ({
+vi.mock("@/lib/toast.ts", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
-import { toast } from "sonner";
+import { toast } from "@/lib/toast.ts";
 import { axe } from "vitest-axe";
 
 const confirmMock = vi.fn();

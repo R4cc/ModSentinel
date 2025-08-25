@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast.ts";
 import usePreferences from "@/hooks/usePreferences.js";
 import {
   Card,

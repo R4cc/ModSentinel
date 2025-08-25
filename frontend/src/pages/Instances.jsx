@@ -24,7 +24,7 @@ import {
   syncInstances,
   getPufferServers,
 } from "@/lib/api.ts";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast.ts";
 
 const loaders = [
   { id: "fabric", label: "Fabric" },

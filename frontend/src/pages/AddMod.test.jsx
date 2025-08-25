@@ -27,7 +27,7 @@ vi.mock("@/lib/api.ts", () => ({
   getMods: vi.fn(),
 }));
 
-vi.mock("sonner", () => ({
+vi.mock("@/lib/toast.ts", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
@@ -45,7 +45,7 @@ import { useAddModStore, initialState } from "@/stores/addModStore.js";
 import { useOpenAddMod } from "@/hooks/useOpenAddMod.js";
 import { addMod, getInstance, getMods } from "@/lib/api.ts";
 import Mods from "./Mods.jsx";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast.ts";
 
 describe("AddMod page", () => {
   beforeEach(() => {
