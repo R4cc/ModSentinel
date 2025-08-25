@@ -26,6 +26,9 @@ func TestSetValidatesAndNormalizesBaseURL(t *testing.T) {
 	if c.BaseURL != srv.URL {
 		t.Fatalf("base URL = %s, want %s", c.BaseURL, srv.URL)
 	}
+	if c.Scopes != defaultScopes {
+		t.Fatalf("scopes = %q, want %q", c.Scopes, defaultScopes)
+	}
 }
 
 func TestGetNormalizesExistingBaseURL(t *testing.T) {
@@ -53,5 +56,8 @@ func TestGetNormalizesExistingBaseURL(t *testing.T) {
 	}
 	if stored.BaseURL != srv.URL {
 		t.Fatalf("stored BaseURL = %s, want %s", stored.BaseURL, srv.URL)
+	}
+	if stored.Scopes != defaultScopes {
+		t.Fatalf("stored Scopes = %q, want %q", stored.Scopes, defaultScopes)
 	}
 }

@@ -3,10 +3,12 @@ package pufferpanel
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,6 +35,37 @@ func setup(t *testing.T) {
 		t.Fatalf("load manager: %v", err)
 	}
 	Init(secrets.NewService(db, km))
+}
+
+func TestFetchTokenSuccess(t *testing.T) {
+        setup(t)
+        var form url.Values
+        srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                if r.URL.Path != "/oauth2/token" {
+                        http.NotFound(w, r)
+                        return
+                }
+                if err := r.ParseForm(); err != nil {
+                        t.Fatalf("parse form: %v", err)
+                }
+                form = r.PostForm
+                fmt.Fprint(w, `{"access_token":"tok","expires_in":60}`)
+        }))
+        defer srv.Close()
+
+        tok, exp, err := fetchToken(context.Background(), Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret", Scopes: "s1 s2"})
+        if err != nil {
+                t.Fatalf("fetchToken: %v", err)
+        }
+        if tok != "tok" {
+                t.Fatalf("tok=%q", tok)
+        }
+        if form.Get("grant_type") != "client_credentials" || form.Get("client_id") != "id" || form.Get("client_secret") != "secret" || form.Get("scope") != "s1 s2" {
+                t.Fatalf("form = %v", form)
+        }
+        if exp.Before(time.Now().Add(55 * time.Second)) {
+                t.Fatalf("expiry %v too soon", exp)
+        }
 }
 
 func TestAddAuthCachesAndRefreshesToken(t *testing.T) {
@@ -196,5 +229,91 @@ func TestFetchTokenBypassesProxy(t *testing.T) {
 	}
 	if tok != "tok" {
 		t.Fatalf("tok=%q, want tok", tok)
+	}
+}
+
+func TestDoAuthRequestRefreshesOnUnauthorized(t *testing.T) {
+	setup(t)
+	var tokenCalls, dataCalls int
+	var auth1, auth2 string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			tokenCalls++
+			w.Header().Set("Content-Type", "application/json")
+			if tokenCalls == 1 {
+				fmt.Fprint(w, `{"access_token":"tok1","expires_in":3600}`)
+			} else {
+				fmt.Fprint(w, `{"access_token":"tok2","expires_in":3600}`)
+			}
+		case "/data":
+			dataCalls++
+			if dataCalls == 1 {
+				auth1 = r.Header.Get("Authorization")
+				w.WriteHeader(http.StatusUnauthorized)
+			} else {
+				auth2 = r.Header.Get("Authorization")
+				w.WriteHeader(http.StatusNoContent)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := Set(Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	ctx := context.Background()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/data", nil)
+	status, _, err := doAuthRequest(ctx, http.DefaultClient, req)
+	if err != nil {
+		t.Fatalf("doAuthRequest: %v", err)
+	}
+	if status != http.StatusNoContent {
+		t.Fatalf("status=%d, want %d", status, http.StatusNoContent)
+	}
+	if tokenCalls != 2 {
+		t.Fatalf("tokenCalls=%d, want 2", tokenCalls)
+	}
+	if auth1 != "Bearer tok1" || auth2 != "Bearer tok2" {
+		t.Fatalf("auth1=%q auth2=%q", auth1, auth2)
+	}
+}
+
+func TestFetchTokenOAuthErrors(t *testing.T) {
+	setup(t)
+	cases := []struct {
+		name       string
+		body       string
+		status     int
+		wantStatus int
+		wantMsg    string
+	}{
+		{"invalid_client", `{"error":"invalid_client"}`, http.StatusBadRequest, http.StatusUnauthorized, "invalid client credentials"},
+		{"invalid_scope", `{"error":"invalid_scope"}`, http.StatusBadRequest, http.StatusForbidden, "invalid scope"},
+		{"upstream", "upstream", http.StatusInternalServerError, http.StatusInternalServerError, "upstream"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer srv.Close()
+			_, _, err := fetchToken(context.Background(), Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"})
+			if err == nil {
+				t.Fatalf("expected error")
+			}
+			var pe *Error
+			if !errors.As(err, &pe) {
+				t.Fatalf("got %T, want *Error", err)
+			}
+			if pe.Status != tc.wantStatus {
+				t.Fatalf("status=%d, want %d", pe.Status, tc.wantStatus)
+			}
+			if !strings.Contains(pe.Message, tc.wantMsg) {
+				t.Fatalf("msg=%q, want contains %q", pe.Message, tc.wantMsg)
+			}
+		})
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -102,8 +103,14 @@ func TestListServersErrors(t *testing.T) {
 			defer srv.Close()
 			setupCreds(t, srv.URL)
 			_, err := ListServers(context.Background())
-			if err == nil || err.Error() != tc.message {
-				t.Fatalf("err = %v, want %q", err, tc.message)
+			if tc.status == http.StatusForbidden {
+				if !errors.Is(err, ErrForbidden) {
+					t.Fatalf("err = %v, want ErrForbidden", err)
+				}
+			} else {
+				if err == nil || err.Error() != tc.message {
+					t.Fatalf("err = %v, want %q", err, tc.message)
+				}
 			}
 		})
 	}

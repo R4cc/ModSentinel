@@ -1,12 +1,12 @@
 package pufferpanel
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 )
@@ -39,9 +39,6 @@ func listFiles(ctx context.Context, serverID, path string) ([]FileEntry, error) 
 	status, body, err := doAuthRequest(ctx, client, req)
 	if err != nil {
 		return nil, err
-	}
-	if status == http.StatusNotFound {
-		return nil, os.ErrNotExist
 	}
 	if status < 200 || status >= 300 {
 		return nil, parseError(status, body)
@@ -76,9 +73,6 @@ func FetchFile(ctx context.Context, serverID, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if status == http.StatusNotFound {
-		return nil, os.ErrNotExist
-	}
 	if status < 200 || status >= 300 {
 		return nil, parseError(status, body)
 	}
@@ -89,7 +83,7 @@ func FetchFile(ctx context.Context, serverID, path string) ([]byte, error) {
 func ListJarFiles(ctx context.Context, serverID string) ([]string, error) {
 	files, err := listFiles(ctx, serverID, "mods")
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, ErrNotFound) {
 			files, err = listFiles(ctx, serverID, "plugins")
 		}
 		if err != nil {
@@ -107,4 +101,87 @@ func ListJarFiles(ctx context.Context, serverID string) ([]string, error) {
 	}
 	sort.Strings(jars)
 	return jars, nil
+}
+
+// ListPath retrieves file or directory entries under the given path.
+func ListPath(ctx context.Context, serverID, path string) ([]FileEntry, error) {
+	creds, err := getCreds()
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(creds.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/") + "/api/servers/" + serverID + "/file/" + url.PathEscape(path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	client := newClient(u)
+	status, body, err := doAuthRequest(ctx, client, req)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, parseError(status, body)
+	}
+	var files []FileEntry
+	if err := json.Unmarshal(body, &files); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// PutFile uploads file contents to the given path.
+func PutFile(ctx context.Context, serverID, path string, data []byte) error {
+	creds, err := getCreds()
+	if err != nil {
+		return err
+	}
+	u, err := url.Parse(creds.BaseURL)
+	if err != nil {
+		return err
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/") + "/api/servers/" + serverID + "/file/" + url.PathEscape(path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	client := newClient(u)
+	status, body, err := doAuthRequest(ctx, client, req)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return parseError(status, body)
+	}
+	return nil
+}
+
+// DeleteFile removes the file at the given path.
+func DeleteFile(ctx context.Context, serverID, path string) error {
+	creds, err := getCreds()
+	if err != nil {
+		return err
+	}
+	u, err := url.Parse(creds.BaseURL)
+	if err != nil {
+		return err
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/") + "/api/servers/" + serverID + "/file/" + url.PathEscape(path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	client := newClient(u)
+	status, body, err := doAuthRequest(ctx, client, req)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return parseError(status, body)
+	}
+	return nil
 }
