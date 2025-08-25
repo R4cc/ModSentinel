@@ -26,7 +26,7 @@ vi.mock("focus-trap-react", () => ({
   default: ({ children }) => children,
 }));
 
-vi.mock("sonner", () => ({
+vi.mock("@/lib/toast.ts", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 

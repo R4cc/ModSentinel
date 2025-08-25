@@ -14,6 +14,7 @@ import (
 	urlpkg "net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1069,7 +1070,8 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 		matched := make([]dbpkg.Mod, 0)
 		unmatched := make([]string, 0, len(files))
 		for _, f := range files {
-			slug, ver := parseJarFilename(f)
+			meta := parseJarFilename(f)
+			slug, ver := meta.Slug, meta.Version
 			scanned := false
 			if creds.DeepScan && (slug == "" || ver == "") {
 				scanned = true
@@ -1213,7 +1215,8 @@ func resyncInstanceHandler(db *sql.DB) http.HandlerFunc {
 		added, changed := 0, 0
 		unmatched := []string{}
 		for _, f := range files {
-			slug, ver := parseJarFilename(f)
+			meta := parseJarFilename(f)
+			slug, ver := meta.Slug, meta.Version
 			scanned := false
 			if creds.DeepScan && (slug == "" || ver == "") {
 				scanned = true
@@ -1559,40 +1562,108 @@ func parseModrinthSlug(raw string) (string, error) {
 	return "", errors.New("slug not found")
 }
 
-func parseJarFilename(name string) (slug, version string) {
+type jarMeta struct {
+	Slug      string
+	ID        string
+	Version   string
+	MCVersion string
+	Loader    string
+	Channel   string
+}
+
+func parseJarFilename(name string) jarMeta {
+	var meta jarMeta
 	name = strings.TrimSuffix(strings.ToLower(name), ".jar")
-	parts := strings.FieldsFunc(name, func(r rune) bool { return r == '-' || r == '_' })
+	rep := strings.NewReplacer("[", "", "]", "", "(", "", ")", "", "{", "", "}", "", "#", "")
+	name = rep.Replace(name)
+	parts := strings.FieldsFunc(name, func(r rune) bool {
+		return r == '-' || r == '_' || r == '+'
+	})
 	if len(parts) == 0 {
-		return "", ""
+		return meta
 	}
-	idx := -1
-	for i := 1; i < len(parts); i++ {
-		if parts[i] != "" && parts[i][0] >= '0' && parts[i][0] <= '9' {
-			idx = i
-			break
+	semver := regexp.MustCompile(`^v?\d+(?:\.\d+){1,3}[^a-zA-Z]*$`)
+	mcver := regexp.MustCompile(`^1\.\d+(?:\.\d+)?$`)
+	loaders := map[string]struct{}{"fabric": {}, "forge": {}, "quilt": {}, "neoforge": {}}
+	channels := map[string]struct{}{"beta": {}, "alpha": {}, "rc": {}}
+
+	type sv struct {
+		idx int
+		val string
+	}
+	semvers := []sv{}
+	for i, p := range parts {
+		if strings.HasPrefix(p, "mc") {
+			v := strings.TrimPrefix(p, "mc")
+			if mcver.MatchString(v) && meta.MCVersion == "" {
+				meta.MCVersion = v
+				continue
+			}
+		}
+		if semver.MatchString(p) {
+			semvers = append(semvers, sv{i, strings.TrimPrefix(p, "v")})
+			continue
+		}
+		if _, ok := loaders[p]; ok {
+			meta.Loader = p
+			continue
+		}
+		if _, ok := channels[p]; ok {
+			meta.Channel = p
+			continue
 		}
 	}
-	slugParts := parts
-	if idx != -1 {
-		version = parts[idx]
-		slugParts = parts[:idx]
+	verIdx := -1
+	if len(semvers) > 0 {
+		last := semvers[len(semvers)-1]
+		verIdx = last.idx
+		meta.Version = last.val
+		if len(semvers) > 1 {
+			prev := semvers[len(semvers)-2]
+			if mcver.MatchString(last.val) && !mcver.MatchString(prev.val) {
+				meta.Version = prev.val
+				verIdx = prev.idx
+				meta.MCVersion = last.val
+			} else if meta.MCVersion == "" {
+				for _, sv := range semvers[:len(semvers)-1] {
+					if mcver.MatchString(sv.val) {
+						meta.MCVersion = sv.val
+						break
+					}
+				}
+			}
+		}
 	}
-	filtered := make([]string, 0, len(slugParts))
-	loaders := map[string]struct{}{"fabric": {}, "forge": {}, "quilt": {}, "neoforge": {}}
-	for _, p := range slugParts {
-		if _, ok := loaders[p]; ok {
+
+	for i, p := range parts {
+		if verIdx != -1 && i >= verIdx {
+			break
+		}
+		if _, ok := loaders[p]; ok && i > 0 {
 			continue
 		}
 		if strings.HasPrefix(p, "mc") {
+			v := strings.TrimPrefix(p, "mc")
+			if mcver.MatchString(v) {
+				continue
+			}
+		}
+		if mcver.MatchString(p) {
 			continue
 		}
-		filtered = append(filtered, p)
+		if _, ok := channels[p]; ok && i > 0 {
+			continue
+		}
+		meta.Slug += p + "-"
 	}
-	if len(filtered) == 0 {
-		filtered = slugParts
+	meta.Slug = strings.Trim(meta.Slug, "-")
+	if meta.Slug != "" {
+		parts := strings.Split(meta.Slug, "-")
+		if len(parts) > 0 {
+			meta.ID = parts[0]
+		}
 	}
-	slug = strings.Join(filtered, "-")
-	return
+	return meta
 }
 
 func parseJarMetadata(data []byte) (slug, version string) {

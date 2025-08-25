@@ -18,7 +18,7 @@ vi.mock("@/lib/api.ts", () => ({
   resyncInstance: vi.fn(),
 }));
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@/lib/toast.ts", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock("focus-trap-react", () => ({ default: ({ children }) => children }));
 const confirmMock = vi.fn();
 vi.mock("@/hooks/useConfirm.jsx", () => ({

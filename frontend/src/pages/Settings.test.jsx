@@ -11,7 +11,7 @@ vi.mock("@/lib/api.ts", () => ({
   testPuffer: vi.fn(),
 }));
 
-vi.mock("sonner", () => ({
+vi.mock("@/lib/toast.ts", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
@@ -22,7 +22,7 @@ vi.mock("focus-trap-react", () => ({
 import { MemoryRouter } from "react-router-dom";
 import Settings from "./Settings.jsx";
 import { saveSecret, clearSecret, testPuffer } from "@/lib/api.ts";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast.ts";
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
