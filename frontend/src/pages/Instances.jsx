@@ -39,6 +39,7 @@ export default function Instances() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [name, setName] = useState("");
+  const [nameError, setNameError] = useState("");
   const [loader, setLoader] = useState(loaders[0].id);
   const [enforce, setEnforce] = useState(true);
   const [hasToken, setHasToken] = useState(true);
@@ -120,6 +121,7 @@ export default function Instances() {
   function openAdd() {
     setEditing(null);
     setName("");
+    setNameError("");
     setLoader(loaders[0].id);
     setEnforce(true);
     setServers([]);
@@ -132,6 +134,7 @@ export default function Instances() {
   function openEdit(inst) {
     setEditing(inst);
     setName(inst.name);
+    setNameError("");
     setEnforce(inst.enforce_same_loader);
     setSelectedServer(inst.pufferpanel_server_id || "");
     setServerError("");
@@ -412,8 +415,17 @@ export default function Instances() {
                 <Input
                   id="name"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  onChange={(e) => {
+                    setName(e.target.value.replace(/[\p{C}]/gu, ""));
+                    setNameError("");
+                  }}
+                  onBlur={() => {
+                    if (!name.trim()) setNameError("Name required");
+                  }}
                 />
+                {nameError && (
+                  <p className="text-sm text-destructive">{nameError}</p>
+                )}
               </div>
               {!editing && (
                 <>
@@ -458,9 +470,7 @@ export default function Instances() {
             <Button
               type="submit"
               disabled={
-                scanning ||
-                loadingServers ||
-                (!selectedServer && !name.trim())
+                scanning || loadingServers || (!selectedServer && !name.trim())
               }
               aria-busy={scanning}
             >

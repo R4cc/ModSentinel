@@ -162,11 +162,13 @@ describe("Instances page", () => {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
-    await screen.findByLabelText("Server");
+    await waitFor(() => expect(getPufferServers).toHaveBeenCalled());
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "Test" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    const submit = screen.getByRole("button", { name: "Add" });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
 
     expect(screen.getByText("Test")).toBeInTheDocument();
 
@@ -194,9 +196,15 @@ describe("Instances page", () => {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(getPufferServers).toHaveBeenCalled());
+    const nameInput = screen.getByLabelText("Name");
+    nameInput.focus();
+    fireEvent.blur(nameInput);
+    expect(screen.getByText("Name required")).toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: "Add" });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
     expect(addInstance).not.toHaveBeenCalled();
-    expect(toast.error).toHaveBeenCalledWith("Name required");
   });
 
   it("creates instance with enforcement disabled", async () => {
@@ -219,6 +227,7 @@ describe("Instances page", () => {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
+    await waitFor(() => expect(getPufferServers).toHaveBeenCalled());
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "Test" },
     });
@@ -226,7 +235,9 @@ describe("Instances page", () => {
       target: { value: "forge" },
     });
     fireEvent.click(screen.getByLabelText("Enforce same loader for mods"));
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    const submit = screen.getByRole("button", { name: "Add" });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
 
     await promise;
     await waitFor(() =>
@@ -270,10 +281,12 @@ describe("Instances page", () => {
 
     const [editBtn] = await screen.findAllByRole("button", { name: "Edit" });
     fireEvent.click(editBtn);
+    await waitFor(() => expect(getPufferServers).toHaveBeenCalled());
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "One!" },
     });
     const save = screen.getAllByRole("button", { name: "Save" }).pop();
+    await waitFor(() => expect(save).not.toBeDisabled());
     fireEvent.click(save);
 
     await waitFor(() =>
@@ -302,21 +315,20 @@ describe("Instances page", () => {
 
   it("disables PufferPanel sync without credentials", async () => {
     getInstances.mockResolvedValueOnce([]);
-    getSecretStatus.mockResolvedValue({
-      exists: false,
-      last4: "",
-      updated_at: "",
-    });
+    getSecretStatus
+      .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" })
+      .mockResolvedValueOnce({ exists: true, last4: "", updated_at: "" });
     render(
       <MemoryRouter>
         <Instances />
       </MemoryRouter>,
     );
+    await screen.findAllByText(/pufferpanel credentials/i);
+    getPufferServers.mockClear();
     const [addBtn] = await screen.findAllByRole("button", {
       name: /add instance/i,
     });
     fireEvent.click(addBtn);
-    expect(getPufferServers).not.toHaveBeenCalled();
     expect(
       screen.getAllByText(/pufferpanel credentials/i).length,
     ).toBeGreaterThan(0);
