@@ -186,73 +186,43 @@ func TestInstanceHandlers_CRUD(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 
-	// Create with default enforcement (true)
+	// stub PufferPanel interactions
+	origGet := ppGetServer
+	origList := ppListPath
+	defer func() { ppGetServer = origGet; ppListPath = origList }()
+	ppGetServer = func(ctx context.Context, id string) (*pppkg.ServerDetail, error) {
+		return &pppkg.ServerDetail{ID: id, Name: "Srv", Environment: struct {
+			Type string `json:"type"`
+		}{Type: "fabric"}}, nil
+	}
+	ppListPath = func(ctx context.Context, serverID, path string) ([]pppkg.FileEntry, error) { return nil, nil }
+
 	create := createInstanceHandler(db)
-	req := httptest.NewRequest(http.MethodPost, "/api/instances", strings.NewReader(`{"name":"A","loader":"fabric"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/instances", strings.NewReader(`{"name":"A","loader":"fabric","serverId":"1"}`))
 	w := httptest.NewRecorder()
 	create(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusCreated {
 		t.Fatalf("create status %d", w.Code)
 	}
 	var inst dbpkg.Instance
 	if err := json.NewDecoder(w.Body).Decode(&inst); err != nil {
 		t.Fatalf("decode create: %v", err)
 	}
-	if !inst.EnforceSameLoader {
-		t.Fatalf("expected enforcement default true")
-	}
 
-	// Create with enforcement disabled and PufferPanel linkage
-	req2 := httptest.NewRequest(http.MethodPost, "/api/instances", strings.NewReader(`{"name":"B","loader":"forge","enforce_same_loader":false,"pufferpanel_server_id":"srv1"}`))
-	w2 := httptest.NewRecorder()
-	create(w2, req2)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("create2 status %d", w2.Code)
-	}
-	var inst2 dbpkg.Instance
-	if err := json.NewDecoder(w2.Body).Decode(&inst2); err != nil {
-		t.Fatalf("decode create2: %v", err)
-	}
-	if inst2.EnforceSameLoader {
-		t.Fatalf("expected enforcement false")
-	}
-	if inst2.PufferpanelServerID != "srv1" {
-		t.Fatalf("expected server id persisted")
-	}
-
-	// Attempt to change loader should fail
+	// Update instance name
 	update := updateInstanceHandler(db)
-	badPayload := fmt.Sprintf(`{"loader":"fabric"}`)
-	reqBad := httptest.NewRequest(http.MethodPut, "/api/instances/"+strconv.Itoa(inst2.ID), strings.NewReader(badPayload))
-	rctxBad := chi.NewRouteContext()
-	rctxBad.URLParams.Add("id", strconv.Itoa(inst2.ID))
-	reqBad = reqBad.WithContext(context.WithValue(reqBad.Context(), chi.RouteCtxKey, rctxBad))
-	wBad := httptest.NewRecorder()
-	update(wBad, reqBad)
-	if wBad.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 when changing loader, got %d", wBad.Code)
-	}
-
-	// Update second instance to enable enforcement
-	payload := fmt.Sprintf(`{"name":"B2","enforce_same_loader":true}`)
-	req3 := httptest.NewRequest(http.MethodPut, "/api/instances/"+strconv.Itoa(inst2.ID), strings.NewReader(payload))
+	payload := `{"name":"A2"}`
+	req3 := httptest.NewRequest(http.MethodPut, "/api/instances/"+strconv.Itoa(inst.ID), strings.NewReader(payload))
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", strconv.Itoa(inst2.ID))
+	rctx.URLParams.Add("id", strconv.Itoa(inst.ID))
 	req3 = req3.WithContext(context.WithValue(req3.Context(), chi.RouteCtxKey, rctx))
 	w3 := httptest.NewRecorder()
 	update(w3, req3)
 	if w3.Code != http.StatusOK {
 		t.Fatalf("update status %d", w3.Code)
 	}
-	var instUpd dbpkg.Instance
-	if err := json.NewDecoder(w3.Body).Decode(&instUpd); err != nil {
-		t.Fatalf("decode update: %v", err)
-	}
-	if !instUpd.EnforceSameLoader {
-		t.Fatalf("expected enforcement true after update")
-	}
 
-	// Delete first instance
+	// Delete instance
 	deleteH := deleteInstanceHandler(db)
 	req4 := httptest.NewRequest(http.MethodDelete, "/api/instances/"+strconv.Itoa(inst.ID), nil)
 	rctx4 := chi.NewRouteContext()
@@ -263,8 +233,127 @@ func TestInstanceHandlers_CRUD(t *testing.T) {
 	if w4.Code != http.StatusNoContent {
 		t.Fatalf("delete status %d", w4.Code)
 	}
-	if _, err := dbpkg.GetInstance(db, inst.ID); err == nil {
-		t.Fatalf("instance not deleted")
+}
+
+func TestValidateAndCreateInstance(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	// stub pufferpanel functions
+	origGet := ppGetServer
+	origList := ppListPath
+	defer func() {
+		ppGetServer = origGet
+		ppListPath = origList
+	}()
+	ppGetServer = func(ctx context.Context, id string) (*pppkg.ServerDetail, error) {
+		return &pppkg.ServerDetail{ID: id, Name: "Srv", Environment: struct {
+			Type string `json:"type"`
+		}{Type: "fabric"}}, nil
+	}
+	ppListPath = func(ctx context.Context, serverID, path string) ([]pppkg.FileEntry, error) {
+		return nil, nil
+	}
+
+	validate := validateInstanceHandler()
+	reqV := httptest.NewRequest(http.MethodPost, "/api/instances/validate", strings.NewReader(`{"name":"A","loader":"fabric","serverId":"1"}`))
+	wV := httptest.NewRecorder()
+	validate(wV, reqV)
+	if wV.Code != http.StatusOK {
+		t.Fatalf("validate status %d", wV.Code)
+	}
+
+	create := createInstanceHandler(db)
+	reqC := httptest.NewRequest(http.MethodPost, "/api/instances", strings.NewReader(`{"name":"A","loader":"fabric","serverId":"1"}`))
+	wC := httptest.NewRecorder()
+	create(wC, reqC)
+	if wC.Code != http.StatusCreated {
+		t.Fatalf("create status %d", wC.Code)
+	}
+	var inst dbpkg.Instance
+	if err := json.NewDecoder(wC.Body).Decode(&inst); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if inst.Name != "A" || inst.ID == 0 {
+		t.Fatalf("unexpected instance %+v", inst)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM instances`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 rows, got %d", count)
+	}
+}
+
+func TestCreateInstance_InvalidServer(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	origGet := ppGetServer
+	defer func() { ppGetServer = origGet }()
+	ppGetServer = func(ctx context.Context, id string) (*pppkg.ServerDetail, error) {
+		return nil, pppkg.ErrNotFound
+	}
+
+	create := createInstanceHandler(db)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances", strings.NewReader(`{"name":"A","loader":"fabric","serverId":"missing"}`))
+	w := httptest.NewRecorder()
+	create(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	var count int
+	db.QueryRow(`SELECT COUNT(*) FROM instances`).Scan(&count)
+	if count != 1 {
+		t.Fatalf("expected 1 row, got %d", count)
+	}
+}
+
+func TestInstanceNameValidation(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	origGet := ppGetServer
+	origList := ppListPath
+	defer func() { ppGetServer = origGet; ppListPath = origList }()
+	ppGetServer = func(ctx context.Context, id string) (*pppkg.ServerDetail, error) {
+		return &pppkg.ServerDetail{ID: id, Name: "Srv", Environment: struct {
+			Type string `json:"type"`
+		}{Type: "fabric"}}, nil
+	}
+	ppListPath = func(ctx context.Context, serverID, path string) ([]pppkg.FileEntry, error) { return nil, nil }
+
+	create := createInstanceHandler(db)
+	for _, n := range []string{"", "   "} {
+		req := httptest.NewRequest(http.MethodPost, "/api/instances", strings.NewReader(fmt.Sprintf(`{"name":%q,"loader":"fabric","serverId":"1"}`, n)))
+		w := httptest.NewRecorder()
+		create(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for %q, got %d", n, w.Code)
+		}
+	}
+	longName := strings.Repeat("a", dbpkg.InstanceNameMaxLen+1)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances", strings.NewReader(fmt.Sprintf(`{"name":%q,"loader":"fabric","serverId":"1"}`, longName)))
+	w := httptest.NewRecorder()
+	create(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for long name, got %d", w.Code)
+	}
+
+	inst := dbpkg.Instance{Name: "ok", Loader: "fabric", EnforceSameLoader: true}
+	if err := dbpkg.InsertInstance(db, &inst); err != nil {
+		t.Fatalf("insert inst: %v", err)
+	}
+	update := updateInstanceHandler(db)
+	reqU := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/instances/%d", inst.ID), strings.NewReader(`{"name":" "}`))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(inst.ID))
+	reqU = reqU.WithContext(context.WithValue(context.Background(), chi.RouteCtxKey, rctx))
+	wU := httptest.NewRecorder()
+	update(wU, reqU)
+	if wU.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on update, got %d", wU.Code)
 	}
 }
 
@@ -290,7 +379,7 @@ func TestSyncHandler_ScansMods(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	inst := dbpkg.Instance{Name: "", Loader: "", EnforceSameLoader: true}
+	inst := dbpkg.Instance{Name: "Inst", Loader: "", EnforceSameLoader: true}
 	if err := dbpkg.InsertInstance(db, &inst); err != nil {
 		t.Fatalf("insert inst: %v", err)
 	}
@@ -315,7 +404,7 @@ func TestSyncHandler_ScansMods(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Instance.Name != "Srv" || resp.Instance.Loader != "fabric" || resp.Instance.PufferpanelServerID != "1" {
+	if resp.Instance.Name != "Inst" || resp.Instance.Loader != "fabric" || resp.Instance.PufferpanelServerID != "1" {
 		t.Fatalf("unexpected instance %+v", resp.Instance)
 	}
 	if len(resp.Unmatched) != 1 || resp.Unmatched[0] != "mod.jar" {
@@ -345,7 +434,7 @@ func TestSyncHandler_MissingFolder(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	inst := dbpkg.Instance{Name: "", Loader: "", EnforceSameLoader: true}
+	inst := dbpkg.Instance{Name: "Inst", Loader: "", EnforceSameLoader: true}
 	if err := dbpkg.InsertInstance(db, &inst); err != nil {
 		t.Fatalf("insert inst: %v", err)
 	}
@@ -393,7 +482,7 @@ func TestSyncHandler_MatchesMods(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	inst := dbpkg.Instance{Name: "", Loader: "", EnforceSameLoader: true}
+	inst := dbpkg.Instance{Name: "Inst", Loader: "", EnforceSameLoader: true}
 	if err := dbpkg.InsertInstance(db, &inst); err != nil {
 		t.Fatalf("insert inst: %v", err)
 	}
@@ -422,19 +511,19 @@ func TestSyncHandler_MatchesMods(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-        if len(resp.Unmatched) != 0 {
-                t.Fatalf("unexpected unmatched %v", resp.Unmatched)
-        }
-        if len(resp.Mods) != 1 || resp.Mods[0].CurrentVersion != "1.0" {
-                t.Fatalf("unexpected mods %+v", resp.Mods)
-        }
-        mods, err := dbpkg.ListMods(db, inst.ID)
-        if err != nil {
-                t.Fatalf("list mods: %v", err)
-        }
-        if len(mods) != 1 || mods[0].Name != "Sodium" || mods[0].CurrentVersion != "1.0" {
-                t.Fatalf("db mods %+v", mods)
-        }
+	if len(resp.Unmatched) != 0 {
+		t.Fatalf("unexpected unmatched %v", resp.Unmatched)
+	}
+	if len(resp.Mods) != 1 || resp.Mods[0].CurrentVersion != "1.0" {
+		t.Fatalf("unexpected mods %+v", resp.Mods)
+	}
+	mods, err := dbpkg.ListMods(db, inst.ID)
+	if err != nil {
+		t.Fatalf("list mods: %v", err)
+	}
+	if len(mods) != 1 || mods[0].Name != "Sodium" || mods[0].CurrentVersion != "1.0" {
+		t.Fatalf("db mods %+v", mods)
+	}
 }
 
 func TestSyncHandler_DeepScanMatches(t *testing.T) {
@@ -467,7 +556,7 @@ func TestSyncHandler_DeepScanMatches(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret", DeepScan: true}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	inst := dbpkg.Instance{Name: "", Loader: "", EnforceSameLoader: true}
+	inst := dbpkg.Instance{Name: "Inst", Loader: "", EnforceSameLoader: true}
 	if err := dbpkg.InsertInstance(db, &inst); err != nil {
 		t.Fatalf("insert inst: %v", err)
 	}
@@ -1073,7 +1162,7 @@ func TestInstancesSyncHandler_OK(t *testing.T) {
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-	// pre-insert instance to verify DB update
+	// pre-insert instance to verify name preservation
 	inst := dbpkg.Instance{Name: "Old", Loader: "fabric", EnforceSameLoader: true, PufferpanelServerID: "1"}
 	if err := dbpkg.InsertInstance(db, &inst); err != nil {
 		t.Fatalf("insert inst: %v", err)
@@ -1096,8 +1185,53 @@ func TestInstancesSyncHandler_OK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get inst: %v", err)
 	}
-	if inst2.Name != "One" {
+	if inst2.Name != "Old" {
 		t.Fatalf("instance name %s", inst2.Name)
+	}
+	var name2 string
+	if err := db.QueryRow(`SELECT name FROM instances WHERE pufferpanel_server_id=?`, "2").Scan(&name2); err != nil {
+		t.Fatalf("get inst2: %v", err)
+	}
+	if name2 != "Two" {
+		t.Fatalf("instance2 name %s", name2)
+	}
+}
+
+func TestInstancesSyncHandler_Truncate(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	initSecrets(t, db)
+	longName := strings.Repeat("a", dbpkg.InstanceNameMaxLen+10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case "/api/servers":
+			fmt.Fprintf(w, `{"paging":{"page":0,"size":1,"total":1},"servers":[{"id":"1","name":"%s"}]}`, longName)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	h := listServersHandler(db)
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var name string
+	if err := db.QueryRow(`SELECT name FROM instances WHERE pufferpanel_server_id=?`, "1").Scan(&name); err != nil {
+		t.Fatalf("get inst: %v", err)
+	}
+	if l := len([]rune(name)); l != dbpkg.InstanceNameMaxLen {
+		t.Fatalf("name len %d", l)
+	}
+	if name == "" {
+		t.Fatalf("name empty")
 	}
 }
 

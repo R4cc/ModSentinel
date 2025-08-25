@@ -5,10 +5,12 @@ import (
 	"fmt"
 )
 
+const InstanceNameMaxLen = 128
+
 // Instance represents a game instance tracking mods.
 type Instance struct {
 	ID                  int    `json:"id"`
-	Name                string `json:"name"`
+	Name                string `json:"name" validate:"max=128"`
 	Loader              string `json:"loader"`
 	PufferpanelServerID string `json:"pufferpanel_server_id"`
 	EnforceSameLoader   bool   `json:"enforce_same_loader"`
@@ -57,19 +59,19 @@ type Secret struct {
 
 // Init ensures the mods and instances tables exist and have required columns.
 func Init(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS instances (
+	_, err := db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS instances (
        id INTEGER PRIMARY KEY AUTOINCREMENT,
-       name TEXT,
+       name TEXT NOT NULL CHECK(length(name) <= %d AND length(trim(name)) > 0),
        loader TEXT,
        enforce_same_loader INTEGER DEFAULT 1,
        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-   )`)
+   )`, InstanceNameMaxLen))
 	if err != nil {
 		return err
 	}
 
 	instCols := map[string]string{
-		"name":                  "TEXT",
+		"name":                  fmt.Sprintf("TEXT NOT NULL CHECK(length(name) <= %d AND length(trim(name)) > 0)", InstanceNameMaxLen),
 		"loader":                "TEXT",
 		"pufferpanel_server_id": "TEXT",
 		"enforce_same_loader":   "INTEGER DEFAULT 1",

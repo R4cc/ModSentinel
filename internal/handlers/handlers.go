@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,12 @@ type modrinthClient interface {
 }
 
 var modClient modrinthClient = mr.NewClient()
+
+// allow tests to stub PufferPanel interactions
+var (
+	ppGetServer = pppkg.GetServer
+	ppListPath  = pppkg.ListPath
+)
 
 var lastSync atomic.Int64
 var latencyP50 atomic.Int64
@@ -160,6 +167,66 @@ func validatePayload(v interface{}) *httpx.HTTPError {
 		return httpx.Internal(err)
 	}
 	return nil
+}
+
+type instanceReq struct {
+	Name     string `json:"name"`
+	Loader   string `json:"loader"`
+	ServerID string `json:"serverId"`
+}
+
+func sanitizeName(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	return strings.TrimSpace(s)
+}
+
+// validateInstanceReq performs business validations for instance creation.
+func validateInstanceReq(ctx context.Context, req *instanceReq) map[string]string {
+	req.Name = sanitizeName(req.Name)
+	details := map[string]string{}
+	if req.Name == "" {
+		details["name"] = "required"
+	} else if len([]rune(req.Name)) > dbpkg.InstanceNameMaxLen {
+		details["name"] = "max"
+	}
+	switch strings.ToLower(req.Loader) {
+	case "fabric", "forge", "paper", "spigot", "bukkit":
+	default:
+		details["loader"] = "invalid"
+	}
+	if strings.TrimSpace(req.ServerID) == "" {
+		details["serverId"] = "required"
+	}
+	if len(details) > 0 {
+		return details
+	}
+	// upstream validation
+	if _, err := ppGetServer(ctx, req.ServerID); err != nil {
+		if errors.Is(err, pppkg.ErrNotFound) {
+			details["serverId"] = "not_found"
+		} else {
+			details["upstream"] = "unreachable"
+		}
+		return details
+	}
+	folder := "mods"
+	switch strings.ToLower(req.Loader) {
+	case "paper", "spigot", "bukkit":
+		folder = "plugins"
+	}
+	if _, err := ppListPath(ctx, req.ServerID, folder); err != nil {
+		if errors.Is(err, pppkg.ErrNotFound) {
+			details["folder"] = "missing"
+		} else {
+			details["upstream"] = "unreachable"
+		}
+	}
+	return details
 }
 
 func recordLatency(next http.Handler) http.Handler {
@@ -297,6 +364,7 @@ func New(db *sql.DB, dist fs.FS) http.Handler {
 	r.Get("/favicon.ico", serveFavicon(dist))
 	r.Get("/api/instances", listInstancesHandler(db))
 	r.Get("/api/instances/{id}", getInstanceHandler(db))
+	r.Post("/api/instances/validate", validateInstanceHandler())
 	r.Post("/api/instances", createInstanceHandler(db))
 	r.Put("/api/instances/{id}", updateInstanceHandler(db))
 	r.Post("/api/instances/{id}/resync", resyncInstanceHandler(db))
@@ -370,34 +438,56 @@ func getInstanceHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-func createInstanceHandler(db *sql.DB) http.HandlerFunc {
+func validateInstanceHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Name                string `json:"name"`
-			Loader              string `json:"loader"`
-			EnforceSameLoader   *bool  `json:"enforce_same_loader"`
-			PufferpanelServerID string `json:"pufferpanel_server_id"`
-		}
+		var req instanceReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpx.Write(w, r, httpx.BadRequest("invalid json"))
 			return
 		}
-		inst := dbpkg.Instance{ID: 0, Name: req.Name, Loader: req.Loader, PufferpanelServerID: req.PufferpanelServerID}
-		if req.EnforceSameLoader == nil {
-			inst.EnforceSameLoader = true
-		} else {
-			inst.EnforceSameLoader = *req.EnforceSameLoader
-		}
-		if err := validatePayload(&inst); err != nil {
-			httpx.Write(w, r, err)
+		if details := validateInstanceReq(r.Context(), &req); len(details) > 0 {
+			telemetry.Event("instance_validation_failed", map[string]string{"correlation_id": uuid.NewString()})
+			httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(details))
 			return
 		}
-		if err := dbpkg.InsertInstance(db, &inst); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}
+}
+
+func createInstanceHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req instanceReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid json"))
+			return
+		}
+		if details := validateInstanceReq(r.Context(), &req); len(details) > 0 {
+			telemetry.Event("instance_validation_failed", map[string]string{"correlation_id": uuid.NewString()})
+			httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(details))
+			return
+		}
+		inst := dbpkg.Instance{ID: 0, Name: req.Name, Loader: strings.ToLower(req.Loader), PufferpanelServerID: req.ServerID, EnforceSameLoader: true}
+		tx, err := db.BeginTx(r.Context(), nil)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		res, err := tx.Exec(`INSERT INTO instances(name, loader, enforce_same_loader, pufferpanel_server_id) VALUES(?,?,?,?)`, inst.Name, inst.Loader, inst.EnforceSameLoader, inst.PufferpanelServerID)
+		if err != nil {
+			tx.Rollback()
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		id, _ := res.LastInsertId()
+		inst.ID = int(id)
+		if err := tx.Commit(); err != nil {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(inst)
 	}
 }
@@ -429,7 +519,16 @@ func updateInstanceHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		if req.Name != nil {
-			inst.Name = *req.Name
+			n := sanitizeName(*req.Name)
+			if n == "" {
+				httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(map[string]string{"name": "required"}))
+				return
+			}
+			if len([]rune(n)) > dbpkg.InstanceNameMaxLen {
+				httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(map[string]string{"name": "max"}))
+				return
+			}
+			inst.Name = n
 		}
 		if req.EnforceSameLoader != nil {
 			inst.EnforceSameLoader = *req.EnforceSameLoader
@@ -863,7 +962,27 @@ func listServersHandler(db *sql.DB) http.HandlerFunc {
 			listServersCache.Store(creds.BaseURL, listServersEntry{servers: servers, exp: time.Now().Add(listServersTTL)})
 		}
 		for _, s := range servers {
-			if _, err := db.Exec(`UPDATE instances SET name=? WHERE pufferpanel_server_id=?`, s.Name, s.ID); err != nil {
+			var id int
+			err := db.QueryRow(`SELECT id FROM instances WHERE pufferpanel_server_id=?`, s.ID).Scan(&id)
+			if err == sql.ErrNoRows {
+				name := sanitizeName(s.Name)
+				rn := []rune(name)
+				if len(rn) > dbpkg.InstanceNameMaxLen {
+					log.Warn().Str("server_id", s.ID).Msg("pufferpanel server name truncated")
+					name = string(rn[:dbpkg.InstanceNameMaxLen])
+				}
+				inst := dbpkg.Instance{Name: name, EnforceSameLoader: true, PufferpanelServerID: s.ID}
+				if err := validatePayload(&inst); err != nil {
+					status = http.StatusBadRequest
+					httpx.Write(w, r, err)
+					return
+				}
+				if err := dbpkg.InsertInstance(db, &inst); err != nil {
+					status = http.StatusInternalServerError
+					httpx.Write(w, r, httpx.Internal(err))
+					return
+				}
+			} else if err != nil {
 				status = http.StatusInternalServerError
 				httpx.Write(w, r, httpx.Internal(err))
 				return
@@ -903,7 +1022,6 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		inst.Name = srv.Name
 		inst.Loader = strings.ToLower(srv.Environment.Type)
 		inst.PufferpanelServerID = req.ServerID
 		inst.EnforceSameLoader = true
@@ -914,7 +1032,7 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			httpx.Write(w, r, err)
 			return
 		}
-		if _, err := db.Exec(`UPDATE instances SET name=?, loader=?, enforce_same_loader=?, pufferpanel_server_id=? WHERE id=?`, inst.Name, inst.Loader, inst.EnforceSameLoader, inst.PufferpanelServerID, inst.ID); err != nil {
+		if _, err := db.Exec(`UPDATE instances SET loader=?, enforce_same_loader=?, pufferpanel_server_id=? WHERE id=?`, inst.Loader, inst.EnforceSameLoader, inst.PufferpanelServerID, inst.ID); err != nil {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
