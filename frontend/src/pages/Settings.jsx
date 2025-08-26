@@ -16,6 +16,8 @@ import {
   saveSecret,
   clearSecret,
   testPuffer,
+  rewrapMasterKey,
+  getSecureHealth,
 } from "@/lib/api.ts";
 
 export default function Settings() {
@@ -34,6 +36,12 @@ export default function Settings() {
   );
   const [pufferLast4, setPufferLast4] = useState("");
   const [hasPuffer, setHasPuffer] = useState(false);
+  const [nodeKey, setNodeKey] = useState("");
+  const [secInfo, setSecInfo] = useState({
+    key_wrapped: false,
+    kdf: "",
+    aead: "",
+  });
 
   useEffect(() => {
     getSecretStatus("modrinth")
@@ -48,6 +56,7 @@ export default function Settings() {
         setPufferLast4(s.last4);
       })
       .catch(() => {});
+    getSecureHealth().then(setSecInfo).catch(() => {});
   }, []);
 
   async function handleSave() {
@@ -92,6 +101,8 @@ export default function Settings() {
         scopes,
         deep_scan: deepScan,
       });
+      setBaseUrl("");
+      setClientId("");
       setClientSecret("");
       setShowSecret(false);
       const status = await getSecretStatus("pufferpanel");
@@ -124,21 +135,28 @@ export default function Settings() {
   }
 
   async function handlePufferTest() {
-    if (!baseUrl || !clientId || !clientSecret) {
-      toast.error("All fields required");
-      return;
-    }
     try {
-      await testPuffer({
-        base_url: baseUrl,
-        client_id: clientId,
-        client_secret: clientSecret,
-        scopes,
-      });
+      await testPuffer();
       toast.success("Connection ok");
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Failed to test connection",
+      );
+    }
+  }
+
+  async function handleRewrap() {
+    if (nodeKey.length < 16) {
+      toast.error("Node key must be at least 16 characters");
+      return;
+    }
+    try {
+      await rewrapMasterKey(nodeKey);
+      setNodeKey("");
+      toast.success("Master key rewrapped");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to rewrap master key",
       );
     }
   }
@@ -179,6 +197,31 @@ export default function Settings() {
               <option value="weekly">Weekly</option>
             </Select>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Security</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-md">
+          <p className="text-sm">Key wrapping: {secInfo.key_wrapped ? "active" : "inactive"}</p>
+          <p className="text-sm">KDF: {secInfo.kdf}</p>
+          <p className="text-sm">AEAD: {secInfo.aead}</p>
+          <div className="space-y-xs">
+            <label htmlFor="node-key" className="text-sm font-medium">
+              New node key
+            </label>
+            <Input
+              id="node-key"
+              type="password"
+              value={nodeKey}
+              onChange={(e) => setNodeKey(e.target.value)}
+            />
+          </div>
+          <Button type="button" onClick={handleRewrap}>
+            Rewrap master key
+          </Button>
         </CardContent>
       </Card>
 
@@ -234,7 +277,14 @@ export default function Settings() {
 
       <Card>
         <CardHeader>
-          <CardTitle>PufferPanel</CardTitle>
+          <CardTitle>
+            PufferPanel
+            {hasPuffer && (
+              <span className="ml-sm rounded bg-green-100 px-1.5 py-0.5 text-xs text-green-800">
+                Configured
+              </span>
+            )}
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-md">
           <p className="text-sm text-muted-foreground">
@@ -315,6 +365,7 @@ export default function Settings() {
               type="button"
               variant="secondary"
               onClick={handlePufferTest}
+              disabled={!hasPuffer}
             >
               Test Connection
             </Button>

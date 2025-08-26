@@ -3,6 +3,8 @@ package token
 import (
 	"context"
 	"database/sql"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -11,6 +13,15 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+const nodeKey = "0123456789abcdef"
+
+func TestMain(m *testing.M) {
+	os.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	code := m.Run()
+	os.Unsetenv("MODSENTINEL_NODE_KEY")
+	os.Exit(code)
+}
 
 func initSvc(t *testing.T) {
 	t.Helper()
@@ -22,8 +33,11 @@ func initSvc(t *testing.T) {
 	if err := dbpkg.Init(db); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	km, err := secrets.Load(context.Background())
+	if err := dbpkg.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	km, err := secrets.Load(context.Background(), db)
 	if err != nil {
 		t.Fatalf("load manager: %v", err)
 	}
@@ -68,14 +82,13 @@ func TestTokenRedaction(t *testing.T) {
 	if stored != tok {
 		t.Fatalf("stored token mismatch: got %q want %q", stored, tok)
 	}
-	if stored == redacted {
+	if redacted == tok {
 		t.Fatalf("redacted token matches original")
 	}
-	middle := tok[4 : len(tok)-4]
-	if strings.Contains(redacted, middle) {
-		t.Fatalf("redacted token reveals middle: %q", redacted)
+	if !strings.Contains(redacted, "***redacted***") {
+		t.Fatalf("missing redaction: %q", redacted)
 	}
-	if !strings.HasPrefix(redacted, tok[:4]) || !strings.HasSuffix(redacted, tok[len(tok)-4:]) {
-		t.Fatalf("redacted token missing expected prefix or suffix: %q", redacted)
+	if !strings.Contains(redacted, strconv.Itoa(len(tok))) {
+		t.Fatalf("missing length: %q", redacted)
 	}
 }

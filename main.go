@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -20,6 +21,12 @@ import (
 	dbpkg "modsentinel/internal/db"
 	"modsentinel/internal/handlers"
 	"modsentinel/internal/httpx"
+	logx "modsentinel/internal/logx"
+	oauth "modsentinel/internal/oauth"
+	pppkg "modsentinel/internal/pufferpanel"
+	"modsentinel/internal/secrets"
+	settingspkg "modsentinel/internal/settings"
+	tokenpkg "modsentinel/internal/token"
 
 	_ "modernc.org/sqlite"
 )
@@ -53,22 +60,62 @@ func ensureFile(p string) error {
 	return err
 }
 
+func checkDBRW(db *sql.DB) error {
+	if err := db.Ping(); err != nil {
+		return err
+	}
+	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS __rw_check(id INTEGER)"); err != nil {
+		return err
+	}
+	if _, err := db.Exec("DROP TABLE __rw_check"); err != nil {
+		return err
+	}
+	return nil
+}
+
 func main() {
-	log.Logger = log.Output(zerolog.New(os.Stdout).With().Timestamp().Logger())
-	path := resolveDBPath("mods.db")
+	log.Logger = zerolog.New(logx.NewRedactor(os.Stdout)).With().Timestamp().Logger()
+	if len(os.Args) > 1 && os.Args[1] == "admin" {
+		adminMain(os.Args[2:])
+		return
+	}
+	path := resolveDBPath("/data/modsentinel.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		log.Fatal().Err(err).Str("dir", filepath.Dir(path)).Msg("create db dir")
+	}
 	if err := ensureFile(path); err != nil {
 		log.Fatal().Err(err).Str("path", path).Msg("create db file")
 	}
 
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_busy_timeout=5000&_pragma=foreign_keys(1)", path))
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_busy_timeout=5000&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)", path))
 	if err != nil {
 		log.Fatal().Err(err).Msg("open db")
 	}
 	defer db.Close()
 
+	if err := checkDBRW(db); err != nil {
+		log.Fatal().Err(err).Msg("db read/write test")
+	}
+
 	if err := dbpkg.Init(db); err != nil {
 		log.Fatal().Err(err).Msg("init db")
 	}
+	if err := dbpkg.Migrate(db); err != nil {
+		log.Fatal().Err(err).Msg("migrate db")
+	}
+	km, err := secrets.Load(context.Background(), db)
+	if err != nil {
+		log.Fatal().Err(err).Msg("load master key")
+	}
+	if err := secrets.VerifyAll(context.Background(), db, km); err != nil {
+		log.Fatal().Err(err).Msg("verify secrets with master key")
+	}
+
+	svc := secrets.NewService(db, km)
+	cfg := settingspkg.New(db)
+	oauthSvc := oauth.New(db, km)
+	tokenpkg.Init(svc)
+	pppkg.Init(svc, cfg, oauthSvc)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -76,8 +123,9 @@ func main() {
 	scheduler := gocron.NewScheduler(time.UTC)
 	scheduler.Every(1).Hour().Do(func() { handlers.CheckUpdates(ctx, db) })
 	scheduler.StartAsync()
+	pppkg.StartRefresh(ctx)
 
-	r := handlers.New(db, distFS)
+	r := handlers.New(db, distFS, svc)
 	var shuttingDown atomic.Bool
 	handler := withShutdown(r, &shuttingDown)
 
@@ -104,6 +152,51 @@ func main() {
 	log.Info().Msg("starting server on :8080")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal().Err(err).Msg("server failed")
+	}
+}
+
+func adminMain(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: modsentinel admin <command>")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "rewrap":
+		fs := flag.NewFlagSet("rewrap", flag.ExitOnError)
+		nodeKey := fs.String("node-key", "", "new MODSENTINEL_NODE_KEY value")
+		fs.Parse(args[1:])
+		if *nodeKey == "" {
+			fmt.Fprintln(os.Stderr, "--node-key required")
+			os.Exit(1)
+		}
+		path := resolveDBPath("/data/modsentinel.db")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			log.Fatal().Err(err).Msg("create db dir")
+		}
+		if err := ensureFile(path); err != nil {
+			log.Fatal().Err(err).Str("path", path).Msg("create db file")
+		}
+		db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_busy_timeout=5000&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)", path))
+		if err != nil {
+			log.Fatal().Err(err).Msg("open db")
+		}
+		defer db.Close()
+		if err := checkDBRW(db); err != nil {
+			log.Fatal().Err(err).Msg("db read/write test")
+		}
+		if err := dbpkg.Init(db); err != nil {
+			log.Fatal().Err(err).Msg("init db")
+		}
+		if err := dbpkg.Migrate(db); err != nil {
+			log.Fatal().Err(err).Msg("migrate db")
+		}
+		if err := secrets.Rewrap(context.Background(), db, *nodeKey); err != nil {
+			log.Fatal().Err(err).Msg("rewrap master key")
+		}
+		log.Info().Msg("master key rewrapped")
+	default:
+		fmt.Fprintln(os.Stderr, "unknown admin command")
+		os.Exit(1)
 	}
 }
 

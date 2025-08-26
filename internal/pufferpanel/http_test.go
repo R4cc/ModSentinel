@@ -13,6 +13,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	logx "modsentinel/internal/logx"
 )
 
 func TestNewClientTimeouts(t *testing.T) {
@@ -59,7 +60,7 @@ func TestDoRequestRedactsHost(t *testing.T) {
 
 	var buf bytes.Buffer
 	old := log.Logger
-	log.Logger = zerolog.New(&buf)
+	log.Logger = zerolog.New(logx.NewRedactor(&buf)).With().Timestamp().Logger()
 	defer func() { log.Logger = old }()
 
 	if _, _, err := doRequest(context.Background(), client, req); err != nil {

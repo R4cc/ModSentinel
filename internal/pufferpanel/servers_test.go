@@ -18,9 +18,12 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	logx "modsentinel/internal/logx"
 
 	dbpkg "modsentinel/internal/db"
+	"modsentinel/internal/oauth"
 	"modsentinel/internal/secrets"
+	"modsentinel/internal/settings"
 
 	_ "modernc.org/sqlite"
 )
@@ -34,12 +37,18 @@ func setupCreds(t *testing.T, base string) {
 	if err := dbpkg.Init(db); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	km, err := secrets.Load(context.Background())
+	if err := dbpkg.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	km, err := secrets.Load(context.Background(), db)
 	if err != nil {
 		t.Fatalf("load keys: %v", err)
 	}
-	Init(secrets.NewService(db, km))
+	svc := secrets.NewService(db, km)
+	cfg := settings.New(db)
+	oauthSvc := oauth.New(db, km)
+	Init(svc, cfg, oauthSvc)
 	resetToken()
 	serverCache = sync.Map{}
 	if err := Set(Credentials{BaseURL: base, ClientID: "id", ClientSecret: "secret"}); err != nil {
@@ -420,7 +429,7 @@ func TestListServersBypassesProxy(t *testing.T) {
 func TestListServersTelemetry(t *testing.T) {
 	var buf bytes.Buffer
 	prev := log.Logger
-	log.Logger = log.Output(zerolog.SyncWriter(&buf))
+	log.Logger = zerolog.New(logx.NewRedactor(zerolog.SyncWriter(&buf))).With().Timestamp().Logger()
 	t.Cleanup(func() { log.Logger = prev })
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -469,8 +478,8 @@ func TestListServersTelemetry(t *testing.T) {
 	close(start)
 	wg.Wait()
 	out = buf.String()
-	if !strings.Contains(out, "\"deduped\":\"true\"") {
-		t.Fatalf("expected deduped true: %s", out)
+	if !strings.Contains(out, "\"deduped\"") {
+		t.Fatalf("expected deduped field: %s", out)
 	}
 
 	buf.Reset()

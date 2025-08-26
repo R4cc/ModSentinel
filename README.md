@@ -24,6 +24,7 @@ Use at your own risk.
 ## PufferPanel integration
 
 ModSentinel can sync mod lists directly from a [PufferPanel](https://pufferpanel.com) server.
+
 ### Creating an OAuth2 client
 
 1. Sign in to PufferPanel and open the account menu in the top‑right.
@@ -54,16 +55,29 @@ All HTTP errors return JSON with the shape `{code, message, details?, requestId}
 ## Secret storage & rotation
 
 Modrinth tokens and PufferPanel credentials are never stored in the browser.
-They live encrypted in the `secrets` table of `mods.db`, keyed by Cloud KMS or
-the `SECRET_KEYSET` environment variable. If the variable is absent an
-ephemeral key is generated and secrets are lost on restart. Use the Settings UI or
-`POST /settings/secret/:type` to rotate or **Revoke & Clear** a secret. Modrinth
-tokens should be read-only with `project.read` and `version.read` scopes, while
-PufferPanel requires `server.view`, `server.files.view`, and `server.files.edit`.
+They live encrypted in the `secrets` table of the SQLite database under
+`/data/modsentinel.db`. A 32‑byte master key is generated on first boot, then
+wrapped with a key derived from the required `MODSENTINEL_NODE_KEY`
+environment variable and stored in `app_settings`. The node key must be at
+least 16 characters; anything shorter than 32 characters will emit a warning at
+startup.
+Use the Settings UI or `POST /settings/secret/:type` to rotate or **Revoke &
+Clear** a secret. Modrinth tokens should be read‑only with `project.read` and
+`version.read` scopes, while PufferPanel requires `server.view`,
+`server.files.view`, and `server.files.edit`.
 
-Backups must include both `mods.db` and the encryption key material; restoring
-with a different keyset will invalidate stored secrets. See
+To rotate the node key itself, use the Settings page's **Rewrap** action or run
+`modsentinel admin rewrap --node-key <new>` and then update the
+`MODSENTINEL_NODE_KEY` environment variable before restarting.
+
+Back up the `/data` directory regularly. The node key itself is never stored;
+keep `MODSENTINEL_NODE_KEY` safe and supply the same value when restoring a
+backup or stored secrets cannot be decrypted. Startup fails if the node key is
+missing, too short, or cannot decrypt existing secrets. See
 [docs/SECRETS.md](docs/SECRETS.md) for details.
+
+The `/health/secure` endpoint reports whether a wrapped key is present and the
+KDF/AEAD algorithms in use.
 
 ## Development
 
@@ -82,7 +96,7 @@ The server listens on `:8080`.
 
 ```bash
 docker build -t modsentinel .
-docker run -p 8080:8080 nl2109/modsentinel
+docker run -p 8080:8080 -v modsentinel-data:/data -e MODSENTINEL_NODE_KEY=changeme nl2109/modsentinel
 ```
 
 ### Docker Compose
@@ -96,7 +110,9 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./mods.db:/mods.db
+      - ./data:/data
+    environment:
+      - MODSENTINEL_NODE_KEY=changeme
 ```
 
 ## Deployment notes

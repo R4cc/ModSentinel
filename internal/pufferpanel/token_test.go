@@ -8,13 +8,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	dbpkg "modsentinel/internal/db"
+	"modsentinel/internal/oauth"
 	"modsentinel/internal/secrets"
+	"modsentinel/internal/settings"
 
 	_ "modernc.org/sqlite"
 )
@@ -29,43 +32,49 @@ func setup(t *testing.T) {
 	if err := dbpkg.Init(db); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	km, err := secrets.Load(context.Background())
+	if err := dbpkg.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	km, err := secrets.Load(context.Background(), db)
 	if err != nil {
 		t.Fatalf("load manager: %v", err)
 	}
-	Init(secrets.NewService(db, km))
+	svc := secrets.NewService(db, km)
+	cfg := settings.New(db)
+	oauthSvc := oauth.New(db, km)
+	Init(svc, cfg, oauthSvc)
 }
 
 func TestFetchTokenSuccess(t *testing.T) {
-        setup(t)
-        var form url.Values
-        srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-                if r.URL.Path != "/oauth2/token" {
-                        http.NotFound(w, r)
-                        return
-                }
-                if err := r.ParseForm(); err != nil {
-                        t.Fatalf("parse form: %v", err)
-                }
-                form = r.PostForm
-                fmt.Fprint(w, `{"access_token":"tok","expires_in":60}`)
-        }))
-        defer srv.Close()
+	setup(t)
+	var form url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth2/token" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		form = r.PostForm
+		fmt.Fprint(w, `{"access_token":"tok","expires_in":60}`)
+	}))
+	defer srv.Close()
 
-        tok, exp, err := fetchToken(context.Background(), Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret", Scopes: "s1 s2"})
-        if err != nil {
-                t.Fatalf("fetchToken: %v", err)
-        }
-        if tok != "tok" {
-                t.Fatalf("tok=%q", tok)
-        }
-        if form.Get("grant_type") != "client_credentials" || form.Get("client_id") != "id" || form.Get("client_secret") != "secret" || form.Get("scope") != "s1 s2" {
-                t.Fatalf("form = %v", form)
-        }
-        if exp.Before(time.Now().Add(55 * time.Second)) {
-                t.Fatalf("expiry %v too soon", exp)
-        }
+	tok, _, exp, err := fetchToken(context.Background(), Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret", Scopes: "s1 s2"}, "")
+	if err != nil {
+		t.Fatalf("fetchToken: %v", err)
+	}
+	if tok != "tok" {
+		t.Fatalf("tok=%q", tok)
+	}
+	if form.Get("grant_type") != "client_credentials" || form.Get("client_id") != "id" || form.Get("client_secret") != "secret" || form.Get("scope") != "s1 s2" {
+		t.Fatalf("form = %v", form)
+	}
+	if exp.Before(time.Now().Add(55 * time.Second)) {
+		t.Fatalf("expiry %v too soon", exp)
+	}
 }
 
 func TestAddAuthCachesAndRefreshesToken(t *testing.T) {
@@ -125,6 +134,7 @@ func TestAddAuthCachesAndRefreshesToken(t *testing.T) {
 	tokenMu.Lock()
 	tokenExpiry = time.Now().Add(-time.Second)
 	tokenMu.Unlock()
+	tokSvc.Store(context.Background(), "pufferpanel", oauth.Record{AccessToken: "tok1", Expiry: time.Now().Add(-time.Second)})
 	req3, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/data", nil)
 	if err := AddAuth(ctx, req3); err != nil {
 		t.Fatalf("AddAuth 3: %v", err)
@@ -201,7 +211,7 @@ func TestFetchTokenRedirectSameOrigin(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	tok, _, err := fetchToken(context.Background(), Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"})
+	tok, _, _, err := fetchToken(context.Background(), Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}, "")
 	if err != nil {
 		t.Fatalf("fetchToken: %v", err)
 	}
@@ -223,7 +233,7 @@ func TestFetchTokenBypassesProxy(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
-	tok, _, err := fetchToken(context.Background(), Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"})
+	tok, _, _, err := fetchToken(context.Background(), Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}, "")
 	if err != nil {
 		t.Fatalf("fetchToken: %v", err)
 	}
@@ -300,7 +310,7 @@ func TestFetchTokenOAuthErrors(t *testing.T) {
 				fmt.Fprint(w, tc.body)
 			}))
 			defer srv.Close()
-			_, _, err := fetchToken(context.Background(), Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"})
+			_, _, _, err := fetchToken(context.Background(), Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}, "")
 			if err == nil {
 				t.Fatalf("expected error")
 			}
@@ -315,5 +325,97 @@ func TestFetchTokenOAuthErrors(t *testing.T) {
 				t.Fatalf("msg=%q, want contains %q", pe.Message, tc.wantMsg)
 			}
 		})
+	}
+}
+
+func TestRefreshPersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := dbpkg.Init(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	if err := dbpkg.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	km, err := secrets.Load(context.Background(), db)
+	if err != nil {
+		t.Fatalf("load km: %v", err)
+	}
+	secSvc := secrets.NewService(db, km)
+	cfg := settings.New(db)
+	oauthSvc := oauth.New(db, km)
+	Init(secSvc, cfg, oauthSvc)
+
+	tokenCh := make(chan struct{}, 2)
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			calls++
+			fmt.Fprintf(w, `{"access_token":"tok%[1]d","refresh_token":"ref%[1]d","expires_in":3600}`, calls)
+			tokenCh <- struct{}{}
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	if err := Set(Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	ctx := context.Background()
+	if err := oauthSvc.Store(ctx, "pufferpanel", oauth.Record{AccessToken: "old", RefreshToken: "r0", Expiry: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	StartRefresh(cctx)
+	select {
+	case <-tokenCh:
+	case <-time.After(time.Second):
+		t.Fatal("refresh timeout")
+	}
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	rec, err := oauthSvc.Get(ctx, "pufferpanel")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if rec.AccessToken != "tok1" || rec.RefreshToken != "ref1" {
+		t.Fatalf("unexpected tokens after refresh: %#v", rec)
+	}
+
+	km2, err := secrets.Load(context.Background(), db)
+	if err != nil {
+		t.Fatalf("load km2: %v", err)
+	}
+	secSvc2 := secrets.NewService(db, km2)
+	cfg2 := settings.New(db)
+	oauthSvc2 := oauth.New(db, km2)
+	Init(secSvc2, cfg2, oauthSvc2)
+	if err := oauthSvc2.Store(ctx, "pufferpanel", oauth.Record{AccessToken: rec.AccessToken, RefreshToken: rec.RefreshToken, Expiry: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatalf("store2: %v", err)
+	}
+	cctx2, cancel2 := context.WithCancel(ctx)
+	StartRefresh(cctx2)
+	select {
+	case <-tokenCh:
+	case <-time.After(time.Second):
+		t.Fatal("second refresh timeout")
+	}
+	time.Sleep(50 * time.Millisecond)
+	cancel2()
+
+	rec2, err := oauthSvc2.Get(ctx, "pufferpanel")
+	if err != nil {
+		t.Fatalf("get2: %v", err)
+	}
+	if rec2.AccessToken != "tok2" || rec2.RefreshToken != "ref2" {
+		t.Fatalf("unexpected tokens after restart refresh: %#v", rec2)
 	}
 }
