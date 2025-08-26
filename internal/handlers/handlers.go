@@ -61,6 +61,13 @@ var (
 var lastSync atomic.Int64
 var latencyP50 atomic.Int64
 var latencyP95 atomic.Int64
+var resyncAliasHits atomic.Int64 // counts deprecated /resync alias hits
+// ALLOW_RESYNC_ALIAS gates the deprecated /resync alias.
+// TODO: remove this flag and alias after 2025-01-01.
+var allowResyncAlias = func() bool {
+	v := strings.ToLower(os.Getenv("ALLOW_RESYNC_ALIAS"))
+	return v == "" || v == "1" || v == "true"
+}()
 
 var latencyMu sync.Mutex
 var latencySamples []int64
@@ -345,6 +352,15 @@ func requireAuth() func(http.Handler) http.Handler {
 	}
 }
 
+func methodNotAllowed(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Allow", http.MethodPost)
+	w.WriteHeader(http.StatusMethodNotAllowed)
+}
+
+func goneHandler(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusGone)
+}
+
 // New builds a router with all HTTP handlers.
 func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 	r := chi.NewRouter()
@@ -360,10 +376,18 @@ func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 	r.Post("/api/instances/validate", validateInstanceHandler())
 	r.Post("/api/instances", createInstanceHandler(db))
 	r.Put("/api/instances/{id}", updateInstanceHandler(db))
-	r.Post("/api/instances/{id}/resync", resyncInstanceHandler(db))
 	r.Delete("/api/instances/{id}", deleteInstanceHandler(db))
 	r.With(requireAuth()).Post("/api/instances/sync", listServersHandler(db))
-	r.With(requireAuth()).Post("/api/instances/{id}/sync", syncHandler(db))
+	r.With(requireAuth()).Post("/api/instances/{id:\\d+}/sync", syncHandler(db))
+	r.With(requireAuth()).Get("/api/instances/{id:\\d+}/sync", methodNotAllowed)
+	if allowResyncAlias {
+		// Temporary alias; TODO: remove after 2025-01-01.
+		r.With(requireAuth()).Post("/api/instances/{id:\\d+}/resync", syncHandler(db))
+		r.With(requireAuth()).Get("/api/instances/{id:\\d+}/resync", methodNotAllowed)
+	} else {
+		r.With(requireAuth()).Post("/api/instances/{id:\\d+}/resync", goneHandler)
+		r.With(requireAuth()).Get("/api/instances/{id:\\d+}/resync", goneHandler)
+	}
 	r.Get("/api/mods", listModsHandler(db))
 	r.Post("/api/mods/metadata", metadataHandler())
 	r.Post("/api/mods", createModHandler(db))
@@ -1059,6 +1083,18 @@ func listServersHandler(db *sql.DB) http.HandlerFunc {
 
 func syncHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/resync") {
+			if !allowResyncAlias {
+				w.WriteHeader(http.StatusGone)
+				return
+			}
+			hits := resyncAliasHits.Add(1)
+			telemetry.Event("instances_sync_alias", map[string]string{
+				"path_alias": "resync",
+				"hits":       strconv.FormatInt(hits, 10),
+			})
+			log.Warn().Str("path", r.URL.Path).Str("path_alias", "resync").Int64("alias_hits", hits).Msg("/api/instances/{id}/resync is deprecated; use /sync instead")
+		}
 		var req struct {
 			ServerID string `json:"serverId" validate:"required"`
 		}
@@ -1235,194 +1271,6 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			Unmatched []string       `json:"unmatched"`
 			Mods      []dbpkg.Mod    `json:"mods"`
 		}{*inst2, unmatched, matched})
-	}
-}
-
-func resyncInstanceHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		idStr := chi.URLParam(r, "id")
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			httpx.Write(w, r, httpx.BadRequest("invalid id"))
-			return
-		}
-		inst, err := dbpkg.GetInstance(db, id)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		if inst.PufferpanelServerID == "" {
-			httpx.Write(w, r, httpx.BadRequest("no pufferpanel server"))
-			return
-		}
-		creds, err := pppkg.Get()
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		files, err := pppkg.ListJarFiles(r.Context(), inst.PufferpanelServerID)
-		if err != nil {
-			writePPError(w, r, err)
-			return
-		}
-		existing, err := dbpkg.ListMods(db, inst.ID)
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		exMap := map[string]dbpkg.Mod{}
-		for _, m := range existing {
-			slug, _ := parseModrinthSlug(m.URL)
-			exMap[slug] = m
-		}
-		added, changed := 0, 0
-		unmatched := []string{}
-		for _, f := range files {
-			meta := parseJarFilename(f)
-			slug, ver := meta.Slug, meta.Version
-			scanned := false
-			if creds.DeepScan && (slug == "" || ver == "") {
-				scanned = true
-				time.Sleep(100 * time.Millisecond)
-				data, err := pppkg.FetchFile(r.Context(), inst.PufferpanelServerID, "mods/"+f)
-				if errors.Is(err, pppkg.ErrNotFound) {
-					data, err = pppkg.FetchFile(r.Context(), inst.PufferpanelServerID, "plugins/"+f)
-				}
-				if err == nil {
-					s2, v2 := parseJarMetadata(data)
-					if s2 != "" && v2 != "" {
-						slug, ver = s2, v2
-					}
-				}
-			}
-			if slug == "" || ver == "" {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			res, err := modClient.Search(r.Context(), slug)
-			if (err != nil || len(res.Hits) == 0) && creds.DeepScan && !scanned {
-				time.Sleep(100 * time.Millisecond)
-				data, err := pppkg.FetchFile(r.Context(), inst.PufferpanelServerID, "mods/"+f)
-				if errors.Is(err, pppkg.ErrNotFound) {
-					data, err = pppkg.FetchFile(r.Context(), inst.PufferpanelServerID, "plugins/"+f)
-				}
-				if err == nil {
-					s2, v2 := parseJarMetadata(data)
-					if s2 != "" && v2 != "" {
-						slug, ver = s2, v2
-						res, err = modClient.Search(r.Context(), slug)
-					}
-				}
-			}
-			if err != nil || len(res.Hits) == 0 {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			slug = res.Hits[0].Slug
-			proj, err := modClient.Project(r.Context(), slug)
-			if err != nil {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			versions, err := modClient.Versions(r.Context(), slug, "", "")
-			if err != nil {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			var v mr.Version
-			found := false
-			for _, vv := range versions {
-				if vv.VersionNumber == ver {
-					v = vv
-					found = true
-					break
-				}
-			}
-			if !found {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			if existingMod, ok := exMap[slug]; ok {
-				if existingMod.CurrentVersion == ver {
-					continue
-				}
-				existingMod.CurrentVersion = v.VersionNumber
-				existingMod.Channel = strings.ToLower(v.VersionType)
-				existingMod.DownloadURL = ""
-				if len(v.Files) > 0 {
-					existingMod.DownloadURL = v.Files[0].URL
-				}
-				if len(v.GameVersions) > 0 {
-					existingMod.GameVersion = v.GameVersions[0]
-				}
-				if len(v.Loaders) > 0 {
-					existingMod.Loader = v.Loaders[0]
-				}
-				if err := populateAvailableVersion(r.Context(), &existingMod, slug); err != nil {
-					unmatched = append(unmatched, f)
-					continue
-				}
-				if err := dbpkg.UpdateMod(db, &existingMod); err != nil {
-					unmatched = append(unmatched, f)
-					continue
-				}
-				if err := dbpkg.InsertUpdateIfNew(db, existingMod.ID, existingMod.CurrentVersion); err != nil {
-					unmatched = append(unmatched, f)
-					continue
-				}
-				changed++
-				exMap[slug] = existingMod
-				continue
-			}
-			m := dbpkg.Mod{
-				Name:           proj.Title,
-				IconURL:        proj.IconURL,
-				URL:            fmt.Sprintf("https://modrinth.com/mod/%s", slug),
-				InstanceID:     inst.ID,
-				Channel:        strings.ToLower(v.VersionType),
-				CurrentVersion: v.VersionNumber,
-			}
-			if len(v.GameVersions) > 0 {
-				m.GameVersion = v.GameVersions[0]
-			}
-			if len(v.Loaders) > 0 {
-				m.Loader = v.Loaders[0]
-			} else {
-				m.Loader = inst.Loader
-			}
-			if len(v.Files) > 0 {
-				m.DownloadURL = v.Files[0].URL
-			}
-			if err := populateAvailableVersion(r.Context(), &m, slug); err != nil {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			if err := dbpkg.InsertMod(db, &m); err != nil {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			added++
-		}
-		if err := dbpkg.UpdateInstanceSync(db, inst.ID, added, changed, len(unmatched)); err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		inst2, err := dbpkg.GetInstance(db, inst.ID)
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		mods, err := dbpkg.ListMods(db, inst.ID)
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(struct {
-			Instance  dbpkg.Instance `json:"instance"`
-			Unmatched []string       `json:"unmatched"`
-			Mods      []dbpkg.Mod    `json:"mods"`
-		}{*inst2, unmatched, mods})
 	}
 }
 

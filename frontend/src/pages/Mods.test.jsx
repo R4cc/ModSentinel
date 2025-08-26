@@ -19,7 +19,7 @@ vi.mock("@/lib/api.ts", () => ({
   deleteMod: vi.fn(),
   getInstance: vi.fn(),
   updateInstance: vi.fn(),
-  resyncInstance: vi.fn(),
+  instances: { sync: vi.fn() },
   getSecretStatus: vi.fn(),
   checkMod: vi.fn(),
 }));
@@ -51,7 +51,7 @@ import {
   updateInstance,
   refreshMod,
   deleteMod,
-  resyncInstance,
+  instances,
   getSecretStatus,
   checkMod,
 } from "@/lib/api.ts";
@@ -389,7 +389,7 @@ describe("Mods resync", () => {
       pufferpanel_server_id: "srv1",
     });
     getMods.mockResolvedValue([]);
-    resyncInstance.mockResolvedValue({
+    instances.sync.mockResolvedValue({
       instance: {
         id: 1,
         name: "Srv",
@@ -410,11 +410,9 @@ describe("Mods resync", () => {
 
   it("resyncs from PufferPanel", async () => {
     renderPage();
-    const btn = await screen.findByRole("button", {
-      name: "Resync from PufferPanel",
-    });
+    const btn = await screen.findByRole("button", { name: "Resync" });
     fireEvent.click(btn);
-    await waitFor(() => expect(resyncInstance).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(instances.sync).toHaveBeenCalledWith(1));
     const headers = await screen.findAllByText("Unmatched files");
     expect(headers.length).toBeGreaterThan(0);
     const items = screen.getAllByText("a.jar");

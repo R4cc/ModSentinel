@@ -255,11 +255,15 @@ export interface SyncResult {
   mods: Mod[];
 }
 
-export async function resyncInstance(id: number): Promise<SyncResult> {
-  const res = await apiFetch(`/api/instances/${id}/resync`, { method: "POST" });
+async function syncInstance(id: number): Promise<SyncResult> {
+  const res = await apiFetch(`/api/instances/${id}/sync`, { method: "POST" });
   if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
+
+export const instances = {
+  sync: syncInstance,
+};
 
 export async function getPufferServers(): Promise<PufferServer[]> {
   const res = await apiFetch("/api/instances/sync", {

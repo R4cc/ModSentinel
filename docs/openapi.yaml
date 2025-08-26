@@ -53,3 +53,15 @@ paths:
                   updated_at:
                     type: string
                     format: date-time
+  /instances/{id}/sync:
+    post:
+      summary: Resync an instance from PufferPanel
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Instance resynced
