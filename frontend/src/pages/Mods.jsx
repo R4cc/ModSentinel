@@ -36,7 +36,7 @@ import {
   deleteMod,
   getInstance,
   updateInstance,
-  resyncInstance,
+  instances,
   getSecretStatus,
   checkMod,
 } from "@/lib/api.ts";
@@ -139,7 +139,7 @@ export default function Mods() {
         instance: inst,
         unmatched: um,
         mods: m,
-      } = await resyncInstance(instance.id);
+      } = await instances.sync(instance.id);
       setInstance(inst);
       setUnmatched(um);
       setMods(m);
@@ -435,7 +435,7 @@ export default function Mods() {
                 onClick={handleResync}
                 disabled={resyncing}
               >
-                {resyncing ? "Resyncing..." : "Resync from PufferPanel"}
+                {resyncing ? "Resyncing..." : "Resync"}
               </Button>
             )}
           </div>

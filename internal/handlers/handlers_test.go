@@ -647,44 +647,70 @@ func TestPufferpanelTestEndpointPostOnly(t *testing.T) {
 	}
 }
 
-func TestResyncInstanceHandler_Idempotent(t *testing.T) {
+func TestSyncRoutesPostOnly(t *testing.T) {
+	prev := allowResyncAlias
+	allowResyncAlias = true
+	t.Cleanup(func() { allowResyncAlias = prev })
+	db := openTestDB(t)
+	defer db.Close()
+	svc, _, _ := initSecrets(t, db)
+	h := New(db, os.DirFS("."), svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/instances/1/resync", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status %d", w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/instances/1/sync", nil)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status %d", w.Code)
+	}
+}
+
+func TestSyncHandler_ResyncAlias(t *testing.T) {
+	prevFlag := allowResyncAlias
+	allowResyncAlias = true
+	t.Cleanup(func() { allowResyncAlias = prevFlag })
 	db := openTestDB(t)
 	defer db.Close()
 
-	// prepare instance and mod
-	inst := dbpkg.Instance{Name: "Srv", Loader: "fabric", EnforceSameLoader: true, PufferpanelServerID: "1"}
-	if err := dbpkg.InsertInstance(db, &inst); err != nil {
-		t.Fatalf("insert inst: %v", err)
-	}
-	mod := dbpkg.Mod{Name: "Sodium", URL: "https://modrinth.com/mod/sodium", GameVersion: "1.20", Loader: "fabric", Channel: "release", CurrentVersion: "1.0", AvailableVersion: "1.0", AvailableChannel: "release", DownloadURL: "http://example.com", InstanceID: inst.ID}
-	if err := dbpkg.InsertMod(db, &mod); err != nil {
-		t.Fatalf("insert mod: %v", err)
-	}
+	var buf bytes.Buffer
+	prev := log.Logger
+	log.Logger = zerolog.New(logx.NewRedactor(zerolog.SyncWriter(&buf))).With().Timestamp().Logger()
+	t.Cleanup(func() { log.Logger = prev })
 
-	// mock server
+	resyncAliasHits.Store(0)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/oauth2/token":
 			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
-		case r.URL.Path == "/api/servers/1/files/list" && r.URL.Query().Get("path") == "mods":
-			fmt.Fprint(w, `[{"name":"sodium-2.0.jar","is_dir":false}]`)
+		case r.URL.Path == "/api/servers/1":
+			fmt.Fprint(w, `{"id":"1","name":"Srv","environment":{"type":"fabric"}}`)
+		case r.URL.Path == "/api/servers/1/file/mods%2F":
+			fmt.Fprint(w, `[{"name":"mod.jar","is_dir":false}]`)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
+
 	_, _, _ = initSecrets(t, db)
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
-
-	// custom mod client returning version 2.0
-	oldClient := modClient
-	modClient = resyncClient{}
-	defer func() { modClient = oldClient }()
-
-	h := resyncInstanceHandler(db)
-	req := httptest.NewRequest(http.MethodPost, "/api/instances/"+strconv.Itoa(inst.ID)+"/resync", nil)
+	inst := dbpkg.Instance{Name: "Inst", Loader: "", EnforceSameLoader: true}
+	if err := dbpkg.InsertInstance(db, &inst); err != nil {
+		t.Fatalf("insert inst: %v", err)
+	}
+	h := syncHandler(db)
+	body := `{"serverId":"1"}`
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/instances/%d/resync", inst.ID), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", strconv.Itoa(inst.ID))
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -693,43 +719,34 @@ func TestResyncInstanceHandler_Idempotent(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d", w.Code)
 	}
-	w2 := httptest.NewRecorder()
-	h(w2, req)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("status2 %d", w2.Code)
+	if n := resyncAliasHits.Load(); n != 1 {
+		t.Fatalf("alias hits %d", n)
 	}
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM updates`).Scan(&count); err != nil {
-		t.Fatalf("count updates: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("expected 1 update, got %d", count)
+	out := buf.String()
+	if !strings.Contains(out, "\"path_alias\":\"resync\"") || !strings.Contains(out, "\"event\":\"instances_sync_alias\"") {
+		t.Fatalf("missing telemetry/log fields: %s", out)
 	}
 }
 
-type resyncClient struct{}
+func TestResyncAliasDisabled(t *testing.T) {
+	prev := allowResyncAlias
+	allowResyncAlias = false
+	t.Cleanup(func() { allowResyncAlias = prev })
+	resyncAliasHits.Store(0)
+	db := openTestDB(t)
+	defer db.Close()
+	svc, _, _ := initSecrets(t, db)
+	h := New(db, os.DirFS("."), svc)
 
-func (resyncClient) Project(ctx context.Context, slug string) (*mr.Project, error) {
-	return &mr.Project{Title: "Sodium", IconURL: ""}, nil
-}
-
-func (resyncClient) Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error) {
-	return []mr.Version{{
-		ID:            "1",
-		VersionNumber: "2.0",
-		VersionType:   "release",
-		GameVersions:  []string{"1.20"},
-		Loaders:       []string{"fabric"},
-		Files:         []mr.VersionFile{{URL: "http://example.com"}},
-	}}, nil
-}
-
-func (resyncClient) Search(ctx context.Context, query string) (*mr.SearchResult, error) {
-	return &mr.SearchResult{Hits: []struct {
-		ProjectID string `json:"project_id"`
-		Slug      string `json:"slug"`
-		Title     string `json:"title"`
-	}{{ProjectID: "1", Slug: "sodium", Title: "Sodium"}}}, nil
+	req := httptest.NewRequest(http.MethodPost, "/api/instances/1/resync", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusGone {
+		t.Fatalf("status %d", w.Code)
+	}
+	if n := resyncAliasHits.Load(); n != 0 {
+		t.Fatalf("alias hits %d", n)
+	}
 }
 
 func TestCreateModHandler_WarningWithoutEnforcement(t *testing.T) {

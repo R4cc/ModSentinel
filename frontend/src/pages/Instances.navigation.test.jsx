@@ -15,7 +15,7 @@ vi.mock("@/lib/api.ts", () => ({
   getInstance: vi.fn(),
   refreshMod: vi.fn(),
   deleteMod: vi.fn(),
-  resyncInstance: vi.fn(),
+  instances: { sync: vi.fn() },
 }));
 
 vi.mock("@/lib/toast.ts", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
