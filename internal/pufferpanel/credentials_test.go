@@ -2,8 +2,6 @@ package pufferpanel
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -35,9 +33,15 @@ func TestGetNormalizesExistingBaseURL(t *testing.T) {
 	setup(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer srv.Close()
-	raw := fmt.Sprintf(`{"base_url":"%s/","client_id":"id","client_secret":"secret"}`, srv.URL)
-	if err := svc.Set(context.Background(), "pufferpanel", []byte(raw)); err != nil {
-		t.Fatalf("seed creds: %v", err)
+	ctx := context.Background()
+	if err := cfgSvc.Set(ctx, baseURLKey, srv.URL+"/"); err != nil {
+		t.Fatalf("seed base: %v", err)
+	}
+	if err := secSvc.Set(ctx, clientIDKey, []byte("id")); err != nil {
+		t.Fatalf("seed id: %v", err)
+	}
+	if err := secSvc.Set(ctx, clientSecretKey, []byte("secret")); err != nil {
+		t.Fatalf("seed secret: %v", err)
 	}
 	c, err := Get()
 	if err != nil {
@@ -46,18 +50,18 @@ func TestGetNormalizesExistingBaseURL(t *testing.T) {
 	if c.BaseURL != srv.URL {
 		t.Fatalf("BaseURL = %s, want %s", c.BaseURL, srv.URL)
 	}
-	b, err := svc.DecryptForUse(context.Background(), "pufferpanel")
+	storedBase, err := cfgSvc.Get(ctx, baseURLKey)
 	if err != nil {
-		t.Fatalf("DecryptForUse: %v", err)
+		t.Fatalf("Get base: %v", err)
 	}
-	var stored Credentials
-	if err := json.Unmarshal(b, &stored); err != nil {
-		t.Fatalf("unmarshal stored: %v", err)
+	if storedBase != srv.URL {
+		t.Fatalf("stored BaseURL = %s, want %s", storedBase, srv.URL)
 	}
-	if stored.BaseURL != srv.URL {
-		t.Fatalf("stored BaseURL = %s, want %s", stored.BaseURL, srv.URL)
+	storedScopes, err := cfgSvc.Get(ctx, scopesKey)
+	if err != nil {
+		t.Fatalf("Get scopes: %v", err)
 	}
-	if stored.Scopes != defaultScopes {
-		t.Fatalf("stored Scopes = %q, want %q", stored.Scopes, defaultScopes)
+	if storedScopes != defaultScopes {
+		t.Fatalf("stored Scopes = %q, want %q", storedScopes, defaultScopes)
 	}
 }

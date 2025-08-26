@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS app_settings;
+DROP TABLE IF EXISTS oauth_tokens;
+DROP TABLE IF EXISTS secrets;

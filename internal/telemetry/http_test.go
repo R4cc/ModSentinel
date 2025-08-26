@@ -7,12 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	logx "modsentinel/internal/logx"
 )
 
 func TestHTTPMiddlewareLogs(t *testing.T) {
 	var buf bytes.Buffer
-	log.Logger = log.Output(&buf)
+	log.Logger = zerolog.New(logx.NewRedactor(&buf)).With().Timestamp().Logger()
 	handler := HTTP(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))

@@ -9,6 +9,10 @@ vi.mock("@/lib/api.ts", () => ({
   saveSecret: vi.fn(),
   clearSecret: vi.fn(),
   testPuffer: vi.fn(),
+  rewrapMasterKey: vi.fn(),
+  getSecureHealth: vi
+    .fn()
+    .mockResolvedValue({ key_wrapped: true, kdf: "argon2id", aead: "aes-gcm" }),
 }));
 
 vi.mock("@/lib/toast.ts", () => ({
@@ -21,7 +25,12 @@ vi.mock("focus-trap-react", () => ({
 
 import { MemoryRouter } from "react-router-dom";
 import Settings from "./Settings.jsx";
-import { saveSecret, clearSecret, testPuffer } from "@/lib/api.ts";
+import {
+  saveSecret,
+  clearSecret,
+  testPuffer,
+  rewrapMasterKey,
+} from "@/lib/api.ts";
 import { toast } from "@/lib/toast.ts";
 
 Object.defineProperty(window, "matchMedia", {
@@ -36,6 +45,7 @@ Object.defineProperty(window, "matchMedia", {
 describe("Settings page", () => {
   it("saves and clears PufferPanel credentials", async () => {
     const { getSecretStatus } = await import("@/lib/api.ts");
+    getSecretStatus.mockReset();
     getSecretStatus
       .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" }) // modrinth
       .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" }) // puffer initial
@@ -82,9 +92,11 @@ describe("Settings page", () => {
 
   it("tests PufferPanel connection", async () => {
     const { getSecretStatus } = await import("@/lib/api.ts");
+    getSecretStatus.mockReset();
     getSecretStatus
       .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" }) // modrinth
-      .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" }); // puffer
+      .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" }) // puffer initial
+      .mockResolvedValueOnce({ exists: true, last4: "1234", updated_at: "" }); // after save
     render(
       <MemoryRouter>
         <Settings />
@@ -99,16 +111,43 @@ describe("Settings page", () => {
     fireEvent.change(screen.getByLabelText("Client Secret"), {
       target: { value: "secret" },
     });
+    const saveBtn = screen.getAllByRole("button", { name: "Save" })[1];
+    fireEvent.click(saveBtn);
+    await waitFor(() => expect(saveSecret).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: /test connection/i })[0],
+      ).toBeEnabled(),
+    );
     const btn = screen.getAllByRole("button", { name: /test connection/i })[0];
     fireEvent.click(btn);
     await waitFor(() =>
-      expect(testPuffer).toHaveBeenCalledWith({
-        base_url: "http://example.com",
-        client_id: "id",
-        client_secret: "secret",
-        scopes: "server.view server.files.view server.files.edit",
-      }),
+      expect(testPuffer).toHaveBeenCalledWith(),
     );
     expect(toast.success).toHaveBeenCalledWith("Connection ok");
+  });
+
+  it("rewraps master key", async () => {
+    const { getSecretStatus } = await import("@/lib/api.ts");
+    getSecretStatus.mockReset();
+    getSecretStatus
+      .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" })
+      .mockResolvedValueOnce({ exists: false, last4: "", updated_at: "" });
+    render(
+      <MemoryRouter>
+        <Settings />
+      </MemoryRouter>,
+    );
+    fireEvent.change(screen.getByLabelText("New node key"), {
+      target: { value: "abcdefghijklmnopqrstuvwx123456" },
+    });
+    const btn = screen.getAllByRole("button", { name: "Rewrap master key" })[0];
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect(rewrapMasterKey).toHaveBeenCalledWith(
+        "abcdefghijklmnopqrstuvwx123456",
+      ),
+    );
+    expect(toast.success).toHaveBeenCalledWith("Master key rewrapped");
   });
 });

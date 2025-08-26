@@ -10,8 +10,8 @@ import (
 
 // KeyManager abstracts encryption key operations.
 type KeyManager interface {
-	Encrypt(plaintext []byte) (ciphertext, iv []byte, keyID string, err error)
-	Decrypt(ciphertext, iv []byte, keyID string) ([]byte, error)
+	Encrypt(plaintext []byte) (nonce, ciphertext []byte, err error)
+	Decrypt(nonce, ciphertext []byte) ([]byte, error)
 }
 
 // Service provides encrypted secret storage backed by a database.
@@ -39,84 +39,83 @@ func zero(b []byte) {
 	}
 }
 
-// Set encrypts and stores a secret for the given type.
-func (s *Service) Set(ctx context.Context, typ string, plaintext []byte) error {
-	if typ == "" {
+// Set encrypts and stores a secret for the given name.
+func (s *Service) Set(ctx context.Context, name string, plaintext []byte) error {
+	if name == "" {
 		return sql.ErrNoRows
 	}
-	ct, iv, keyID, err := s.km.Encrypt(plaintext)
+	nonce, ct, err := s.km.Encrypt(plaintext)
 	zero(plaintext)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO secrets(type, value_enc, key_id, iv) VALUES(?,?,?,?)
-        ON CONFLICT(type) DO UPDATE SET value_enc=excluded.value_enc, key_id=excluded.key_id, iv=excluded.iv, updated_at=CURRENT_TIMESTAMP`, typ, ct, keyID, iv)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO secrets(name, nonce, ciphertext) VALUES(?,?,?)
+        ON CONFLICT(name) DO UPDATE SET nonce=excluded.nonce, ciphertext=excluded.ciphertext, updated_at=CURRENT_TIMESTAMP`, name, nonce, ct)
 	zero(ct)
-	zero(iv)
+	zero(nonce)
 	s.mu.Lock()
-	if e, ok := s.cache[typ]; ok {
+	if e, ok := s.cache[name]; ok {
 		zero(e.val)
-		delete(s.cache, typ)
+		delete(s.cache, name)
 	}
 	s.mu.Unlock()
 	return err
 }
 
-// Exists returns whether a secret of the given type is stored.
-func (s *Service) Exists(ctx context.Context, typ string) (bool, error) {
+// Exists returns whether a secret with the given name is stored.
+func (s *Service) Exists(ctx context.Context, name string) (bool, error) {
 	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM secrets WHERE type=?`, typ).Scan(&n); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM secrets WHERE name=?`, name).Scan(&n); err != nil {
 		return false, err
 	}
 	return n > 0, nil
 }
 
-// Delete removes a stored secret of the given type.
-func (s *Service) Delete(ctx context.Context, typ string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM secrets WHERE type=?`, typ)
+// Delete removes a stored secret of the given name.
+func (s *Service) Delete(ctx context.Context, name string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM secrets WHERE name=?`, name)
 	s.mu.Lock()
-	if e, ok := s.cache[typ]; ok {
+	if e, ok := s.cache[name]; ok {
 		zero(e.val)
-		delete(s.cache, typ)
+		delete(s.cache, name)
 	}
 	s.mu.Unlock()
 	return err
 }
 
-// DecryptForUse retrieves and decrypts the secret of the given type.
-func (s *Service) DecryptForUse(ctx context.Context, typ string) ([]byte, error) {
+// DecryptForUse retrieves and decrypts the secret of the given name.
+func (s *Service) DecryptForUse(ctx context.Context, name string) ([]byte, error) {
 	now := time.Now()
 	s.mu.Lock()
-	if e, ok := s.cache[typ]; ok {
+	if e, ok := s.cache[name]; ok {
 		if now.Before(e.exp) {
 			v := append([]byte(nil), e.val...)
 			s.mu.Unlock()
 			return v, nil
 		}
 		zero(e.val)
-		delete(s.cache, typ)
+		delete(s.cache, name)
 	}
 	s.mu.Unlock()
 
-	var ct, iv []byte
-	var keyID string
-	err := s.db.QueryRowContext(ctx, `SELECT value_enc, key_id, iv FROM secrets WHERE type=?`, typ).Scan(&ct, &keyID, &iv)
+	var nonce, ct []byte
+	err := s.db.QueryRowContext(ctx, `SELECT nonce, ciphertext FROM secrets WHERE name=?`, name).Scan(&nonce, &ct)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	b, err := s.km.Decrypt(ct, iv, keyID)
+	b, err := s.km.Decrypt(nonce, ct)
 	zero(ct)
-	zero(iv)
+	zero(nonce)
 	if err != nil {
 		zero(b)
 		return nil, err
 	}
 	cached := append([]byte(nil), b...)
 	s.mu.Lock()
-	s.cache[typ] = cacheEntry{val: cached, exp: now.Add(s.ttl)}
+	s.cache[name] = cacheEntry{val: cached, exp: now.Add(s.ttl)}
 	s.mu.Unlock()
 	out := append([]byte(nil), cached...)
 	zero(b)
@@ -126,10 +125,9 @@ func (s *Service) DecryptForUse(ctx context.Context, typ string) ([]byte, error)
 // Status returns metadata about a stored secret including whether it exists,
 // the last four characters of the secret (if present), and the last update
 // time. The plaintext secret is never returned.
-func (s *Service) Status(ctx context.Context, typ string) (exists bool, last4 string, updatedAt time.Time, err error) {
-	var ct, iv []byte
-	var keyID string
-	err = s.db.QueryRowContext(ctx, `SELECT value_enc, key_id, iv, updated_at FROM secrets WHERE type=?`, typ).Scan(&ct, &keyID, &iv, &updatedAt)
+func (s *Service) Status(ctx context.Context, name string) (exists bool, last4 string, updatedAt time.Time, err error) {
+	var nonce, ct []byte
+	err = s.db.QueryRowContext(ctx, `SELECT nonce, ciphertext, updated_at FROM secrets WHERE name=?`, name).Scan(&nonce, &ct, &updatedAt)
 	if err == sql.ErrNoRows {
 		return false, "", time.Time{}, nil
 	}
@@ -137,14 +135,14 @@ func (s *Service) Status(ctx context.Context, typ string) (exists bool, last4 st
 		return false, "", time.Time{}, err
 	}
 	exists = true
-	b, err := s.km.Decrypt(ct, iv, keyID)
+	b, err := s.km.Decrypt(nonce, ct)
 	zero(ct)
-	zero(iv)
+	zero(nonce)
 	if err != nil {
 		zero(b)
 		return true, "", updatedAt, err
 	}
-	switch typ {
+	switch name {
 	case "pufferpanel":
 		var c struct {
 			ClientSecret string `json:"client_secret"`

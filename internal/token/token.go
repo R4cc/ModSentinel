@@ -2,8 +2,8 @@ package token
 
 import (
 	"context"
-	"strings"
 
+	"modsentinel/internal/logx"
 	"modsentinel/internal/secrets"
 )
 
@@ -51,15 +51,5 @@ func TokenForLog() (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	return tok, redactToken(tok), nil
-}
-
-func redactToken(s string) string {
-	if s == "" {
-		return ""
-	}
-	if len(s) <= 8 {
-		return strings.Repeat("*", len(s))
-	}
-	return s[:4] + strings.Repeat("*", len(s)-8) + s[len(s)-4:]
+	return tok, logx.Secret(tok), nil
 }

@@ -332,24 +332,38 @@ export async function clearSecret(type: string): Promise<void> {
   window.dispatchEvent(new Event(`${type}-change`));
 }
 
-export interface PufferTestPayload {
-  base_url: string;
-  client_id: string;
-  client_secret: string;
-  scopes: string;
-}
-
-export async function testPuffer(
-  payload: PufferTestPayload,
-): Promise<void> {
-  const res = await apiFetch("/api/pufferpanel/test", {
+export async function rewrapMasterKey(nodeKey: string): Promise<void> {
+  const res = await apiFetch(`/api/settings/rewrap`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: "Bearer admintok",
+      "X-CSRF-Token": document.cookie.match(/csrf_token=([^;]+)/)?.[1] ?? "",
     },
     credentials: "same-origin",
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ node_key: nodeKey }),
+  });
+  if (!res.ok) throw await parseError(res);
+}
+export interface SecureHealth {
+  key_wrapped: boolean;
+  kdf: string;
+  aead: string;
+}
+
+export async function getSecureHealth(): Promise<SecureHealth> {
+  const res = await apiFetch("/health/secure", { cache: "no-store" });
+  if (!res.ok) throw await parseError(res);
+  return parseJSON(res);
+}
+
+export async function testPuffer(): Promise<void> {
+  const res = await apiFetch("/api/pufferpanel/test", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer admintok",
+    },
+    credentials: "same-origin",
   });
   if (!res.ok) throw await parseError(res);
 }

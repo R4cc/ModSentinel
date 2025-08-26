@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	dbpkg "modsentinel/internal/db"
+	"modsentinel/internal/oauth"
 	"modsentinel/internal/secrets"
+	"modsentinel/internal/settings"
 
 	_ "modernc.org/sqlite"
 )
@@ -28,12 +30,18 @@ func setupFiles(t *testing.T) {
 	if err := dbpkg.Init(db); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	km, err := secrets.Load(context.Background())
+	if err := dbpkg.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	km, err := secrets.Load(context.Background(), db)
 	if err != nil {
 		t.Fatalf("load keys: %v", err)
 	}
-	Init(secrets.NewService(db, km))
+	svc := secrets.NewService(db, km)
+	cfg := settings.New(db)
+	oauthSvc := oauth.New(db, km)
+	Init(svc, cfg, oauthSvc)
 }
 
 func TestListJarFiles(t *testing.T) {
@@ -165,26 +173,26 @@ func TestListPath(t *testing.T) {
 }
 
 func TestListPathMissingMods(t *testing.T) {
-        srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-                switch {
-                case r.URL.Path == "/oauth2/token":
-                        fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
-                case r.URL.Path == "/api/servers/1/file/mods%2F":
-                        http.NotFound(w, r)
-                default:
-                        http.NotFound(w, r)
-                }
-        }))
-        defer srv.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/oauth2/token":
+			fmt.Fprint(w, `{"access_token":"tok","expires_in":3600}`)
+		case r.URL.Path == "/api/servers/1/file/mods%2F":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
 
-        setupFiles(t)
-        if err := Set(Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
-                t.Fatalf("Set: %v", err)
-        }
-        _, err := ListPath(context.Background(), "1", "mods/")
-        if !errors.Is(err, ErrNotFound) {
-                t.Fatalf("err = %v, want ErrNotFound", err)
-        }
+	setupFiles(t)
+	if err := Set(Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	_, err := ListPath(context.Background(), "1", "mods/")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
 }
 
 func TestPutFile(t *testing.T) {

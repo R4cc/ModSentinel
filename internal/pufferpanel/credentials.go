@@ -2,12 +2,14 @@ package pufferpanel
 
 import (
 	"context"
-	"encoding/json"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
+	"modsentinel/internal/oauth"
 	"modsentinel/internal/secrets"
+	"modsentinel/internal/settings"
 )
 
 // Credentials represents stored PufferPanel credentials.
@@ -21,54 +23,104 @@ type Credentials struct {
 
 const defaultScopes = "server.view server.files.view server.files.edit"
 
+const (
+	baseURLKey      = "puffer.base_url"
+	scopesKey       = "puffer.scopes"
+	deepScanKey     = "puffer.deep_scan"
+	clientIDKey     = "puffer.oauth_client_id"
+	clientSecretKey = "puffer.oauth_client_secret"
+)
+
 var (
-	svc     *secrets.Service
+	secSvc  *secrets.Service
+	cfgSvc  *settings.Store
 	baseURL atomic.Value // string
 )
 
-// Init sets the secrets service used for credential storage.
-func Init(s *secrets.Service) { svc = s }
+// Init sets the services used for credential storage.
+func Init(sec *secrets.Service, cfg *settings.Store, tok *oauth.Service) {
+	secSvc = sec
+	cfgSvc = cfg
+	tokSvc = tok
+}
 
 // Set stores the credentials securely.
 func Set(c Credentials) error {
-	if svc == nil {
+	if secSvc == nil || cfgSvc == nil {
 		return nil
 	}
 	if err := validateCreds(&c); err != nil {
 		return err
 	}
-	b, err := json.Marshal(c)
-	if err != nil {
+	ctx := context.Background()
+	if err := cfgSvc.Set(ctx, baseURLKey, c.BaseURL); err != nil {
+		return err
+	}
+	if err := cfgSvc.Set(ctx, scopesKey, c.Scopes); err != nil {
+		return err
+	}
+	if err := cfgSvc.Set(ctx, deepScanKey, strconv.FormatBool(c.DeepScan)); err != nil {
+		return err
+	}
+	if err := secSvc.Set(ctx, clientIDKey, []byte(c.ClientID)); err != nil {
+		return err
+	}
+	if err := secSvc.Set(ctx, clientSecretKey, []byte(c.ClientSecret)); err != nil {
 		return err
 	}
 	resetToken()
 	baseURL.Store(parseHost(c.BaseURL))
-	return svc.Set(context.Background(), "pufferpanel", b)
+	return nil
 }
 
 // Get retrieves stored credentials for internal use.
 func Get() (Credentials, error) {
-	if svc == nil {
+	if secSvc == nil || cfgSvc == nil {
 		return Credentials{}, nil
 	}
-	b, err := svc.DecryptForUse(context.Background(), "pufferpanel")
-	if err != nil || len(b) == 0 {
+	ctx := context.Background()
+	base, err := cfgSvc.Get(ctx, baseURLKey)
+	if err != nil {
 		return Credentials{}, err
 	}
-	var c Credentials
-	if err := json.Unmarshal(b, &c); err != nil {
+	scopes, err := cfgSvc.Get(ctx, scopesKey)
+	if err != nil {
 		return Credentials{}, err
 	}
-	orig := c.BaseURL
+	deepStr, err := cfgSvc.Get(ctx, deepScanKey)
+	if err != nil {
+		return Credentials{}, err
+	}
+	idb, err := secSvc.DecryptForUse(ctx, clientIDKey)
+	if err != nil {
+		return Credentials{}, err
+	}
+	secb, err := secSvc.DecryptForUse(ctx, clientSecretKey)
+	if err != nil {
+		return Credentials{}, err
+	}
+	c := Credentials{BaseURL: base, ClientID: string(idb), ClientSecret: string(secb), Scopes: scopes, DeepScan: deepStr == "true"}
+	if c.BaseURL == "" && c.ClientID == "" && c.ClientSecret == "" {
+		return Credentials{}, nil
+	}
+	origBase := base
+	origScopes := scopes
+	origDeep := deepStr
 	if err := validateCreds(&c); err != nil {
 		return Credentials{}, err
 	}
-	if c.BaseURL != orig {
-		nb, err := json.Marshal(c)
-		if err != nil {
+	if c.BaseURL != origBase {
+		if err := cfgSvc.Set(ctx, baseURLKey, c.BaseURL); err != nil {
 			return Credentials{}, err
 		}
-		if err := svc.Set(context.Background(), "pufferpanel", nb); err != nil {
+	}
+	if c.Scopes != origScopes {
+		if err := cfgSvc.Set(ctx, scopesKey, c.Scopes); err != nil {
+			return Credentials{}, err
+		}
+	}
+	if strconv.FormatBool(c.DeepScan) != origDeep {
+		if err := cfgSvc.Set(ctx, deepScanKey, strconv.FormatBool(c.DeepScan)); err != nil {
 			return Credentials{}, err
 		}
 	}
@@ -92,20 +144,26 @@ func Config() (Credentials, error) {
 
 // Exists reports whether credentials are stored.
 func Exists() (bool, error) {
-	if svc == nil {
+	if secSvc == nil {
 		return false, nil
 	}
-	return svc.Exists(context.Background(), "pufferpanel")
+	return secSvc.Exists(context.Background(), clientSecretKey)
 }
 
 // Clear removes stored credentials.
 func Clear() error {
-	if svc == nil {
+	if secSvc == nil || cfgSvc == nil {
 		return nil
 	}
+	ctx := context.Background()
 	resetToken()
 	baseURL.Store("")
-	return svc.Delete(context.Background(), "pufferpanel")
+	secSvc.Delete(ctx, clientIDKey)
+	secSvc.Delete(ctx, clientSecretKey)
+	cfgSvc.Delete(ctx, baseURLKey)
+	cfgSvc.Delete(ctx, scopesKey)
+	cfgSvc.Delete(ctx, deepScanKey)
+	return nil
 }
 
 // TestConnection attempts to authenticate against PufferPanel using the provided credentials.
@@ -113,7 +171,7 @@ func TestConnection(ctx context.Context, c Credentials) error {
 	if err := validateCreds(&c); err != nil {
 		return err
 	}
-	_, _, err := fetchToken(ctx, c)
+	_, _, _, err := fetchToken(ctx, c, "")
 	return err
 }
 

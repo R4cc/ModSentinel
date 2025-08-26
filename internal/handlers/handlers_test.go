@@ -27,9 +27,12 @@ import (
 
 	dbpkg "modsentinel/internal/db"
 	"modsentinel/internal/httpx"
+	logx "modsentinel/internal/logx"
 	mr "modsentinel/internal/modrinth"
+	oauth "modsentinel/internal/oauth"
 	pppkg "modsentinel/internal/pufferpanel"
 	"modsentinel/internal/secrets"
+	settingspkg "modsentinel/internal/settings"
 	tokenpkg "modsentinel/internal/token"
 
 	_ "modernc.org/sqlite"
@@ -37,6 +40,15 @@ import (
 
 //go:embed testdata/**
 var testFS embed.FS
+
+const nodeKey = "0123456789abcdef"
+
+func TestMain(m *testing.M) {
+	os.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	code := m.Run()
+	os.Unsetenv("MODSENTINEL_NODE_KEY")
+	os.Exit(code)
+}
 
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -46,6 +58,9 @@ func openTestDB(t *testing.T) *sql.DB {
 	}
 	if err := dbpkg.Init(db); err != nil {
 		t.Fatalf("init db: %v", err)
+	}
+	if err := dbpkg.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
 	}
 	return db
 }
@@ -375,7 +390,7 @@ func TestSyncHandler_ScansMods(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
@@ -430,7 +445,7 @@ func TestSyncHandler_MissingFolder(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
@@ -478,7 +493,7 @@ func TestSyncHandler_MatchesMods(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
@@ -552,7 +567,7 @@ func TestSyncHandler_DeepScanMatches(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret", DeepScan: true}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
@@ -618,11 +633,11 @@ func TestSyncHandler_Validation(t *testing.T) {
 	}
 }
 
-func TestPufferpanelRoutesRemoved(t *testing.T) {
+func TestPufferpanelTestEndpointPostOnly(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-
-	h := New(db, os.DirFS("."))
+	svc, _, _ := initSecrets(t, db)
+	h := New(db, os.DirFS("."), svc)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/pufferpanel/test", nil)
 	w := httptest.NewRecorder()
@@ -658,7 +673,7 @@ func TestResyncInstanceHandler_Idempotent(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: srv.URL, ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
@@ -753,29 +768,34 @@ func TestCreateModHandler_WarningWithoutEnforcement(t *testing.T) {
 	}
 }
 
-func initSecrets(t *testing.T, db *sql.DB) {
+func initSecrets(t *testing.T, db *sql.DB) (*secrets.Service, *settingspkg.Store, *oauth.Service) {
 	t.Helper()
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	km, err := secrets.Load(context.Background())
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	km, err := secrets.Load(context.Background(), db)
 	if err != nil {
 		t.Fatalf("load keys: %v", err)
 	}
 	svc := secrets.NewService(db, km)
+	cfg := settingspkg.New(db)
+	oauthSvc := oauth.New(db, km)
 	tokenpkg.Init(svc)
-	pppkg.Init(svc)
+	pppkg.Init(svc, cfg, oauthSvc)
+	return svc, cfg, oauthSvc
 }
 
 func TestSecretSettings_Flow(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	km, err := secrets.Load(context.Background())
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	km, err := secrets.Load(context.Background(), db)
 	if err != nil {
 		t.Fatalf("load keys: %v", err)
 	}
 	svc := secrets.NewService(db, km)
+	cfg := settingspkg.New(db)
+	oauthSvc := oauth.New(db, km)
 	tokenpkg.Init(svc)
-	pppkg.Init(svc)
+	pppkg.Init(svc, cfg, oauthSvc)
 
 	setH := setSecretHandler()
 	statusH := secretStatusHandler(svc)
@@ -846,13 +866,52 @@ func TestSecretSettings_Flow(t *testing.T) {
 	}
 }
 
+func TestRewrapHandler(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	_, _, _ = initSecrets(t, db)
+	newKey := "abcdefghijklmnopqrstuvwx123456"
+	h := rewrapKeyHandler(db)
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/rewrap", strings.NewReader(fmt.Sprintf(`{"node_key":"%s"}`, newKey)))
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status %d", w.Code)
+	}
+	t.Setenv("MODSENTINEL_NODE_KEY", newKey)
+	if _, err := secrets.Load(context.Background(), db); err != nil {
+		t.Fatalf("load new: %v", err)
+	}
+}
+
+func TestSecureHealthHandler(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	_, _, _ = initSecrets(t, db)
+	h := secureHealthHandler(db)
+	req := httptest.NewRequest(http.MethodGet, "/health/secure", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out["key_wrapped"] != true || out["kdf"] != "argon2id" || out["aead"] != "aes-gcm" {
+		t.Fatalf("unexpected response %+v", out)
+	}
+}
+
 func TestSecurityMiddleware(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
 	t.Setenv("ADMIN_TOKEN", "admintok")
 	var dist embed.FS
-	h := New(db, dist)
+	svc, _, _ := initSecrets(t, db)
+	h := New(db, dist, svc)
 
 	// unauthorized
 	req0 := httptest.NewRequest(http.MethodGet, "/api/settings/secret/modrinth/status", nil)
@@ -916,9 +975,10 @@ func TestSecurityMiddleware(t *testing.T) {
 func TestSecurityMiddleware_NoAdminToken(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
 	dist := testFS
-	h := New(db, dist)
+	svc, _, _ := initSecrets(t, db)
+	h := New(db, dist, svc)
 
 	req1 := httptest.NewRequest(http.MethodGet, "/api/settings/secret/modrinth/status", nil)
 	w1 := httptest.NewRecorder()
@@ -950,14 +1010,15 @@ func TestSecurityMiddleware_NoAdminToken(t *testing.T) {
 func TestSecurityHeaders_CSP(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
 	dist, err := fs.Sub(testFS, "testdata")
 	if err != nil {
 		t.Fatalf("sub fs: %v", err)
 	}
 
 	t.Setenv("APP_ENV", "development")
-	h := New(db, dist)
+	svc, _, _ := initSecrets(t, db)
+	h := New(db, dist, svc)
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: "https://pp.example.com", ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds: %v", err)
 	}
@@ -976,7 +1037,7 @@ func TestSecurityHeaders_CSP(t *testing.T) {
 	}
 
 	t.Setenv("APP_ENV", "production")
-	h = New(db, dist)
+	h = New(db, dist, svc)
 	if err := pppkg.Set(pppkg.Credentials{BaseURL: "https://pp.example.com", ClientID: "id", ClientSecret: "secret"}); err != nil {
 		t.Fatalf("set creds prod: %v", err)
 	}
@@ -1105,7 +1166,7 @@ func TestMetadataHandler_Proxy(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	if err := tokenpkg.SetToken("tok"); err != nil {
 		t.Fatalf("set token: %v", err)
 	}
@@ -1147,7 +1208,7 @@ func TestMetadataHandler_MissingToken(t *testing.T) {
 func TestInstancesSyncHandler_OK(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth2/token":
@@ -1200,7 +1261,7 @@ func TestInstancesSyncHandler_OK(t *testing.T) {
 func TestInstancesSyncHandler_Truncate(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	longName := strings.Repeat("a", dbpkg.InstanceNameMaxLen+10)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1238,7 +1299,7 @@ func TestInstancesSyncHandler_Truncate(t *testing.T) {
 func TestInstancesSyncHandler_Auth(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	t.Setenv("ADMIN_TOKEN", "admintok")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1282,7 +1343,7 @@ func TestInstancesSyncHandler_Auth(t *testing.T) {
 func TestInstancesSyncHandler_DedupeAndCache(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1331,11 +1392,11 @@ func TestInstancesSyncHandler_DedupeAndCache(t *testing.T) {
 func TestInstancesSyncHandler_Telemetry(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 
 	var buf bytes.Buffer
 	prev := log.Logger
-	log.Logger = log.Output(zerolog.SyncWriter(&buf))
+	log.Logger = zerolog.New(logx.NewRedactor(zerolog.SyncWriter(&buf))).With().Timestamp().Logger()
 	t.Cleanup(func() { log.Logger = prev })
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1370,7 +1431,7 @@ func TestInstancesSyncHandler_Telemetry(t *testing.T) {
 func TestInstancesSyncHandler_Upstream403(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth2/token":
@@ -1410,7 +1471,7 @@ func TestInstancesSyncHandler_Upstream403(t *testing.T) {
 func TestInstancesSyncHandler_Upstream400(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth2/token":
@@ -1450,7 +1511,7 @@ func TestInstancesSyncHandler_Upstream400(t *testing.T) {
 func TestInstancesSyncHandler_Upstream401(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth2/token":
@@ -1490,7 +1551,7 @@ func TestInstancesSyncHandler_Upstream401(t *testing.T) {
 func TestInstancesSyncHandler_Upstream5xx(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth2/token":
@@ -1533,7 +1594,7 @@ func TestInstancesSyncHandler_Upstream5xx(t *testing.T) {
 func TestInstancesSyncHandler_Timeout(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth2/token":
@@ -1571,7 +1632,7 @@ func TestInstancesSyncHandler_Timeout(t *testing.T) {
 func TestInstancesSyncHandler_BadConfig(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	h := listServersHandler(db)
 	req := httptest.NewRequest(http.MethodPost, "/api/instances/sync", nil)
 	w := httptest.NewRecorder()
@@ -1591,7 +1652,7 @@ func TestInstancesSyncHandler_BadConfig(t *testing.T) {
 func TestSetCredentials_TrimsSlash(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	initSecrets(t, db)
+	_, _, _ = initSecrets(t, db)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
@@ -1612,8 +1673,8 @@ func TestSetCredentials_TrimsSlash(t *testing.T) {
 func TestSecretStatus_PufferpanelMissing(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	km, err := secrets.Load(context.Background())
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	km, err := secrets.Load(context.Background(), db)
 	if err != nil {
 		t.Fatalf("load keys: %v", err)
 	}
@@ -1636,43 +1697,5 @@ func TestSecretStatus_PufferpanelMissing(t *testing.T) {
 	}
 	if st.Exists {
 		t.Fatalf("expected not exists")
-	}
-}
-
-func TestSecretStatus_PufferpanelInvalid(t *testing.T) {
-	db := openTestDB(t)
-	defer db.Close()
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	km1, err := secrets.Load(context.Background())
-	if err != nil {
-		t.Fatalf("load keys1: %v", err)
-	}
-	svc1 := secrets.NewService(db, km1)
-	pppkg.Init(svc1)
-	if err := pppkg.Set(pppkg.Credentials{BaseURL: "http://panel", ClientID: "id", ClientSecret: "secret"}); err != nil {
-		t.Fatalf("set creds: %v", err)
-	}
-	t.Setenv("SECRET_KEYSET", `{"primary":"2","keys":{"2":"202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"}}`)
-	km2, err := secrets.Load(context.Background())
-	if err != nil {
-		t.Fatalf("load keys2: %v", err)
-	}
-	svc2 := secrets.NewService(db, km2)
-	h := secretStatusHandler(svc2)
-	req := httptest.NewRequest(http.MethodGet, "/api/settings/secret/pufferpanel/status", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("type", "pufferpanel")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status %d", w.Code)
-	}
-	var e httpx.Error
-	if err := json.NewDecoder(w.Body).Decode(&e); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if e.Code != "not_found" {
-		t.Fatalf("code %s", e.Code)
 	}
 }

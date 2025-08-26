@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS oauth_audit (
+    provider TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

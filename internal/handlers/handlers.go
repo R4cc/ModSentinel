@@ -346,15 +346,7 @@ func requireAuth() func(http.Handler) http.Handler {
 }
 
 // New builds a router with all HTTP handlers.
-func New(db *sql.DB, dist fs.FS) http.Handler {
-	km, err := secrets.Load(context.Background())
-	if err != nil {
-		log.Fatal().Err(err).Msg("load secrets")
-	}
-	svc := secrets.NewService(db, km)
-	tokenpkg.Init(svc)
-	pppkg.Init(svc)
-
+func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(securityHeaders)
@@ -380,14 +372,18 @@ func New(db *sql.DB, dist fs.FS) http.Handler {
 	r.Delete("/api/mods/{id}", deleteModHandler(db))
 	r.Post("/api/mods/{id}/update", applyUpdateHandler(db))
 
+	r.With(requireAdmin()).Post("/api/pufferpanel/test", testPufferHandler())
+
 	r.Group(func(g chi.Router) {
 		g.Use(requireAdmin())
 		g.Use(csrfMiddleware)
 		g.Post("/api/settings/secret/{type}", setSecretHandler())
 		g.Delete("/api/settings/secret/{type}", deleteSecretHandler())
 		g.Get("/api/settings/secret/{type}/status", secretStatusHandler(svc))
+		g.Post("/api/settings/rewrap", rewrapKeyHandler(db))
 	})
 	r.Get("/api/dashboard", dashboardHandler(db))
+	r.Get("/health/secure", secureHealthHandler(db))
 
 	static, _ := fs.Sub(dist, "frontend/dist")
 	r.Get("/*", serveStatic(static))
@@ -847,7 +843,12 @@ func setSecretHandler() http.HandlerFunc {
 			} else {
 				last4 = req.ClientSecret
 			}
-			if err := pppkg.Set(pppkg.Credentials{BaseURL: req.BaseURL, ClientID: req.ClientID, ClientSecret: req.ClientSecret, Scopes: req.Scopes, DeepScan: req.DeepScan}); err != nil {
+			creds := pppkg.Credentials{BaseURL: req.BaseURL, ClientID: req.ClientID, ClientSecret: req.ClientSecret, Scopes: req.Scopes, DeepScan: req.DeepScan}
+			if err := pppkg.TestConnection(r.Context(), creds); err != nil {
+				writePPError(w, r, err)
+				return
+			}
+			if err := pppkg.Set(creds); err != nil {
 				httpx.Write(w, r, httpx.Internal(err))
 				return
 			}
@@ -893,7 +894,17 @@ func deleteSecretHandler() http.HandlerFunc {
 func secretStatusHandler(svc *secrets.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		typ := chi.URLParam(r, "type")
-		exists, last4, updatedAt, err := svc.Status(r.Context(), typ)
+		var (
+			exists    bool
+			last4     string
+			updatedAt time.Time
+			err       error
+		)
+		if typ == "pufferpanel" {
+			exists, last4, updatedAt, err = svc.Status(r.Context(), "puffer.oauth_client_secret")
+		} else {
+			exists, last4, updatedAt, err = svc.Status(r.Context(), typ)
+		}
 		if err != nil {
 			if exists {
 				httpx.Write(w, r, httpx.NotFound("secret invalid"))
@@ -910,6 +921,58 @@ func secretStatusHandler(svc *secrets.Service) http.HandlerFunc {
 			"updated_at": updatedAt,
 		})
 		log.Info().Str("type", typ).Str("last4", last4).Msg("secret status")
+	}
+}
+
+func rewrapKeyHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			NodeKey string `json:"node_key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid json"))
+			return
+		}
+		if len(req.NodeKey) < 16 {
+			httpx.Write(w, r, httpx.BadRequest("node_key too short"))
+			return
+		}
+		if err := secrets.Rewrap(r.Context(), db, req.NodeKey); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func secureHealthHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		status, err := secrets.Health(r.Context(), db)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(status)
+	}
+}
+
+func testPufferHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		creds, err := pppkg.Get()
+		if err != nil {
+			writePPError(w, r, err)
+			return
+		}
+		if creds == (pppkg.Credentials{}) {
+			httpx.Write(w, r, httpx.BadRequest("credentials not configured"))
+			return
+		}
+		if err := pppkg.TestConnection(r.Context(), creds); err != nil {
+			writePPError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 

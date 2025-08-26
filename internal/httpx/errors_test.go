@@ -9,13 +9,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	logx "modsentinel/internal/logx"
 )
 
 func TestWriteDoesNotLeakTelemetry(t *testing.T) {
 	var logBuf bytes.Buffer
 	orig := log.Logger
-	log.Logger = log.Output(&logBuf)
+	log.Logger = zerolog.New(logx.NewRedactor(&logBuf)).With().Timestamp().Logger()
 	t.Cleanup(func() { log.Logger = orig })
 
 	rec := httptest.NewRecorder()

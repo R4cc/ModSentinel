@@ -177,11 +177,9 @@ func Init(db *sql.DB) error {
 	}
 
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS secrets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        type TEXT,
-        value_enc BLOB,
-        key_id TEXT,
-        iv BLOB,
+        name TEXT PRIMARY KEY,
+        nonce BLOB NOT NULL,
+        ciphertext BLOB NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`)
@@ -190,10 +188,8 @@ func Init(db *sql.DB) error {
 	}
 
 	secretCols := map[string]string{
-		"type":       "TEXT",
-		"value_enc":  "BLOB",
-		"key_id":     "TEXT",
-		"iv":         "BLOB",
+		"nonce":      "BLOB NOT NULL",
+		"ciphertext": "BLOB NOT NULL",
 		"created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
 		"updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
 	}
@@ -224,7 +220,13 @@ func Init(db *sql.DB) error {
 			}
 		}
 	}
-	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_secrets_type ON secrets(type)`); err != nil {
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS app_settings (
+       key TEXT PRIMARY KEY,
+       value TEXT,
+       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+   )`)
+	if err != nil {
 		return err
 	}
 

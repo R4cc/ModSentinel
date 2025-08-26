@@ -1,140 +1,190 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 
-	kms "cloud.google.com/go/kms/apiv1"
-	kmspb "cloud.google.com/go/kms/apiv1/kmspb"
 	"github.com/rs/zerolog/log"
+	settings "modsentinel/internal/settings"
+
+	"golang.org/x/crypto/argon2"
+	"strings"
 )
 
-// Manager handles encryption and decryption of secret data.
+// Manager provides envelope encryption using a single master key.
 type Manager struct {
-	keys    map[string][]byte
-	primary string
+	aead cipher.AEAD
 }
 
-type keyset struct {
-	Primary string            `json:"primary"`
-	Keys    map[string]string `json:"keys"`
-}
-
-// Load initializes a Manager by loading keys from KMS if configured or
-// falling back to the SECRET_KEYSET environment variable.
-func Load(ctx context.Context) (*Manager, error) {
-	if m, err := loadFromKMS(ctx); err == nil {
-		return m, nil
+// New creates a Manager from a raw 32-byte key.
+func New(key []byte) (*Manager, error) {
+	if len(key) < 32 {
+		return nil, fmt.Errorf("key must be at least 32 bytes, got %d", len(key))
 	}
-	return loadFromEnv()
+	block, err := aes.NewCipher(key[:32])
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return &Manager{aead: aead}, nil
 }
 
-func loadFromEnv() (*Manager, error) {
-	s := os.Getenv("SECRET_KEYSET")
-	if s == "" {
-		key := make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
-			return nil, fmt.Errorf("generate key: %w", err)
+// Encrypt seals plaintext using AES-256-GCM and returns nonce and ciphertext.
+func (m *Manager) Encrypt(plaintext []byte) (nonce, ciphertext []byte, err error) {
+	nonce = make([]byte, m.aead.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, nil, err
+	}
+	ciphertext = m.aead.Seal(nil, nonce, plaintext, nil)
+	return nonce, ciphertext, nil
+}
+
+// Decrypt opens ciphertext with the given nonce.
+func (m *Manager) Decrypt(nonce, ciphertext []byte) ([]byte, error) {
+	return m.aead.Open(nil, nonce, ciphertext, nil)
+}
+
+const (
+	nodeKeyEnv        = "MODSENTINEL_NODE_KEY"
+	wrappedKeySetting = "crypto.wrapped_mk"
+	kdfParamsSetting  = "crypto.kdf_params"
+
+	argonTime    uint32 = 1
+	argonMemory  uint32 = 64 * 1024
+	argonThreads uint8  = 4
+	saltSize            = 16
+)
+
+type kdfParams struct {
+	Salt string `json:"salt"`
+}
+
+type wrappedKey struct {
+	Nonce      string `json:"nonce"`
+	Ciphertext string `json:"ciphertext"`
+}
+
+// Load derives an encryption key from MODSENTINEL_NODE_KEY and returns a Manager.
+// On first boot, a new 32-byte master key is generated, wrapped with the derived
+// key-encryption key (KEK), and persisted to app_settings.
+func Load(ctx context.Context, db *sql.DB) (*Manager, error) {
+	nodeKey := os.Getenv(nodeKeyEnv)
+	if len(nodeKey) < 16 {
+		return nil, errors.New("MODSENTINEL_NODE_KEY must be at least 16 characters")
+	}
+	if len(nodeKey) < 32 {
+		log.Warn().Int("length", len(nodeKey)).Msg("MODSENTINEL_NODE_KEY appears weak")
+	}
+	store := settings.New(db)
+
+	paramsStr, err := store.Get(ctx, kdfParamsSetting)
+	if err != nil {
+		return nil, err
+	}
+	wrappedStr, err := store.Get(ctx, wrappedKeySetting)
+	if err != nil {
+		return nil, err
+	}
+
+	var mk []byte
+
+	if paramsStr == "" || wrappedStr == "" {
+		// First boot: generate salt and master key.
+		salt := make([]byte, saltSize)
+		if _, err := rand.Read(salt); err != nil {
+			return nil, fmt.Errorf("generate salt: %w", err)
 		}
-		log.Warn().Msg("SECRET_KEYSET not set; using ephemeral key")
-		return &Manager{keys: map[string][]byte{"dev": key}, primary: "dev"}, nil
-	}
-	return parseKeyset([]byte(s))
-}
-
-func loadFromKMS(ctx context.Context) (*Manager, error) {
-	name := os.Getenv("KMS_KEY_NAME")
-	ct := os.Getenv("SECRET_KEYSET_CIPHERTEXT")
-	if name == "" || ct == "" {
-		return nil, errors.New("kms not configured")
-	}
-	b, err := base64.StdEncoding.DecodeString(ct)
-	if err != nil {
-		return nil, err
-	}
-	client, err := kms.NewKeyManagementClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-	resp, err := client.Decrypt(ctx, &kmspb.DecryptRequest{
-		Name:       name,
-		Ciphertext: b,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return parseKeyset(resp.Plaintext)
-}
-
-func parseKeyset(data []byte) (*Manager, error) {
-	var ks keyset
-	if err := json.Unmarshal(data, &ks); err != nil {
-		return nil, err
-	}
-	if ks.Primary == "" {
-		return nil, errors.New("primary key missing")
-	}
-	m := &Manager{keys: make(map[string][]byte), primary: ks.Primary}
-	for id, hexKey := range ks.Keys {
-		b, err := hex.DecodeString(hexKey)
+		kek := argon2.IDKey([]byte(nodeKey), salt, argonTime, argonMemory, argonThreads, 32)
+		wrapper, err := New(kek)
 		if err != nil {
-			return nil, fmt.Errorf("decode key %s: %w", id, err)
+			return nil, err
 		}
-		if len(b) != 32 {
-			return nil, fmt.Errorf("key %s must be 32 bytes", id)
+		mk = make([]byte, 32)
+		if _, err := rand.Read(mk); err != nil {
+			return nil, fmt.Errorf("generate master key: %w", err)
 		}
-		m.keys[id] = b
+		nonce, ct, err := wrapper.Encrypt(mk)
+		if err != nil {
+			return nil, err
+		}
+		wk := wrappedKey{
+			Nonce:      base64.StdEncoding.EncodeToString(nonce),
+			Ciphertext: base64.StdEncoding.EncodeToString(ct),
+		}
+		wkJSON, _ := json.Marshal(wk)
+		paramsJSON, _ := json.Marshal(kdfParams{Salt: base64.StdEncoding.EncodeToString(salt)})
+		if err := store.Set(ctx, wrappedKeySetting, string(wkJSON)); err != nil {
+			return nil, err
+		}
+		if err := store.Set(ctx, kdfParamsSetting, string(paramsJSON)); err != nil {
+			return nil, err
+		}
+	} else {
+		// Existing installation: derive KEK using stored salt and unwrap MK.
+		var params kdfParams
+		if err := json.Unmarshal([]byte(paramsStr), &params); err != nil {
+			return nil, fmt.Errorf("parse kdf params: %w", err)
+		}
+		salt, err := base64.StdEncoding.DecodeString(params.Salt)
+		if err != nil {
+			return nil, fmt.Errorf("decode salt: %w", err)
+		}
+		kek := argon2.IDKey([]byte(nodeKey), salt, argonTime, argonMemory, argonThreads, 32)
+		wrapper, err := New(kek)
+		if err != nil {
+			return nil, err
+		}
+		var wk wrappedKey
+		if err := json.Unmarshal([]byte(wrappedStr), &wk); err != nil {
+			return nil, fmt.Errorf("parse wrapped key: %w", err)
+		}
+		nonce, err := base64.StdEncoding.DecodeString(wk.Nonce)
+		if err != nil {
+			return nil, fmt.Errorf("decode nonce: %w", err)
+		}
+		ct, err := base64.StdEncoding.DecodeString(wk.Ciphertext)
+		if err != nil {
+			return nil, fmt.Errorf("decode ciphertext: %w", err)
+		}
+		mk, err = wrapper.Decrypt(nonce, ct)
+		if err != nil {
+			if strings.Contains(err.Error(), "authentication failed") {
+				return nil, fmt.Errorf("unwrap master key: authentication failed")
+			}
+			return nil, fmt.Errorf("unwrap master key: %w", err)
+		}
 	}
-	if _, ok := m.keys[ks.Primary]; !ok {
-		return nil, errors.New("primary key not found in keyset")
+
+	m, err := New(mk)
+	if err != nil {
+		return nil, err
+	}
+	nonce, ct, err := m.Encrypt([]byte("sentinel"))
+	if err != nil {
+		return nil, fmt.Errorf("sentinel encrypt: %w", err)
+	}
+	pt, err := m.Decrypt(nonce, ct)
+	if err != nil {
+		if strings.Contains(err.Error(), "authentication failed") {
+			return nil, fmt.Errorf("sentinel decrypt: authentication failed")
+		}
+		return nil, fmt.Errorf("sentinel decrypt: %w", err)
+	}
+	if !bytes.Equal(pt, []byte("sentinel")) {
+		return nil, errors.New("sentinel mismatch")
 	}
 	return m, nil
-}
-
-// Encrypt encrypts plaintext using the primary key, returning ciphertext,
-// IV, and key ID used.
-func (m *Manager) Encrypt(plaintext []byte) (ciphertext, iv []byte, keyID string, err error) {
-	keyID = m.primary
-	key := m.keys[keyID]
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	iv = make([]byte, aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return nil, nil, "", err
-	}
-	ciphertext = aead.Seal(nil, iv, plaintext, nil)
-	return ciphertext, iv, keyID, nil
-}
-
-// Decrypt decrypts ciphertext with the provided key ID and IV.
-func (m *Manager) Decrypt(ciphertext, iv []byte, keyID string) ([]byte, error) {
-	key, ok := m.keys[keyID]
-	if !ok {
-		return nil, fmt.Errorf("unknown key id %s", keyID)
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	return aead.Open(nil, iv, ciphertext, nil)
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -14,6 +15,15 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+const nodeKey = "0123456789abcdef"
+
+func TestMain(m *testing.M) {
+	os.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	code := m.Run()
+	os.Unsetenv("MODSENTINEL_NODE_KEY")
+	os.Exit(code)
+}
 
 // Test that the client attaches the Authorization header when a token exists.
 func TestClientAddsAuthorizationHeader(t *testing.T) {
@@ -25,8 +35,11 @@ func TestClientAddsAuthorizationHeader(t *testing.T) {
 	if err := dbpkg.Init(db); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	km, err := secrets.Load(context.Background())
+	if err := dbpkg.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	km, err := secrets.Load(context.Background(), db)
 	if err != nil {
 		t.Fatalf("load keys: %v", err)
 	}
@@ -67,8 +80,11 @@ func TestClientOmitsAuthorizationHeader(t *testing.T) {
 	if err := dbpkg.Init(db); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	km, err := secrets.Load(context.Background())
+	if err := dbpkg.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	km, err := secrets.Load(context.Background(), db)
 	if err != nil {
 		t.Fatalf("load keys: %v", err)
 	}
@@ -102,8 +118,11 @@ func TestClientBackoff(t *testing.T) {
 	if err := dbpkg.Init(db); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	km, err := secrets.Load(context.Background())
+	if err := dbpkg.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	km, err := secrets.Load(context.Background(), db)
 	if err != nil {
 		t.Fatalf("load keys: %v", err)
 	}
@@ -147,8 +166,11 @@ func TestClientInvalidToken(t *testing.T) {
 	if err := dbpkg.Init(db); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
-	t.Setenv("SECRET_KEYSET", `{"primary":"1","keys":{"1":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}`)
-	km, err := secrets.Load(context.Background())
+	if err := dbpkg.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
+	km, err := secrets.Load(context.Background(), db)
 	if err != nil {
 		t.Fatalf("load keys: %v", err)
 	}
