@@ -1294,8 +1294,17 @@ func serveStatic(static fs.FS) http.HandlerFunc {
 		}
 		data, err := fs.ReadFile(static, strings.TrimPrefix(path, "/"))
 		if err != nil {
-			http.NotFound(w, r)
-			return
+			if errors.Is(err, fs.ErrNotExist) {
+				data, err = fs.ReadFile(static, "index.html")
+				if err != nil {
+					http.NotFound(w, r)
+					return
+				}
+				path = "/index.html"
+			} else {
+				http.NotFound(w, r)
+				return
+			}
 		}
 		if path == "/index.html" {
 			if nonce, ok := r.Context().Value(nonceCtxKey{}).(string); ok && nonce != "" {
