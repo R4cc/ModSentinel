@@ -7,12 +7,9 @@ import (
 	"time"
 
 	dbpkg "modsentinel/internal/db"
-	"modsentinel/internal/secrets"
 
 	_ "modernc.org/sqlite"
 )
-
-const nodeKey = "0123456789abcdef"
 
 func setup(t *testing.T) (*Service, context.Context, *sql.DB) {
 	t.Helper()
@@ -27,12 +24,7 @@ func setup(t *testing.T) (*Service, context.Context, *sql.DB) {
 	if err := dbpkg.Migrate(db); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load km: %v", err)
-	}
-	svc := New(db, km)
+	svc := New(db)
 	return svc, context.Background(), db
 }
 

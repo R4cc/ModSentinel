@@ -41,13 +41,8 @@ import (
 //go:embed testdata/**
 var testFS embed.FS
 
-const nodeKey = "0123456789abcdef"
-
 func TestMain(m *testing.M) {
-	os.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	code := m.Run()
-	os.Unsetenv("MODSENTINEL_NODE_KEY")
-	os.Exit(code)
+	os.Exit(m.Run())
 }
 
 func openTestDB(t *testing.T) *sql.DB {
@@ -787,14 +782,9 @@ func TestCreateModHandler_WarningWithoutEnforcement(t *testing.T) {
 
 func initSecrets(t *testing.T, db *sql.DB) (*secrets.Service, *settingspkg.Store, *oauth.Service) {
 	t.Helper()
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load keys: %v", err)
-	}
-	svc := secrets.NewService(db, km)
+	svc := secrets.NewService(db)
 	cfg := settingspkg.New(db)
-	oauthSvc := oauth.New(db, km)
+	oauthSvc := oauth.New(db)
 	tokenpkg.Init(svc)
 	pppkg.Init(svc, cfg, oauthSvc)
 	return svc, cfg, oauthSvc
@@ -803,14 +793,9 @@ func initSecrets(t *testing.T, db *sql.DB) (*secrets.Service, *settingspkg.Store
 func TestSecretSettings_Flow(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load keys: %v", err)
-	}
-	svc := secrets.NewService(db, km)
+	svc := secrets.NewService(db)
 	cfg := settingspkg.New(db)
-	oauthSvc := oauth.New(db, km)
+	oauthSvc := oauth.New(db)
 	tokenpkg.Init(svc)
 	pppkg.Init(svc, cfg, oauthSvc)
 
@@ -883,48 +868,9 @@ func TestSecretSettings_Flow(t *testing.T) {
 	}
 }
 
-func TestRewrapHandler(t *testing.T) {
-	db := openTestDB(t)
-	defer db.Close()
-	_, _, _ = initSecrets(t, db)
-	newKey := "abcdefghijklmnopqrstuvwx123456"
-	h := rewrapKeyHandler(db)
-	req := httptest.NewRequest(http.MethodPost, "/api/settings/rewrap", strings.NewReader(fmt.Sprintf(`{"node_key":"%s"}`, newKey)))
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("status %d", w.Code)
-	}
-	t.Setenv("MODSENTINEL_NODE_KEY", newKey)
-	if _, err := secrets.Load(context.Background(), db); err != nil {
-		t.Fatalf("load new: %v", err)
-	}
-}
-
-func TestSecureHealthHandler(t *testing.T) {
-	db := openTestDB(t)
-	defer db.Close()
-	_, _, _ = initSecrets(t, db)
-	h := secureHealthHandler(db)
-	req := httptest.NewRequest(http.MethodGet, "/health/secure", nil)
-	w := httptest.NewRecorder()
-	h(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status %d", w.Code)
-	}
-	var out map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if out["key_wrapped"] != true || out["kdf"] != "argon2id" || out["aead"] != "aes-gcm" {
-		t.Fatalf("unexpected response %+v", out)
-	}
-}
-
 func TestSecurityMiddleware(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
 	t.Setenv("ADMIN_TOKEN", "admintok")
 	var dist embed.FS
 	svc, _, _ := initSecrets(t, db)
@@ -992,7 +938,6 @@ func TestSecurityMiddleware(t *testing.T) {
 func TestSecurityMiddleware_NoAdminToken(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
 	dist := testFS
 	svc, _, _ := initSecrets(t, db)
 	h := New(db, dist, svc)
@@ -1027,7 +972,6 @@ func TestSecurityMiddleware_NoAdminToken(t *testing.T) {
 func TestSecurityHeaders_CSP(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
 	dist, err := fs.Sub(testFS, "testdata")
 	if err != nil {
 		t.Fatalf("sub fs: %v", err)
@@ -1690,12 +1634,7 @@ func TestSetCredentials_TrimsSlash(t *testing.T) {
 func TestSecretStatus_PufferpanelMissing(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load keys: %v", err)
-	}
-	svc := secrets.NewService(db, km)
+	svc := secrets.NewService(db)
 	h := secretStatusHandler(svc)
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/secret/pufferpanel/status", nil)
 	rctx := chi.NewRouteContext()

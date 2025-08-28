@@ -35,14 +35,9 @@ func setup(t *testing.T) {
 	if err := dbpkg.Migrate(db); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load manager: %v", err)
-	}
-	svc := secrets.NewService(db, km)
+	svc := secrets.NewService(db)
 	cfg := settings.New(db)
-	oauthSvc := oauth.New(db, km)
+	oauthSvc := oauth.New(db)
 	Init(svc, cfg, oauthSvc)
 }
 
@@ -342,14 +337,9 @@ func TestRefreshPersistsAcrossRestart(t *testing.T) {
 	if err := dbpkg.Migrate(db); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load km: %v", err)
-	}
-	secSvc := secrets.NewService(db, km)
+	secSvc := secrets.NewService(db)
 	cfg := settings.New(db)
-	oauthSvc := oauth.New(db, km)
+	oauthSvc := oauth.New(db)
 	Init(secSvc, cfg, oauthSvc)
 
 	tokenCh := make(chan struct{}, 2)
@@ -390,13 +380,9 @@ func TestRefreshPersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("unexpected tokens after refresh: %#v", rec)
 	}
 
-	km2, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load km2: %v", err)
-	}
-	secSvc2 := secrets.NewService(db, km2)
+	secSvc2 := secrets.NewService(db)
 	cfg2 := settings.New(db)
-	oauthSvc2 := oauth.New(db, km2)
+	oauthSvc2 := oauth.New(db)
 	Init(secSvc2, cfg2, oauthSvc2)
 	if err := oauthSvc2.Store(ctx, "pufferpanel", oauth.Record{AccessToken: rec.AccessToken, RefreshToken: rec.RefreshToken, Expiry: time.Now().Add(-time.Minute)}); err != nil {
 		t.Fatalf("store2: %v", err)

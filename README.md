@@ -22,8 +22,6 @@ services:
       - "8080:8080"
     volumes:
       - ./data:/data
-    environment:
-      - MODSENTINEL_NODE_KEY=changeme
 ```
 
 2. Start the app:
@@ -38,3 +36,6 @@ docker compose up -d
 
 ModSentinel is young software meant for hobby use. Avoid exposing it directly to the public internet.
 
+### Secret storage
+
+All third-party tokens and credentials are kept only on the server and are stored in plaintext inside the SQLite database. Make sure the `/data` directory is protected and regular backups are taken if secrets are important.

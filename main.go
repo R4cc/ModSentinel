@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"embed"
-	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -103,17 +102,9 @@ func main() {
 	if err := dbpkg.Migrate(db); err != nil {
 		log.Fatal().Err(err).Msg("migrate db")
 	}
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		log.Fatal().Err(err).Msg("load master key")
-	}
-	if err := secrets.VerifyAll(context.Background(), db, km); err != nil {
-		log.Fatal().Err(err).Msg("verify secrets with master key")
-	}
-
-	svc := secrets.NewService(db, km)
+	svc := secrets.NewService(db)
 	cfg := settingspkg.New(db)
-	oauthSvc := oauth.New(db, km)
+	oauthSvc := oauth.New(db)
 	tokenpkg.Init(svc)
 	pppkg.Init(svc, cfg, oauthSvc)
 
@@ -161,39 +152,6 @@ func adminMain(args []string) {
 		os.Exit(1)
 	}
 	switch args[0] {
-	case "rewrap":
-		fs := flag.NewFlagSet("rewrap", flag.ExitOnError)
-		nodeKey := fs.String("node-key", "", "new MODSENTINEL_NODE_KEY value")
-		fs.Parse(args[1:])
-		if *nodeKey == "" {
-			fmt.Fprintln(os.Stderr, "--node-key required")
-			os.Exit(1)
-		}
-		path := resolveDBPath("/data/modsentinel.db")
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			log.Fatal().Err(err).Msg("create db dir")
-		}
-		if err := ensureFile(path); err != nil {
-			log.Fatal().Err(err).Str("path", path).Msg("create db file")
-		}
-		db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_busy_timeout=5000&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)", path))
-		if err != nil {
-			log.Fatal().Err(err).Msg("open db")
-		}
-		defer db.Close()
-		if err := checkDBRW(db); err != nil {
-			log.Fatal().Err(err).Msg("db read/write test")
-		}
-		if err := dbpkg.Init(db); err != nil {
-			log.Fatal().Err(err).Msg("init db")
-		}
-		if err := dbpkg.Migrate(db); err != nil {
-			log.Fatal().Err(err).Msg("migrate db")
-		}
-		if err := secrets.Rewrap(context.Background(), db, *nodeKey); err != nil {
-			log.Fatal().Err(err).Msg("rewrap master key")
-		}
-		log.Info().Msg("master key rewrapped")
 	default:
 		fmt.Fprintln(os.Stderr, "unknown admin command")
 		os.Exit(1)

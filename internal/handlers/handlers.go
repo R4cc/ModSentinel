@@ -25,7 +25,6 @@ import (
 	"sync/atomic"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
@@ -41,8 +40,6 @@ import (
 	"modsentinel/internal/telemetry"
 	tokenpkg "modsentinel/internal/token"
 )
-
-var validate = validator.New()
 
 type modrinthClient interface {
 	Project(ctx context.Context, slug string) (*mr.Project, error)
@@ -152,27 +149,46 @@ type metadataRequest struct {
 }
 
 func validatePayload(v interface{}) *httpx.HTTPError {
-	if err := validate.Struct(v); err != nil {
-		var ve validator.ValidationErrors
-		if errors.As(err, &ve) {
-			rt := reflect.TypeOf(v)
-			if rt.Kind() == reflect.Ptr {
-				rt = rt.Elem()
-			}
-			fields := make(map[string]string, len(ve))
-			for _, fe := range ve {
-				name := strings.ToLower(fe.Field())
-				if f, ok := rt.FieldByName(fe.StructField()); ok {
-					tag := f.Tag.Get("json")
-					if tag != "" {
-						name = strings.Split(tag, ",")[0]
-					}
-				}
-				fields[name] = fe.Tag()
-			}
-			return httpx.BadRequest("validation failed").WithDetails(fields)
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	rt := rv.Type()
+	fields := map[string]string{}
+	for i := 0; i < rv.NumField(); i++ {
+		field := rv.Field(i)
+		sf := rt.Field(i)
+		tag := sf.Tag.Get("validate")
+		if tag == "" {
+			continue
 		}
-		return httpx.Internal(err)
+		name := strings.ToLower(sf.Name)
+		if jsonTag := sf.Tag.Get("json"); jsonTag != "" {
+			name = strings.Split(jsonTag, ",")[0]
+		}
+		for _, rule := range strings.Split(tag, ",") {
+			switch rule {
+			case "required":
+				if field.IsZero() {
+					fields[name] = "required"
+				}
+			case "url":
+				if _, ok := fields[name]; ok {
+					continue
+				}
+				s, ok := field.Interface().(string)
+				if !ok || s == "" {
+					fields[name] = "url"
+					continue
+				}
+				if _, err := urlpkg.ParseRequestURI(s); err != nil {
+					fields[name] = "url"
+				}
+			}
+		}
+	}
+	if len(fields) > 0 {
+		return httpx.BadRequest("validation failed").WithDetails(fields)
 	}
 	return nil
 }
@@ -404,10 +420,8 @@ func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 		g.Post("/api/settings/secret/{type}", setSecretHandler())
 		g.Delete("/api/settings/secret/{type}", deleteSecretHandler())
 		g.Get("/api/settings/secret/{type}/status", secretStatusHandler(svc))
-		g.Post("/api/settings/rewrap", rewrapKeyHandler(db))
 	})
 	r.Get("/api/dashboard", dashboardHandler(db))
-	r.Get("/health/secure", secureHealthHandler(db))
 
 	static, _ := fs.Sub(dist, "frontend/dist")
 	r.Get("/*", serveStatic(static))
@@ -945,39 +959,6 @@ func secretStatusHandler(svc *secrets.Service) http.HandlerFunc {
 			"updated_at": updatedAt,
 		})
 		log.Info().Str("type", typ).Str("last4", last4).Msg("secret status")
-	}
-}
-
-func rewrapKeyHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			NodeKey string `json:"node_key"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpx.Write(w, r, httpx.BadRequest("invalid json"))
-			return
-		}
-		if len(req.NodeKey) < 16 {
-			httpx.Write(w, r, httpx.BadRequest("node_key too short"))
-			return
-		}
-		if err := secrets.Rewrap(r.Context(), db, req.NodeKey); err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}
-}
-
-func secureHealthHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		status, err := secrets.Health(r.Context(), db)
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(status)
 	}
 }
 

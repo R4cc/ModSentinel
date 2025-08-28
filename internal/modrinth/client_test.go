@@ -1,11 +1,9 @@
 package modrinth
 
 import (
-	"context"
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -15,15 +13,6 @@ import (
 
 	_ "modernc.org/sqlite"
 )
-
-const nodeKey = "0123456789abcdef"
-
-func TestMain(m *testing.M) {
-	os.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	code := m.Run()
-	os.Unsetenv("MODSENTINEL_NODE_KEY")
-	os.Exit(code)
-}
 
 // Test that the client attaches the Authorization header when a token exists.
 func TestClientAddsAuthorizationHeader(t *testing.T) {
@@ -38,12 +27,7 @@ func TestClientAddsAuthorizationHeader(t *testing.T) {
 	if err := dbpkg.Migrate(db); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load keys: %v", err)
-	}
-	tokenpkg.Init(secrets.NewService(db, km))
+	tokenpkg.Init(secrets.NewService(db))
 	const tok = "abcdef1234"
 	if err := tokenpkg.SetToken(tok); err != nil {
 		t.Fatalf("set token: %v", err)
@@ -83,12 +67,7 @@ func TestClientOmitsAuthorizationHeader(t *testing.T) {
 	if err := dbpkg.Migrate(db); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load keys: %v", err)
-	}
-	tokenpkg.Init(secrets.NewService(db, km))
+	tokenpkg.Init(secrets.NewService(db))
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h := r.Header.Get("Authorization"); h != "" {
 			t.Fatalf("unexpected authorization header: %q", h)
@@ -121,12 +100,7 @@ func TestClientBackoff(t *testing.T) {
 	if err := dbpkg.Migrate(db); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load keys: %v", err)
-	}
-	tokenpkg.Init(secrets.NewService(db, km))
+	tokenpkg.Init(secrets.NewService(db))
 	attempts := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
@@ -169,12 +143,7 @@ func TestClientInvalidToken(t *testing.T) {
 	if err := dbpkg.Migrate(db); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load keys: %v", err)
-	}
-	tokenpkg.Init(secrets.NewService(db, km))
+	tokenpkg.Init(secrets.NewService(db))
 	const tok = "badtoken"
 	if err := tokenpkg.SetToken(tok); err != nil {
 		t.Fatalf("set token: %v", err)
