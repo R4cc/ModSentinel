@@ -102,7 +102,8 @@ func main() {
 	if err := dbpkg.Migrate(db); err != nil {
 		log.Fatal().Err(err).Msg("migrate db")
 	}
-	svc := secrets.NewService(db)
+	keyFile := filepath.Join(filepath.Dir(path), "secret.key")
+	svc := secrets.NewService(db, keyFile)
 	cfg := settingspkg.New(db)
 	oauthSvc := oauth.New(db)
 	tokenpkg.Init(svc)

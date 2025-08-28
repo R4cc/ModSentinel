@@ -5,8 +5,8 @@ This document covers where secrets are stored, how to rotate them, required scop
 
 ## Where secrets live
 
-- Secrets are stored in the `secrets` table of the SQLite database at `/data/modsentinel.db`.
-- Values are stored in plaintext. Only the last four characters and timestamp metadata are queryable through the API; plaintext never leaves the server.
+ - Secrets are stored in the `secrets` table of the SQLite database at `/data/modsentinel.db`.
+ - Values are encrypted using a key stored at `/data/secret.key`. Only the last four characters and timestamp metadata are queryable through the API; decrypted values never leave the server.
 
 ## Rotation & revocation
 
