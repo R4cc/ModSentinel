@@ -607,11 +607,14 @@ func TestSyncHandler_Validation(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()
 
+	inst := dbpkg.Instance{Name: "Inst", Loader: "fabric", EnforceSameLoader: true}
+	if err := dbpkg.InsertInstance(db, &inst); err != nil {
+		t.Fatalf("insert inst: %v", err)
+	}
 	h := syncHandler(db)
-	req := httptest.NewRequest(http.MethodPost, "/api/instances/1/sync", strings.NewReader(`{}`))
-	req.Header.Set("Content-Type", "application/json")
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/instances/%d/sync", inst.ID), nil)
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", "1")
+	rctx.URLParams.Add("id", strconv.Itoa(inst.ID))
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	w := httptest.NewRecorder()
 	h(w, req)
@@ -625,6 +628,60 @@ func TestSyncHandler_Validation(t *testing.T) {
 	}
 	if resp.Details["serverId"] == "" {
 		t.Fatalf("details %v", resp.Details)
+	}
+}
+
+func TestSyncHandler_UsesStoredServerID(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	prevGet := ppGetServer
+	prevList := ppListPath
+	ppGetServer = func(ctx context.Context, id string) (*pppkg.ServerDetail, error) {
+		return &pppkg.ServerDetail{Environment: struct {
+			Type string `json:"type"`
+		}{Type: "fabric"}}, nil
+	}
+	ppListPath = func(ctx context.Context, id, path string) ([]pppkg.FileEntry, error) {
+		return []pppkg.FileEntry{{Name: "mod.jar", IsDir: false}}, nil
+	}
+	t.Cleanup(func() {
+		ppGetServer = prevGet
+		ppListPath = prevList
+	})
+
+	_, _, _ = initSecrets(t, db)
+	if err := pppkg.Set(pppkg.Credentials{BaseURL: "http://example.com", ClientID: "id", ClientSecret: "secret"}); err != nil {
+		t.Fatalf("set creds: %v", err)
+	}
+	inst := dbpkg.Instance{Name: "Inst", Loader: "fabric", EnforceSameLoader: true, PufferpanelServerID: "1"}
+	if err := dbpkg.InsertInstance(db, &inst); err != nil {
+		t.Fatalf("insert inst: %v", err)
+	}
+	h := syncHandler(db)
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/instances/%d/sync", inst.ID), nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(inst.ID))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var resp struct {
+		Instance  dbpkg.Instance `json:"instance"`
+		Unmatched []string       `json:"unmatched"`
+		Mods      []dbpkg.Mod    `json:"mods"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Instance.PufferpanelServerID != "1" {
+		t.Fatalf("server id %s", resp.Instance.PufferpanelServerID)
+	}
+	if len(resp.Unmatched) != 1 || resp.Unmatched[0] != "mod.jar" {
+		t.Fatalf("unexpected unmatched %v", resp.Unmatched)
 	}
 }
 

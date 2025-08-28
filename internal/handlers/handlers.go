@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"net/http"
 	urlpkg "net/url"
@@ -1076,26 +1077,10 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			})
 			log.Warn().Str("path", r.URL.Path).Str("path_alias", "resync").Int64("alias_hits", hits).Msg("/api/instances/{id}/resync is deprecated; use /sync instead")
 		}
-		var req struct {
-			ServerID string `json:"serverId" validate:"required"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpx.Write(w, r, httpx.BadRequest("invalid json"))
-			return
-		}
-		if err := validatePayload(&req); err != nil {
-			httpx.Write(w, r, err)
-			return
-		}
 		idStr := chi.URLParam(r, "id")
 		id, err := strconv.Atoi(idStr)
 		if err != nil {
 			http.NotFound(w, r)
-			return
-		}
-		srv, err := pppkg.GetServer(r.Context(), req.ServerID)
-		if err != nil {
-			writePPError(w, r, err)
 			return
 		}
 		inst, err := dbpkg.GetInstance(db, id)
@@ -1103,8 +1088,30 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
+		var req struct {
+			ServerID string `json:"serverId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if !errors.Is(err, io.EOF) {
+				httpx.Write(w, r, httpx.BadRequest("invalid json"))
+				return
+			}
+		}
+		serverID := req.ServerID
+		if serverID == "" {
+			serverID = inst.PufferpanelServerID
+		}
+		if serverID == "" {
+			httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(map[string]string{"serverId": "required"}))
+			return
+		}
+		srv, err := ppGetServer(r.Context(), serverID)
+		if err != nil {
+			writePPError(w, r, err)
+			return
+		}
 		inst.Loader = strings.ToLower(srv.Environment.Type)
-		inst.PufferpanelServerID = req.ServerID
+		inst.PufferpanelServerID = serverID
 		inst.EnforceSameLoader = true
 		if inst.Loader == "" {
 			inst.Loader = "fabric"
@@ -1127,7 +1134,7 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 		case "paper", "spigot":
 			folder = "plugins/"
 		}
-		entries, err := pppkg.ListPath(r.Context(), req.ServerID, folder)
+		entries, err := ppListPath(r.Context(), serverID, folder)
 		if err != nil {
 			if errors.Is(err, pppkg.ErrNotFound) {
 				msg := strings.TrimSuffix(folder, "/") + " folder missing"
