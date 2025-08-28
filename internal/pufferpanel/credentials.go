@@ -91,11 +91,11 @@ func Get() (Credentials, error) {
 	if err != nil {
 		return Credentials{}, err
 	}
-	idb, err := secSvc.DecryptForUse(ctx, clientIDKey)
+	idb, err := secSvc.Get(ctx, clientIDKey)
 	if err != nil {
 		return Credentials{}, err
 	}
-	secb, err := secSvc.DecryptForUse(ctx, clientSecretKey)
+	secb, err := secSvc.Get(ctx, clientSecretKey)
 	if err != nil {
 		return Credentials{}, err
 	}

@@ -12,7 +12,7 @@ var svc *secrets.Service
 // Init sets the secrets service to use for token operations.
 func Init(s *secrets.Service) { svc = s }
 
-// SetToken encrypts and stores the Modrinth API token.
+// SetToken stores the Modrinth API token.
 func SetToken(token string) error {
 	if svc == nil {
 		return nil
@@ -20,12 +20,12 @@ func SetToken(token string) error {
 	return svc.Set(context.Background(), "modrinth", []byte(token))
 }
 
-// GetToken retrieves the decrypted Modrinth API token for internal use.
+// GetToken retrieves the Modrinth API token for internal use.
 func GetToken() (string, error) {
 	if svc == nil {
 		return "", nil
 	}
-	b, err := svc.DecryptForUse(context.Background(), "modrinth")
+	b, err := svc.Get(context.Background(), "modrinth")
 	return string(b), err
 }
 

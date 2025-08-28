@@ -1,9 +1,7 @@
 package token
 
 import (
-	"context"
 	"database/sql"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,15 +11,6 @@ import (
 
 	_ "modernc.org/sqlite"
 )
-
-const nodeKey = "0123456789abcdef"
-
-func TestMain(m *testing.M) {
-	os.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	code := m.Run()
-	os.Unsetenv("MODSENTINEL_NODE_KEY")
-	os.Exit(code)
-}
 
 func initSvc(t *testing.T) {
 	t.Helper()
@@ -36,12 +25,7 @@ func initSvc(t *testing.T) {
 	if err := dbpkg.Migrate(db); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load manager: %v", err)
-	}
-	Init(secrets.NewService(db, km))
+	Init(secrets.NewService(db))
 }
 
 func TestTokenStorage(t *testing.T) {

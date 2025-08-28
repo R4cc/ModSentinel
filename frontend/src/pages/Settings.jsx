@@ -16,8 +16,6 @@ import {
   saveSecret,
   clearSecret,
   testPuffer,
-  rewrapMasterKey,
-  getSecureHealth,
 } from "@/lib/api.ts";
 
 export default function Settings() {
@@ -36,12 +34,6 @@ export default function Settings() {
   );
   const [pufferLast4, setPufferLast4] = useState("");
   const [hasPuffer, setHasPuffer] = useState(false);
-  const [nodeKey, setNodeKey] = useState("");
-  const [secInfo, setSecInfo] = useState({
-    key_wrapped: false,
-    kdf: "",
-    aead: "",
-  });
 
   useEffect(() => {
     getSecretStatus("modrinth")
@@ -56,7 +48,6 @@ export default function Settings() {
         setPufferLast4(s.last4);
       })
       .catch(() => {});
-    getSecureHealth().then(setSecInfo).catch(() => {});
   }, []);
 
   async function handleSave() {
@@ -145,22 +136,6 @@ export default function Settings() {
     }
   }
 
-  async function handleRewrap() {
-    if (nodeKey.length < 16) {
-      toast.error("Node key must be at least 16 characters");
-      return;
-    }
-    try {
-      await rewrapMasterKey(nodeKey);
-      setNodeKey("");
-      toast.success("Master key rewrapped");
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to rewrap master key",
-      );
-    }
-  }
-
   return (
     <div className="max-w-md space-y-lg">
       <Card>
@@ -197,31 +172,6 @@ export default function Settings() {
               <option value="weekly">Weekly</option>
             </Select>
           </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Security</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-md">
-          <p className="text-sm">Key wrapping: {secInfo.key_wrapped ? "active" : "inactive"}</p>
-          <p className="text-sm">KDF: {secInfo.kdf}</p>
-          <p className="text-sm">AEAD: {secInfo.aead}</p>
-          <div className="space-y-xs">
-            <label htmlFor="node-key" className="text-sm font-medium">
-              New node key
-            </label>
-            <Input
-              id="node-key"
-              type="password"
-              value={nodeKey}
-              onChange={(e) => setNodeKey(e.target.value)}
-            />
-          </div>
-          <Button type="button" onClick={handleRewrap}>
-            Rewrap master key
-          </Button>
         </CardContent>
       </Card>
 

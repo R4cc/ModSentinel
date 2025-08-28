@@ -70,7 +70,7 @@ func TestInitCreatesSecretsTable(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows: %v", err)
 	}
-	expected := []string{"name", "nonce", "ciphertext", "created_at", "updated_at"}
+	expected := []string{"name", "value", "created_at", "updated_at"}
 	for _, c := range expected {
 		if !cols[c] {
 			t.Fatalf("missing column %s", c)

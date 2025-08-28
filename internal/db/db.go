@@ -46,17 +46,6 @@ type ModUpdate struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-// Secret stores encrypted credential data.
-type Secret struct {
-	ID        int    `json:"id"`
-	Type      string `json:"type"`
-	ValueEnc  []byte `json:"value_enc"`
-	KeyID     string `json:"key_id"`
-	IV        []byte `json:"iv"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-}
-
 // Init ensures the mods and instances tables exist and have required columns.
 func Init(db *sql.DB) error {
 	_, err := db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS instances (
@@ -177,19 +166,17 @@ func Init(db *sql.DB) error {
 	}
 
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS secrets (
-        name TEXT PRIMARY KEY,
-        nonce BLOB NOT NULL,
-        ciphertext BLOB NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`)
+       name TEXT PRIMARY KEY,
+       value BLOB NOT NULL,
+       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+   )`)
 	if err != nil {
 		return err
 	}
 
 	secretCols := map[string]string{
-		"nonce":      "BLOB NOT NULL",
-		"ciphertext": "BLOB NOT NULL",
+		"value":      "BLOB NOT NULL",
 		"created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
 		"updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
 	}

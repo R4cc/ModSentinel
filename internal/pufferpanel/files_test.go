@@ -33,14 +33,9 @@ func setupFiles(t *testing.T) {
 	if err := dbpkg.Migrate(db); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
-	t.Setenv("MODSENTINEL_NODE_KEY", nodeKey)
-	km, err := secrets.Load(context.Background(), db)
-	if err != nil {
-		t.Fatalf("load keys: %v", err)
-	}
-	svc := secrets.NewService(db, km)
+	svc := secrets.NewService(db)
 	cfg := settings.New(db)
-	oauthSvc := oauth.New(db, km)
+	oauthSvc := oauth.New(db)
 	Init(svc, cfg, oauthSvc)
 }
 
