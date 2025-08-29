@@ -1,0 +1,81 @@
+				rn := []rune(name)
+				if len(rn) > dbpkg.InstanceNameMaxLen {
+					log.Warn().Str("server_id", s.ID).Msg("pufferpanel server name truncated")
+					name = string(rn[:dbpkg.InstanceNameMaxLen])
+				}
+				inst := dbpkg.Instance{Name: name, EnforceSameLoader: true, PufferpanelServerID: s.ID}
+				if err := validatePayload(&inst); err != nil {
+					status = http.StatusBadRequest
+					httpx.Write(w, r, err)
+					return
+				}
+				if err := dbpkg.InsertInstance(db, &inst); err != nil {
+					status = http.StatusInternalServerError
+					httpx.Write(w, r, httpx.Internal(err))
+					return
+				}
+			} else if err != nil {
+				status = http.StatusInternalServerError
+				httpx.Write(w, r, httpx.Internal(err))
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(servers)
+	}
+}
+
+func syncHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/resync") {
+			if !allowResyncAlias {
+				w.WriteHeader(http.StatusGone)
+				return
+			}
+			hits := resyncAliasHits.Add(1)
+			telemetry.Event("instances_sync_alias", map[string]string{
+				"path_alias": "resync",
+				"hits":       strconv.FormatInt(hits, 10),
+			})
+			log.Warn().Str("path", r.URL.Path).Str("path_alias", "resync").Int64("alias_hits", hits).Msg("/api/instances/{id}/resync is deprecated; use /sync instead")
+		}
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		inst, err := dbpkg.GetInstance(db, id)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			ServerID string `json:"serverId"`
+			Key      string `json:"key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if !errors.Is(err, io.EOF) {
+				httpx.Write(w, r, httpx.BadRequest("invalid json"))
+				return
+			}
+		}
+		serverID := req.ServerID
+		if serverID == "" {
+			serverID = inst.PufferpanelServerID
+		}
+		if serverID == "" {
+			httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(map[string]string{"serverId": "required"}))
+			return
+		}
+		key := req.Key
+		if key == "" {
+			key = uuid.NewString()
+		}
+		jobID, _, err := EnqueueSync(r.Context(), db, inst, serverID, key)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {

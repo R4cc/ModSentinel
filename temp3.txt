@@ -1,0 +1,251 @@
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { Server, Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/Button.jsx";
+import { Modal } from "@/components/ui/Modal.jsx";
+import { Input } from "@/components/ui/Input.jsx";
+import { Select } from "@/components/ui/Select.jsx";
+import { Checkbox } from "@/components/ui/Checkbox.jsx";
+import { Skeleton } from "@/components/ui/Skeleton.jsx";
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardContent,
+  CardFooter,
+} from "@/components/ui/Card.jsx";
+import { EmptyState } from "@/components/ui/EmptyState.jsx";
+import {
+  getInstances,
+  addInstance,
+  updateInstance,
+  deleteInstance,
+  getSecretStatus,
+  syncInstances,
+  getPufferServers,
+} from "@/lib/api.ts";
+import { toast } from "@/lib/toast.ts";
+
+const loaders = [
+  { id: "fabric", label: "Fabric" },
+  { id: "forge", label: "Forge" },
+  { id: "quilt", label: "Quilt" },
+];
+
+export default function Instances() {
+  const [instances, setInstances] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [name, setName] = useState("");
+  const [nameError, setNameError] = useState("");
+  const [loader, setLoader] = useState(loaders[0].id);
+  const [enforce, setEnforce] = useState(true);
+  const [hasToken, setHasToken] = useState(true);
+  const [hasPuffer, setHasPuffer] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [servers, setServers] = useState([]);
+  const [selectedServer, setSelectedServer] = useState("");
+  const [loadingServers, setLoadingServers] = useState(false);
+  const [serverError, setServerError] = useState("");
+  const [scanning, setScanning] = useState(false);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    fetchInstances();
+  }, []);
+
+  useEffect(() => {
+    function check() {
+      getSecretStatus("pufferpanel")
+        .then((s) => setHasPuffer(s.exists))
+        .catch(() => setHasPuffer(false));
+    }
+    check();
+    window.addEventListener("pufferpanel-change", check);
+    return () => window.removeEventListener("pufferpanel-change", check);
+  }, []);
+
+  useEffect(() => {
+    getSecretStatus("modrinth")
+      .then((s) => setHasToken(s.exists))
+      .catch(() => setHasToken(false));
+  }, []);
+
+  async function fetchServers() {
+    setLoadingServers(true);
+    setServerError("");
+    try {
+      const s = await getPufferServers();
+      setServers(s);
+    } catch (err) {
+      setServerError(
+        err instanceof Error ? err.message : "Failed to load servers",
+      );
+    } finally {
+      setLoadingServers(false);
+    }
+  }
+
+  async function fetchInstances() {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await getInstances();
+      setInstances(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load instances");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSync() {
+    setSyncing(true);
+    try {
+      await Promise.all(
+        instances
+          .filter((i) => i.pufferpanel_server_id)
+          .map((i) => syncInstances(i.pufferpanel_server_id, i.id)),
+      );
+      toast.success("Synced");
+      fetchInstances();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to sync");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  function openAdd() {
+    setEditing(null);
+    setName("");
+    setNameError("");
+    setLoader(loaders[0].id);
+    setEnforce(true);
+    setServers([]);
+    setSelectedServer("");
+    setServerError("");
+    setOpen(true);
+    if (hasPuffer) fetchServers();
+  }
+
+  function openEdit(inst) {
+    setEditing(inst);
+    setName(inst.name);
+    setNameError("");
+    setEnforce(inst.enforce_same_loader);
+    setSelectedServer(inst.pufferpanel_server_id || "");
+    setServerError("");
+    setOpen(true);
+    if (hasPuffer) fetchServers();
+  }
+
+  async function handleSave(e) {
+    e.preventDefault();
+    if (!selectedServer && !name.trim()) {
+      toast.error("Name required");
+      return;
+    }
+    if (selectedServer) {
+      try {
+        setScanning(true);
+        let res;
+        if (editing) {
+          res = await syncInstances(selectedServer, editing.id);
+        } else {
+          const created = await addInstance({
+            name: "",
+            loader: "",
+            enforce_same_loader: true,
+            pufferpanel_server_id: selectedServer,
+          });
+          res = await syncInstances(selectedServer, created.id);
+        }
+        toast.success("Synced");
+        setOpen(false);
+        fetchInstances();
+        navigate(`/instances/${res.instance.id}`, {
+          state: { unmatched: res.unmatched, mods: res.mods },
+        });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to sync");
+      } finally {
+        setScanning(false);
+      }
+      return;
+    }
+
+    if (editing) {
+      try {
+        const updated = await updateInstance(editing.id, { name });
+        setInstances((prev) =>
+          prev.map((i) => (i.id === updated.id ? { ...i, ...updated } : i)),
+        );
+        toast.success("Instance updated");
+        setOpen(false);
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to save instance",
+        );
+      }
+      return;
+    }
+
+    const tempId = Date.now();
+    const optimistic = {
+      id: tempId,
+      name,
+      loader,
+      enforce_same_loader: enforce,
+      mod_count: 0,
+    };
+    setInstances((prev) => [...prev, optimistic]);
+    setOpen(false);
+    try {
+      const created = await addInstance({
+        name,
+        loader,
+        enforce_same_loader: enforce,
+      });
+      setInstances((prev) =>
+        prev.map((i) => (i.id === tempId ? { ...created, mod_count: 0 } : i)),
+      );
+      toast.success("Instance added");
+      navigate(`/instances/${created.id}`);
+    } catch (err) {
+      setInstances((prev) => prev.filter((i) => i.id !== tempId));
+      toast.error(
+        err instanceof Error ? err.message : "Failed to save instance",
+      );
+    }
+  }
+
+  const [delState, setDelState] = useState({
+    open: false,
+    inst: null,
+    deleteMods: false,
+    targetId: null,
+  });
+
+  function openDelete(inst) {
+    const others = instances.filter((i) => i.id !== inst.id);
+    setDelState({
+      open: true,
+      inst,
+      deleteMods: others.length === 0,
+      targetId: others[0]?.id ?? null,
+    });
+  }
+
+  async function handleDelete(e) {
+    e.preventDefault();
+    const { inst, deleteMods, targetId } = delState;
+    if (!inst) return;
+    try {
+      await deleteInstance(
+        inst.id,
+        deleteMods ? undefined : targetId || undefined,
+      );
+      toast.success("Instance deleted");

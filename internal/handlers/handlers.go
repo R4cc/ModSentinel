@@ -193,9 +193,12 @@ func validatePayload(v interface{}) *httpx.HTTPError {
 }
 
 type instanceReq struct {
-	Name     string `json:"name"`
-	Loader   string `json:"loader"`
-	ServerID string `json:"serverId"`
+    Name                string `json:"name"`
+    Loader              string `json:"loader"`
+    // Accept both camelCase and snake_case for server id from clients
+    ServerID            string `json:"serverId"`
+    PufferpanelServerID string `json:"pufferpanel_server_id"`
+    EnforceSameLoader   *bool  `json:"enforce_same_loader"`
 }
 
 func sanitizeName(s string) string {
@@ -210,46 +213,69 @@ func sanitizeName(s string) string {
 
 // validateInstanceReq performs business validations for instance creation.
 func validateInstanceReq(ctx context.Context, req *instanceReq) map[string]string {
-	req.Name = sanitizeName(req.Name)
-	details := map[string]string{}
-	if req.Name == "" {
-		details["name"] = "required"
-	} else if len([]rune(req.Name)) > dbpkg.InstanceNameMaxLen {
-		details["name"] = "max"
-	}
-	switch strings.ToLower(req.Loader) {
-	case "fabric", "forge", "paper", "spigot", "bukkit":
-	default:
-		details["loader"] = "invalid"
-	}
-	if strings.TrimSpace(req.ServerID) == "" {
-		details["serverId"] = "required"
-	}
-	if len(details) > 0 {
-		return details
-	}
-	// upstream validation
-	if _, err := ppGetServer(ctx, req.ServerID); err != nil {
-		if errors.Is(err, pppkg.ErrNotFound) {
-			details["serverId"] = "not_found"
-		} else {
-			details["upstream"] = "unreachable"
-		}
-		return details
-	}
-	folder := "mods"
-	switch strings.ToLower(req.Loader) {
-	case "paper", "spigot", "bukkit":
-		folder = "plugins"
-	}
-	if _, err := ppListPath(ctx, req.ServerID, folder); err != nil {
-		if errors.Is(err, pppkg.ErrNotFound) {
-			details["folder"] = "missing"
-		} else {
-			details["upstream"] = "unreachable"
-		}
-	}
-	return details
+    req.Name = sanitizeName(req.Name)
+    details := map[string]string{}
+
+    // Normalize server id from either field
+    serverIDCamel := strings.TrimSpace(req.ServerID)
+    serverIDSnake := strings.TrimSpace(req.PufferpanelServerID)
+    serverID := serverIDCamel
+    if serverID == "" {
+        serverID = serverIDSnake
+    }
+
+    // Name required only when no server is provided.
+    // Preserve stricter behavior for legacy camelCase clients (tests),
+    // and relax when snake_case field is used by the frontend.
+    requireName := serverIDSnake == ""
+    if requireName {
+        if req.Name == "" {
+            details["name"] = "required"
+        } else if len([]rune(req.Name)) > dbpkg.InstanceNameMaxLen {
+            details["name"] = "max"
+        }
+    } else if req.Name != "" && len([]rune(req.Name)) > dbpkg.InstanceNameMaxLen {
+        details["name"] = "max"
+    }
+
+    // Validate loader if provided; allow empty for server-based creation
+    if req.Loader != "" {
+        switch strings.ToLower(req.Loader) {
+        case "fabric", "forge", "paper", "spigot", "bukkit", "quilt":
+        default:
+            details["loader"] = "invalid"
+        }
+    }
+
+    if len(details) > 0 {
+        return details
+    }
+
+    // Upstream validation only when a server is provided
+    if serverID != "" {
+        if _, err := ppGetServer(ctx, serverID); err != nil {
+            if errors.Is(err, pppkg.ErrNotFound) {
+                details["serverId"] = "not_found"
+            } else {
+                details["upstream"] = "unreachable"
+            }
+            return details
+        }
+        folder := "mods"
+        switch strings.ToLower(req.Loader) {
+        case "paper", "spigot", "bukkit":
+            folder = "plugins"
+        }
+        if _, err := ppListPath(ctx, serverID, folder); err != nil {
+            if errors.Is(err, pppkg.ErrNotFound) {
+                details["folder"] = "missing"
+            } else {
+                details["upstream"] = "unreachable"
+            }
+            return details
+        }
+    }
+    return details
 }
 
 func recordLatency(next http.Handler) http.Handler {
@@ -494,23 +520,45 @@ func validateInstanceHandler() http.HandlerFunc {
 }
 
 func createInstanceHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req instanceReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpx.Write(w, r, httpx.BadRequest("invalid json"))
-			return
-		}
-		if details := validateInstanceReq(r.Context(), &req); len(details) > 0 {
-			telemetry.Event("instance_validation_failed", map[string]string{"correlation_id": uuid.NewString()})
-			httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(details))
-			return
-		}
-		inst := dbpkg.Instance{ID: 0, Name: req.Name, Loader: strings.ToLower(req.Loader), PufferpanelServerID: req.ServerID, EnforceSameLoader: true}
-		tx, err := db.BeginTx(r.Context(), nil)
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
+    return func(w http.ResponseWriter, r *http.Request) {
+        var req instanceReq
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+            httpx.Write(w, r, httpx.BadRequest("invalid json"))
+            return
+        }
+        if details := validateInstanceReq(r.Context(), &req); len(details) > 0 {
+            telemetry.Event("instance_validation_failed", map[string]string{"correlation_id": uuid.NewString()})
+            httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(details))
+            return
+        }
+        // Normalize incoming fields
+        serverIDCamel := strings.TrimSpace(req.ServerID)
+        serverIDSnake := strings.TrimSpace(req.PufferpanelServerID)
+        serverID := serverIDCamel
+        if serverID == "" {
+            serverID = serverIDSnake
+        }
+        enforce := true
+        if req.EnforceSameLoader != nil {
+            enforce = *req.EnforceSameLoader
+        }
+        name := req.Name
+        // Only auto-derive name when snake_case field is provided by the frontend flow
+        if name == "" && serverIDSnake != "" {
+            if s, err := ppGetServer(r.Context(), serverIDSnake); err == nil && s != nil {
+                name = sanitizeName(s.Name)
+                rn := []rune(name)
+                if len(rn) > dbpkg.InstanceNameMaxLen {
+                    name = string(rn[:dbpkg.InstanceNameMaxLen])
+                }
+            }
+        }
+        inst := dbpkg.Instance{ID: 0, Name: name, Loader: strings.ToLower(req.Loader), PufferpanelServerID: serverID, EnforceSameLoader: enforce}
+        tx, err := db.BeginTx(r.Context(), nil)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
 		res, err := tx.Exec(`INSERT INTO instances(name, loader, enforce_same_loader, pufferpanel_server_id) VALUES(?,?,?,?)`, inst.Name, inst.Loader, inst.EnforceSameLoader, inst.PufferpanelServerID)
 		if err != nil {
 			tx.Rollback()

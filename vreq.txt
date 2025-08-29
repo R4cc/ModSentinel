@@ -1,0 +1,121 @@
+func validateInstanceReq(ctx context.Context, req *instanceReq) map[string]string {
+	req.Name = sanitizeName(req.Name)
+	details := map[string]string{}
+	if req.Name == "" {
+		details["name"] = "required"
+	} else if len([]rune(req.Name)) > dbpkg.InstanceNameMaxLen {
+		details["name"] = "max"
+	}
+	switch strings.ToLower(req.Loader) {
+	case "fabric", "forge", "paper", "spigot", "bukkit":
+	default:
+		details["loader"] = "invalid"
+	}
+	if strings.TrimSpace(req.ServerID) == "" {
+		details["serverId"] = "required"
+	}
+	if len(details) > 0 {
+		return details
+	}
+	// upstream validation
+	if _, err := ppGetServer(ctx, req.ServerID); err != nil {
+		if errors.Is(err, pppkg.ErrNotFound) {
+			details["serverId"] = "not_found"
+		} else {
+			details["upstream"] = "unreachable"
+		}
+		return details
+	}
+	folder := "mods"
+	switch strings.ToLower(req.Loader) {
+	case "paper", "spigot", "bukkit":
+		folder = "plugins"
+	}
+	if _, err := ppListPath(ctx, req.ServerID, folder); err != nil {
+		if errors.Is(err, pppkg.ErrNotFound) {
+			details["folder"] = "missing"
+		} else {
+			details["upstream"] = "unreachable"
+		}
+	}
+	return details
+}
+
+func recordLatency(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		dur := time.Since(start).Milliseconds()
+		latencyMu.Lock()
+		latencySamples = append(latencySamples, dur)
+		if len(latencySamples) > 100 {
+			latencySamples = latencySamples[1:]
+		}
+		samples := append([]int64(nil), latencySamples...)
+		latencyMu.Unlock()
+		if len(samples) == 0 {
+			return
+		}
+		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+		latencyP50.Store(samples[len(samples)/2])
+		idx := (len(samples) * 95) / 100
+		if idx >= len(samples) {
+			idx = len(samples) - 1
+		}
+		latencyP95.Store(samples[idx])
+	})
+}
+
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := uuid.NewString()
+		ctx := pppkg.WithRequestID(r.Context(), id)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		style := "style-src 'self'"
+		ctx := r.Context()
+		if os.Getenv("APP_ENV") == "production" {
+			nonceBytes := make([]byte, 16)
+			if _, err := rand.Read(nonceBytes); err == nil {
+				nonce := base64.StdEncoding.EncodeToString(nonceBytes)
+				style += " 'nonce-" + nonce + "'"
+				ctx = context.WithValue(ctx, nonceCtxKey{}, nonce)
+			}
+		} else {
+			style += " 'unsafe-inline'"
+		}
+		connect := "connect-src 'self'"
+		if host := pppkg.APIHost(); host != "" {
+			connect += " " + host
+		}
+		csp := strings.Join([]string{
+			"default-src 'self'",
+			"frame-ancestors 'none'",
+			"base-uri 'none'",
+			style,
+			connect,
+			"img-src 'self' data: https:",
+		}, "; ")
+		w.Header().Set("Content-Security-Policy", csp)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func csrfMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+			http.SetCookie(w, &http.Cookie{Name: "csrf_token", Value: csrfToken, Path: "/", HttpOnly: false, SameSite: http.SameSiteStrictMode})
+			next.ServeHTTP(w, r)
+			return
+		}
+		c, err := r.Cookie("csrf_token")
+		token := r.Header.Get("X-CSRF-Token")
+		if err != nil || token == "" || c.Value != token || token != csrfToken {
+			httpx.Write(w, r, httpx.Forbidden("invalid csrf token"))
+			return
+		}
+		next.ServeHTTP(w, r)
