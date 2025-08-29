@@ -20,6 +20,7 @@ vi.mock("@/lib/api.ts", () => ({
   getInstance: vi.fn(),
   updateInstance: vi.fn(),
   instances: { sync: vi.fn() },
+  jobs: { retry: vi.fn() },
   getSecretStatus: vi.fn(),
   checkMod: vi.fn(),
 }));
@@ -37,7 +38,10 @@ vi.mock("@/hooks/useConfirm.jsx", () => ({
 }));
 import Mods from "./Mods.jsx";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  eventSources.length = 0;
+});
 import {
   MemoryRouter,
   Route,
@@ -52,9 +56,24 @@ import {
   refreshMod,
   deleteMod,
   instances,
+  jobs,
   getSecretStatus,
   checkMod,
 } from "@/lib/api.ts";
+
+const eventSources = [];
+class MockEventSource {
+  constructor(url) {
+    this.url = url;
+    this.onmessage = null;
+    this.closed = false;
+    eventSources.push(this);
+  }
+  close() {
+    this.closed = true;
+  }
+}
+global.EventSource = MockEventSource;
 
 function renderPage() {
   return render(
@@ -389,34 +408,52 @@ describe("Mods resync", () => {
       pufferpanel_server_id: "srv1",
     });
     getMods.mockResolvedValue([]);
-    instances.sync.mockResolvedValue({
-      instance: {
-        id: 1,
-        name: "Srv",
-        loader: "fabric",
-        enforce_same_loader: true,
-        created_at: "",
-        mod_count: 0,
-        pufferpanel_server_id: "srv1",
-        last_sync_at: new Date().toISOString(),
-        last_sync_added: 1,
-        last_sync_updated: 0,
-        last_sync_failed: 1,
-      },
-      unmatched: ["a.jar"],
-      mods: [],
-    });
+    instances.sync.mockResolvedValue({ id: 1, status: "queued" });
+    jobs.retry.mockResolvedValue({ id: 1, status: "queued" });
   });
 
-  it("resyncs from PufferPanel", async () => {
+  it("shows progress and failure details with retry", async () => {
     renderPage();
     const btn = await screen.findByRole("button", { name: "Resync" });
     fireEvent.click(btn);
     await waitFor(() => expect(instances.sync).toHaveBeenCalledWith(1));
-    const headers = await screen.findAllByText("Unmatched files");
-    expect(headers.length).toBeGreaterThan(0);
-    const items = screen.getAllByText("a.jar");
-    expect(items.length).toBeGreaterThan(0);
+    expect(eventSources.length).toBe(1);
+    act(() => {
+      eventSources[0].onmessage({
+        data: JSON.stringify({
+          id: 1,
+          status: "running",
+          total: 10,
+          processed: 5,
+          succeeded: 4,
+          failed: 1,
+          in_queue: 5,
+          failures: [{ name: "modA", error: "boom" }],
+        }),
+      });
+    });
+    expect(
+      screen.getByText("5/10 processed (4 succeeded, 1 failed)"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("modA")).toBeInTheDocument();
+    act(() => {
+      eventSources[0].onmessage({
+        data: JSON.stringify({
+          id: 1,
+          status: "failed",
+          total: 10,
+          processed: 10,
+          succeeded: 9,
+          failed: 1,
+          in_queue: 0,
+          failures: [{ name: "modA", error: "boom" }],
+        }),
+      });
+    });
+    await waitFor(() => expect(eventSources[0].closed).toBe(true));
+    const retryBtn = screen.getByRole("button", { name: "Retry failed" });
+    fireEvent.click(retryBtn);
+    await waitFor(() => expect(jobs.retry).toHaveBeenCalledWith(1));
   });
 });
 
@@ -556,6 +593,35 @@ describe("Mods warnings", () => {
     expect(
       await screen.findByText(
         "Instance has never been synced from PufferPanel.",
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("Mods rate limit", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getInstance.mockResolvedValue({
+      id: 1,
+      name: "Srv",
+      loader: "fabric",
+      enforce_same_loader: true,
+      created_at: "",
+      mod_count: 0,
+    });
+    getSecretStatus.mockResolvedValue({
+      exists: true,
+      last4: "",
+      updated_at: "",
+    });
+  });
+
+  it("shows rate limit banner", async () => {
+    getMods.mockRejectedValueOnce(new Error("rate limited"));
+    renderPage();
+    expect(
+      await screen.findByText(
+        "Rate limit hit. Some requests are temporarily blocked.",
       ),
     ).toBeInTheDocument();
   });
@@ -753,14 +819,8 @@ describe("Check for updates", () => {
         screen.getByText("Up to date: 1, Outdated: 1, Errors: 1"),
       ).toBeInTheDocument(),
     );
-    expect(
-      screen.getByText("Alpha: Up to date"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("Beta: Update 2.0 available"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("Gamma: Error: boom"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Alpha: Up to date")).toBeInTheDocument();
+    expect(screen.getByText("Beta: Update 2.0 available")).toBeInTheDocument();
+    expect(screen.getByText("Gamma: Error: boom")).toBeInTheDocument();
   });
 });
