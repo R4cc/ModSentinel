@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -19,17 +20,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
-	"unicode"
-
 	"sync"
 	"sync/atomic"
+	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
-
-	"fmt"
 
 	singleflight "golang.org/x/sync/singleflight"
 	rate "golang.org/x/time/rate"
@@ -45,7 +43,7 @@ import (
 type modrinthClient interface {
 	Project(ctx context.Context, slug string) (*mr.Project, error)
 	Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error)
-	Search(ctx context.Context, query string) (*mr.SearchResult, error)
+	Resolve(ctx context.Context, slug string) (*mr.Project, string, error)
 }
 
 var modClient modrinthClient = mr.NewClient()
@@ -397,6 +395,10 @@ func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 	r.With(requireAuth()).Post("/api/instances/sync", listServersHandler(db))
 	r.With(requireAuth()).Post("/api/instances/{id:\\d+}/sync", syncHandler(db))
 	r.With(requireAuth()).Get("/api/instances/{id:\\d+}/sync", methodNotAllowed)
+	r.With(requireAuth()).Get("/api/jobs/{id:\\d+}", jobProgressHandler(db))
+	r.With(requireAuth()).Get("/api/jobs/{id:\\d+}/events", jobEventsHandler(db))
+	r.With(requireAuth()).Post("/api/jobs/{id:\\d+}/retry", retryFailedHandler(db))
+	r.With(requireAuth()).Delete("/api/jobs/{id:\\d+}", cancelJobHandler(db))
 	if allowResyncAlias {
 		// Temporary alias; TODO: remove after 2025-01-01.
 		r.With(requireAuth()).Post("/api/instances/{id:\\d+}/resync", syncHandler(db))
@@ -1090,6 +1092,7 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 		}
 		var req struct {
 			ServerID string `json:"serverId"`
+			Key      string `json:"key"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			if !errors.Is(err, io.EOF) {
@@ -1105,36 +1108,237 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(map[string]string{"serverId": "required"}))
 			return
 		}
-		srv, err := ppGetServer(r.Context(), serverID)
-		if err != nil {
-			writePPError(w, r, err)
-			return
+		key := req.Key
+		if key == "" {
+			key = uuid.NewString()
 		}
-		inst.Loader = strings.ToLower(srv.Environment.Type)
-		inst.PufferpanelServerID = serverID
-		inst.EnforceSameLoader = true
-		if inst.Loader == "" {
-			inst.Loader = "fabric"
-		}
-		if err := validatePayload(inst); err != nil {
-			httpx.Write(w, r, err)
-			return
-		}
-		if _, err := db.Exec(`UPDATE instances SET loader=?, enforce_same_loader=?, pufferpanel_server_id=? WHERE id=?`, inst.Loader, inst.EnforceSameLoader, inst.PufferpanelServerID, inst.ID); err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		creds, err := pppkg.Get()
+		jobID, _, err := EnqueueSync(r.Context(), db, inst, serverID, key)
 		if err != nil {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
-		folder := "mods/"
-		switch inst.Loader {
-		case "paper", "spigot":
-			folder = "plugins/"
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			ID     int    `json:"id"`
+			Status string `json:"status"`
+		}{jobID, JobQueued})
+		return
+	}
+}
+
+func jobProgressHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			http.NotFound(w, r)
+			return
 		}
-		entries, err := ppListPath(r.Context(), serverID, folder)
+		job, err := dbpkg.GetSyncJob(db, id)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		var total, processed, succeeded, failed int
+		var fails []jobFailure
+		if jp, ok := progress.Load(id); ok {
+			total, processed, succeeded, failed, fails, _ = jp.(*jobProgress).snapshot()
+		}
+		inQueue := total - processed
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			ID        int          `json:"id"`
+			Status    string       `json:"status"`
+			Total     int          `json:"total"`
+			Processed int          `json:"processed"`
+			Succeeded int          `json:"succeeded"`
+			Failed    int          `json:"failed"`
+			InQueue   int          `json:"in_queue"`
+			Failures  []jobFailure `json:"failures"`
+		}{job.ID, job.Status, total, processed, succeeded, failed, inQueue, fails})
+	}
+}
+
+func jobEventsHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := dbpkg.GetSyncJob(db, id); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "stream unsupported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		p, _ := progress.LoadOrStore(id, newJobProgress())
+		jp := p.(*jobProgress)
+		ch := jp.subscribe()
+		defer jp.unsubscribe(ch)
+
+		send := func() bool {
+			total, processed, succeeded, failed, fails, status := jp.snapshot()
+			inQueue := total - processed
+			data, _ := json.Marshal(struct {
+				ID        int          `json:"id"`
+				Status    string       `json:"status"`
+				Total     int          `json:"total"`
+				Processed int          `json:"processed"`
+				Succeeded int          `json:"succeeded"`
+				Failed    int          `json:"failed"`
+				InQueue   int          `json:"in_queue"`
+				Failures  []jobFailure `json:"failures"`
+			}{id, status, total, processed, succeeded, failed, inQueue, fails})
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				return false
+			}
+			flusher.Flush()
+			switch status {
+			case JobSucceeded, JobFailed, JobCanceled:
+				return false
+			}
+			return true
+		}
+
+		if !send() {
+			return
+		}
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ch:
+				if !send() {
+					return
+				}
+			}
+		}
+	}
+}
+
+func cancelJobHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		job, err := dbpkg.GetSyncJob(db, id)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		switch job.Status {
+		case JobQueued:
+			_ = dbpkg.MarkSyncJobFinished(db, id, JobCanceled, "")
+			if ch, ok := waiters.Load(id); ok {
+				close(ch.(chan struct{}))
+				waiters.Delete(id)
+			}
+		case JobRunning:
+			if c, ok := jobCancels.Load(id); ok {
+				c.(context.CancelFunc)()
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func retryFailedHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		job, err := dbpkg.GetSyncJob(db, id)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if job.Status == JobQueued || job.Status == JobRunning {
+			http.Error(w, "job active", http.StatusConflict)
+			return
+		}
+		p, ok := progress.Load(id)
+		if !ok {
+			http.Error(w, "no failures", http.StatusBadRequest)
+			return
+		}
+		_, _, _, _, fails, _ := p.(*jobProgress).snapshot()
+		if len(fails) == 0 {
+			http.Error(w, "no failures", http.StatusBadRequest)
+			return
+		}
+		names := make([]string, len(fails))
+		for i, f := range fails {
+			names[i] = f.Name
+		}
+		if err := dbpkg.RequeueSyncJob(db, id); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		np := newJobProgress()
+		np.setStatus(JobQueued)
+		np.setTotal(len(names))
+		progress.Store(id, np)
+		retryFiles.Store(id, names)
+		ch := make(chan struct{})
+		waiters.Store(id, ch)
+		jobsCh <- id
+		recordQueueMetrics()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			ID int `json:"id"`
+		}{id})
+	}
+}
+
+func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db *sql.DB, inst *dbpkg.Instance, serverID string, prog *jobProgress, only []string) {
+	srv, err := ppGetServer(ctx, serverID)
+	if err != nil {
+		writePPError(w, r, err)
+		return
+	}
+	inst.Loader = strings.ToLower(srv.Environment.Type)
+	inst.PufferpanelServerID = serverID
+	inst.EnforceSameLoader = true
+	if inst.Loader == "" {
+		inst.Loader = "fabric"
+	}
+	if err := validatePayload(inst); err != nil {
+		httpx.Write(w, r, err)
+		return
+	}
+	if _, err := db.Exec(`UPDATE instances SET loader=?, enforce_same_loader=?, pufferpanel_server_id=? WHERE id=?`, inst.Loader, inst.EnforceSameLoader, inst.PufferpanelServerID, inst.ID); err != nil {
+		httpx.Write(w, r, httpx.Internal(err))
+		return
+	}
+	creds, err := pppkg.Get()
+	if err != nil {
+		httpx.Write(w, r, httpx.Internal(err))
+		return
+	}
+	folder := "mods/"
+	switch inst.Loader {
+	case "paper", "spigot":
+		folder = "plugins/"
+	}
+	var files []string
+	if len(only) > 0 {
+		files = append([]string(nil), only...)
+	} else {
+		entries, err := ppListPath(ctx, serverID, folder)
 		if err != nil {
 			if errors.Is(err, pppkg.ErrNotFound) {
 				msg := strings.TrimSuffix(folder, "/") + " folder missing"
@@ -1144,7 +1348,7 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			writePPError(w, r, err)
 			return
 		}
-		files := make([]string, 0, len(entries))
+		files = make([]string, 0, len(entries))
 		for _, e := range entries {
 			if e.IsDir {
 				continue
@@ -1154,112 +1358,139 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 			}
 		}
 		sort.Strings(files)
-		matched := make([]dbpkg.Mod, 0)
-		unmatched := make([]string, 0, len(files))
-		for _, f := range files {
-			meta := parseJarFilename(f)
-			slug, ver := meta.Slug, meta.Version
-			scanned := false
-			if creds.DeepScan && (slug == "" || ver == "") {
-				scanned = true
-				time.Sleep(100 * time.Millisecond)
-				data, err := pppkg.FetchFile(r.Context(), req.ServerID, folder+f)
-				if err == nil {
-					s2, v2 := parseJarMetadata(data)
-					if s2 != "" && v2 != "" {
-						slug, ver = s2, v2
-					}
-				}
-			}
-			if slug == "" || ver == "" {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			res, err := modClient.Search(r.Context(), slug)
-			if (err != nil || len(res.Hits) == 0) && creds.DeepScan && !scanned {
-				time.Sleep(100 * time.Millisecond)
-				data, err := pppkg.FetchFile(r.Context(), req.ServerID, folder+f)
-				if err == nil {
-					s2, v2 := parseJarMetadata(data)
-					if s2 != "" && v2 != "" {
-						slug, ver = s2, v2
-						res, err = modClient.Search(r.Context(), slug)
-					}
-				}
-			}
-			if err != nil || len(res.Hits) == 0 {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			slug = res.Hits[0].Slug
-			proj, err := modClient.Project(r.Context(), slug)
-			if err != nil {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			versions, err := modClient.Versions(r.Context(), slug, "", "")
-			if err != nil {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			var v mr.Version
-			found := false
-			for _, vv := range versions {
-				if vv.VersionNumber == ver {
-					v = vv
-					found = true
-					break
-				}
-			}
-			if !found {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			m := dbpkg.Mod{
-				Name:           proj.Title,
-				IconURL:        proj.IconURL,
-				URL:            fmt.Sprintf("https://modrinth.com/mod/%s", slug),
-				InstanceID:     inst.ID,
-				Channel:        strings.ToLower(v.VersionType),
-				CurrentVersion: v.VersionNumber,
-			}
-			if len(v.GameVersions) > 0 {
-				m.GameVersion = v.GameVersions[0]
-			}
-			if len(v.Loaders) > 0 {
-				m.Loader = v.Loaders[0]
-			} else {
-				m.Loader = inst.Loader
-			}
-			if len(v.Files) > 0 {
-				m.DownloadURL = v.Files[0].URL
-			}
-			if err := populateAvailableVersion(r.Context(), &m, slug); err != nil {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			if err := dbpkg.InsertMod(db, &m); err != nil {
-				unmatched = append(unmatched, f)
-				continue
-			}
-			matched = append(matched, m)
-		}
-		if err := dbpkg.UpdateInstanceSync(db, inst.ID, len(matched), 0, len(unmatched)); err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		inst2, err := dbpkg.GetInstance(db, inst.ID)
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(struct {
-			Instance  dbpkg.Instance `json:"instance"`
-			Unmatched []string       `json:"unmatched"`
-			Mods      []dbpkg.Mod    `json:"mods"`
-		}{*inst2, unmatched, matched})
 	}
+	prog.setTotal(len(files))
+	matched := make([]dbpkg.Mod, 0)
+	unmatched := make([]string, 0, len(files))
+
+	for _, f := range files {
+		if ctx.Err() != nil {
+			return
+		}
+		meta := parseJarFilename(f)
+		slug, ver := meta.Slug, meta.Version
+		scanned := false
+		if creds.DeepScan && (slug == "" || ver == "") {
+			scanned = true
+			time.Sleep(100 * time.Millisecond)
+			data, err := pppkg.FetchFile(ctx, serverID, folder+f)
+			if err == nil {
+				s2, v2 := parseJarMetadata(data)
+				if s2 != "" && v2 != "" {
+					slug, ver = s2, v2
+				}
+			}
+		}
+               if slug == "" || ver == "" {
+                        unmatched = append(unmatched, f)
+                        prog.fail(f, errors.New("missing slug or version"))
+                        if slug != "" {
+                                _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
+                        }
+                        continue
+               }
+               proj, slug, err := modClient.Resolve(ctx, slug)
+               if err != nil && creds.DeepScan && !scanned {
+			time.Sleep(100 * time.Millisecond)
+			data, err2 := pppkg.FetchFile(ctx, serverID, folder+f)
+			if err2 == nil {
+				s2, v2 := parseJarMetadata(data)
+				if s2 != "" && v2 != "" {
+					slug, ver = s2, v2
+					proj, slug, err = modClient.Resolve(ctx, slug)
+				}
+			}
+		}
+               if err != nil {
+                        if ctx.Err() != nil {
+                                return
+                        }
+                        unmatched = append(unmatched, f)
+                        prog.fail(f, err)
+                        _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
+                        continue
+               }
+               versions, err := modClient.Versions(ctx, slug, "", "")
+               if err != nil {
+                        if ctx.Err() != nil {
+                                return
+                        }
+                        unmatched = append(unmatched, f)
+                        prog.fail(f, err)
+                        _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
+                        continue
+               }
+		var v mr.Version
+		found := false
+		for _, vv := range versions {
+			if vv.VersionNumber == ver {
+				v = vv
+				found = true
+				break
+			}
+		}
+               if !found {
+                        unmatched = append(unmatched, f)
+                        prog.fail(f, fmt.Errorf("version %s not found", ver))
+                        _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
+                        continue
+               }
+		m := dbpkg.Mod{
+			Name:           proj.Title,
+			IconURL:        proj.IconURL,
+			URL:            fmt.Sprintf("https://modrinth.com/mod/%s", slug),
+			InstanceID:     inst.ID,
+			Channel:        strings.ToLower(v.VersionType),
+			CurrentVersion: v.VersionNumber,
+		}
+		if len(v.GameVersions) > 0 {
+			m.GameVersion = v.GameVersions[0]
+		}
+		if len(v.Loaders) > 0 {
+			m.Loader = v.Loaders[0]
+		} else {
+			m.Loader = inst.Loader
+		}
+		if len(v.Files) > 0 {
+			m.DownloadURL = v.Files[0].URL
+		}
+               if err := populateAvailableVersion(ctx, &m, slug); err != nil {
+                        if ctx.Err() != nil {
+                                return
+                        }
+                        unmatched = append(unmatched, f)
+                        prog.fail(f, err)
+                        _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
+                        continue
+               }
+               if err := dbpkg.InsertMod(db, &m); err != nil {
+                        if ctx.Err() != nil {
+                                return
+                        }
+                        unmatched = append(unmatched, f)
+                        prog.fail(f, err)
+                        _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
+                        continue
+               }
+               matched = append(matched, m)
+               prog.success()
+               _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobSucceeded)
+	}
+	if err := dbpkg.UpdateInstanceSync(db, inst.ID, len(matched), 0, len(unmatched)); err != nil {
+		httpx.Write(w, r, httpx.Internal(err))
+		return
+	}
+	inst2, err := dbpkg.GetInstance(db, inst.ID)
+	if err != nil {
+		httpx.Write(w, r, httpx.Internal(err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct {
+		Instance  dbpkg.Instance `json:"instance"`
+		Unmatched []string       `json:"unmatched"`
+		Mods      []dbpkg.Mod    `json:"mods"`
+	}{*inst2, unmatched, matched})
 }
 
 func dashboardHandler(db *sql.DB) http.HandlerFunc {

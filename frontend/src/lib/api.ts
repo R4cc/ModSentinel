@@ -86,6 +86,9 @@ function apiFetch(path: string, init?: RequestInit): Promise<Response> {
 }
 
 async function parseError(res: Response): Promise<APIError> {
+  if (res.status === 429) {
+    return new APIError("rate limited");
+  }
   const text = await res.text();
   try {
     const err = JSON.parse(text);
@@ -239,7 +242,6 @@ export async function deleteMod(
 export async function getDashboard(): Promise<DashboardData> {
   const res = await apiFetch("/api/dashboard");
   if (res.status === 401) throw new Error("token required");
-  if (res.status === 429) throw new Error("rate limited");
   if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
@@ -255,14 +257,44 @@ export interface SyncResult {
   mods: Mod[];
 }
 
-async function syncInstance(id: number): Promise<SyncResult> {
+export interface Job {
+  id: number;
+  status: string;
+}
+
+export interface JobProgress extends Job {
+  total: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  in_queue: number;
+  failures: { name: string; error: string }[];
+}
+
+async function syncInstance(id: number): Promise<Job> {
   const res = await apiFetch(`/api/instances/${id}/sync`, { method: "POST" });
+  if (!res.ok) throw await parseError(res);
+  return parseJSON(res);
+}
+
+async function retryJob(id: number): Promise<Job> {
+  const res = await apiFetch(`/api/jobs/${id}/retry`, { method: "POST" });
+  if (!res.ok) throw await parseError(res);
+  return parseJSON(res);
+}
+
+export async function getJob(id: number): Promise<JobProgress> {
+  const res = await apiFetch(`/api/jobs/${id}`);
   if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }
 
 export const instances = {
   sync: syncInstance,
+};
+
+export const jobs = {
+  retry: retryJob,
 };
 
 export async function getPufferServers(): Promise<PufferServer[]> {

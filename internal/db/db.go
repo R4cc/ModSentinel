@@ -1,8 +1,9 @@
 package db
 
 import (
-	"database/sql"
-	"fmt"
+        "database/sql"
+        "fmt"
+        "time"
 )
 
 const InstanceNameMaxLen = 128
@@ -40,10 +41,18 @@ type Mod struct {
 
 // ModUpdate represents a recently applied mod update.
 type ModUpdate struct {
-	ID        int    `json:"id"`
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-	UpdatedAt string `json:"updated_at"`
+        ID        int    `json:"id"`
+        Name      string `json:"name"`
+        Version   string `json:"version"`
+        UpdatedAt string `json:"updated_at"`
+}
+
+// ModSyncState tracks the last sync attempt for a mod on an instance.
+type ModSyncState struct {
+        Slug        string `json:"slug"`
+        LastChecked string `json:"last_checked"`
+        LastVersion string `json:"last_version"`
+        Status      string `json:"status"`
 }
 
 // Init ensures the mods and instances tables exist and have required columns.
@@ -217,6 +226,64 @@ func Init(db *sql.DB) error {
 		return err
 	}
 
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS sync_jobs (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     instance_id INTEGER NOT NULL,
+     server_id TEXT NOT NULL,
+     status TEXT NOT NULL,
+     error TEXT,
+     idempotency_key TEXT NOT NULL DEFAULT '',
+     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+     started_at DATETIME,
+     finished_at DATETIME,
+     UNIQUE(instance_id, idempotency_key)
+ )`)
+	if err != nil {
+		return err
+	}
+
+	rows, err = db.Query(`SELECT name FROM pragma_table_info('sync_jobs')`)
+	if err != nil {
+		return err
+	}
+	existingSJ := make(map[string]struct{})
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return err
+		}
+		existingSJ[n] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if _, ok := existingSJ["idempotency_key"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE sync_jobs ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`UPDATE sync_jobs SET idempotency_key=CAST(id AS TEXT) WHERE idempotency_key=''`); err != nil {
+			return err
+		}
+	}
+        if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS sync_jobs_instance_key_idx ON sync_jobs(instance_id, idempotency_key)`); err != nil {
+                return err
+        }
+
+        _, err = db.Exec(`CREATE TABLE IF NOT EXISTS mod_sync_state (
+     instance_id INTEGER NOT NULL,
+     slug TEXT NOT NULL,
+     last_checked_at DATETIME,
+     last_version TEXT,
+     status TEXT,
+     PRIMARY KEY(instance_id, slug)
+ )`)
+        if err != nil {
+                return err
+        }
+
 	// Migration: create a default instance and assign existing mods.
 	var instCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM instances`).Scan(&instCount); err != nil {
@@ -382,6 +449,34 @@ func ListMods(db *sql.DB, instanceID int) ([]Mod, error) {
 	return mods, nil
 }
 
+// SetModSyncState records the outcome of a mod sync attempt for an instance.
+func SetModSyncState(db *sql.DB, instanceID int, slug, version, status string) error {
+        _, err := db.Exec(`INSERT INTO mod_sync_state(instance_id, slug, last_checked_at, last_version, status) VALUES(?,?,?,?,?)
+ON CONFLICT(instance_id, slug) DO UPDATE SET last_checked_at=excluded.last_checked_at, last_version=excluded.last_version, status=excluded.status`, instanceID, slug, time.Now().UTC(), version, status)
+        return err
+}
+
+// ListModSyncStates returns recorded sync states for mods belonging to an instance.
+func ListModSyncStates(db *sql.DB, instanceID int) ([]ModSyncState, error) {
+        rows, err := db.Query(`SELECT slug, IFNULL(last_checked_at, ''), IFNULL(last_version, ''), IFNULL(status, '') FROM mod_sync_state WHERE instance_id=?`, instanceID)
+        if err != nil {
+                return nil, err
+        }
+        defer rows.Close()
+        out := []ModSyncState{}
+        for rows.Next() {
+                var s ModSyncState
+                if err := rows.Scan(&s.Slug, &s.LastChecked, &s.LastVersion, &s.Status); err != nil {
+                        return nil, err
+                }
+                out = append(out, s)
+        }
+        if err := rows.Err(); err != nil {
+                return nil, err
+        }
+        return out, nil
+}
+
 // ListAllMods returns all mods across instances sorted by ID descending.
 func ListAllMods(db *sql.DB) ([]Mod, error) {
 	rows, err := db.Query(`SELECT id, IFNULL(name, ''), IFNULL(icon_url, ''), url, IFNULL(game_version, ''), IFNULL(loader, ''), IFNULL(channel, ''), IFNULL(current_version, ''), IFNULL(available_version, ''), IFNULL(available_channel, ''), IFNULL(download_url, ''), IFNULL(instance_id, 0) FROM mods ORDER BY id DESC`)
@@ -494,4 +589,88 @@ func GetDashboardStats(db *sql.DB) (*DashboardStats, error) {
 	}
 	rows.Close()
 	return stats, nil
+}
+
+// SyncJob represents a background instance sync job.
+type SyncJob struct {
+	ID         int
+	InstanceID int
+	ServerID   string
+	Status     string
+	Error      string
+	Key        string
+}
+
+// ResetRunningSyncJobs resets running jobs back to queued on startup.
+func ResetRunningSyncJobs(db *sql.DB) error {
+	_, err := db.Exec(`UPDATE sync_jobs SET status='queued', started_at=NULL WHERE status='running'`)
+	return err
+}
+
+// ListQueuedSyncJobs returns IDs of jobs awaiting processing.
+func ListQueuedSyncJobs(db *sql.DB) ([]int, error) {
+	rows, err := db.Query(`SELECT id FROM sync_jobs WHERE status='queued' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []int{}
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// InsertSyncJob enqueues a new sync job and returns its ID. If a job already
+// exists for the given instance and key, the existing ID is returned with
+// existed set to true.
+func InsertSyncJob(db *sql.DB, instanceID int, serverID, key string) (id int, existed bool, err error) {
+	err = db.QueryRow(`SELECT id FROM sync_jobs WHERE instance_id=? AND idempotency_key=?`, instanceID, key).Scan(&id)
+	if err == nil {
+		return id, true, nil
+	}
+	if err != sql.ErrNoRows {
+		return 0, false, err
+	}
+	res, err := db.Exec(`INSERT INTO sync_jobs(instance_id, server_id, status, idempotency_key) VALUES(?, ?, 'queued', ?)`, instanceID, serverID, key)
+	if err != nil {
+		return 0, false, err
+	}
+	lastID, err := res.LastInsertId()
+	if err != nil {
+		return 0, false, err
+	}
+	return int(lastID), false, nil
+}
+
+// GetSyncJob returns a sync job by ID.
+func GetSyncJob(db *sql.DB, id int) (*SyncJob, error) {
+	var j SyncJob
+	err := db.QueryRow(`SELECT id, instance_id, server_id, IFNULL(status,''), IFNULL(error,''), IFNULL(idempotency_key,'') FROM sync_jobs WHERE id=?`, id).Scan(&j.ID, &j.InstanceID, &j.ServerID, &j.Status, &j.Error, &j.Key)
+	if err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+
+// MarkSyncJobRunning sets a job to running.
+func MarkSyncJobRunning(db *sql.DB, id int) error {
+	_, err := db.Exec(`UPDATE sync_jobs SET status='running', started_at=CURRENT_TIMESTAMP WHERE id=?`, id)
+	return err
+}
+
+// MarkSyncJobFinished updates a job to a terminal status.
+func MarkSyncJobFinished(db *sql.DB, id int, status, errMsg string) error {
+	_, err := db.Exec(`UPDATE sync_jobs SET status=?, error=?, finished_at=CURRENT_TIMESTAMP WHERE id=?`, status, errMsg, id)
+	return err
+}
+
+// RequeueSyncJob resets a finished job back to queued.
+func RequeueSyncJob(db *sql.DB, id int) error {
+	_, err := db.Exec(`UPDATE sync_jobs SET status='queued', error='', started_at=NULL, finished_at=NULL WHERE id=?`, id)
+	return err
 }

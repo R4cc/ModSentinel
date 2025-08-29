@@ -37,6 +37,7 @@ import {
   getInstance,
   updateInstance,
   instances,
+  jobs,
   getSecretStatus,
   checkMod,
 } from "@/lib/api.ts";
@@ -52,6 +53,7 @@ export default function Mods() {
   const [mods, setMods] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [rateLimited, setRateLimited] = useState(false);
   const [filter, setFilter] = useState("");
   const [searchParams] = useSearchParams();
   const status = searchParams.get("status") || "all";
@@ -68,6 +70,8 @@ export default function Mods() {
   const [enforce, setEnforce] = useState(true);
   const [unmatched, setUnmatched] = useState([]);
   const [resyncing, setResyncing] = useState(false);
+  const [progress, setProgress] = useState(null);
+  const [source, setSource] = useState(null);
   const [checkOpen, setCheckOpen] = useState(false);
   const [checkingAll, setCheckingAll] = useState(false);
   const [checkProgress, setCheckProgress] = useState(0);
@@ -107,14 +111,25 @@ export default function Mods() {
     }
   }, [instanceId, location.state]);
 
+  useEffect(() => {
+    return () => {
+      if (source) source.close();
+    };
+  }, [source]);
+
   async function fetchMods() {
     setLoading(true);
     setError("");
     try {
       const data = await getMods(instanceId);
       setMods(data);
+      setRateLimited(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load mods");
+      if (err instanceof Error && err.message === "rate limited") {
+        setRateLimited(true);
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to load mods");
+      }
     } finally {
       setLoading(false);
     }
@@ -124,31 +139,78 @@ export default function Mods() {
     try {
       const data = await getInstance(instanceId);
       setInstance(data);
+      setRateLimited(false);
     } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to load instance",
-      );
+      if (err instanceof Error && err.message === "rate limited") {
+        setRateLimited(true);
+      } else {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to load instance",
+        );
+      }
     }
   }
 
   async function handleResync() {
     if (!instance) return;
     setResyncing(true);
+    setProgress(null);
     try {
-      const {
-        instance: inst,
-        unmatched: um,
-        mods: m,
-      } = await instances.sync(instance.id);
-      setInstance(inst);
-      setUnmatched(um);
-      setMods(m);
-      toast.success("Resynced");
+      const { id } = await instances.sync(instance.id);
+      trackJob(id);
     } catch (err) {
+      if (err instanceof Error && err.message === "rate limited") {
+        setRateLimited(true);
+      }
       toast.error(err instanceof Error ? err.message : "Failed to resync");
-    } finally {
       setResyncing(false);
     }
+  }
+
+  async function handleRetryFailed() {
+    if (!progress) return;
+    setResyncing(true);
+    setProgress(null);
+    try {
+      await jobs.retry(progress.id);
+      trackJob(progress.id);
+    } catch (err) {
+      if (err instanceof Error && err.message === "rate limited") {
+        setRateLimited(true);
+      }
+      toast.error(err instanceof Error ? err.message : "Failed to retry");
+      setResyncing(false);
+    }
+  }
+
+  function trackJob(id) {
+    const es = new EventSource(`/api/jobs/${id}/events`);
+    setSource(es);
+    es.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      setProgress(data);
+      if (
+        data.status === "succeeded" ||
+        data.status === "failed" ||
+        data.status === "canceled"
+      ) {
+        es.close();
+        setSource(null);
+        setResyncing(false);
+        fetchInstance();
+        fetchMods();
+        if (data.status === "succeeded") {
+          toast.success("Resynced");
+        } else {
+          toast.error(
+            data.status === "failed" ? "Sync failed" : "Sync canceled",
+          );
+        }
+        if (data.failed === 0) {
+          setProgress(null);
+        }
+      }
+    };
   }
 
   async function handleCheckAll() {
@@ -182,9 +244,17 @@ export default function Mods() {
           }));
         } catch (err) {
           const msg = err instanceof Error ? err.message : "Failed to check";
+          if (msg === "rate limited") {
+            setRateLimited(true);
+          }
           setCheckResults((prev) => [
             ...prev,
-            { id: mod.id, name: mod.name || mod.url, status: "error", error: msg },
+            {
+              id: mod.id,
+              name: mod.name || mod.url,
+              status: "error",
+              error: msg,
+            },
           ]);
           setCheckSummary((s) => ({ ...s, errors: s.errors + 1 }));
         } finally {
@@ -242,6 +312,9 @@ export default function Mods() {
     } catch (err) {
       if (err instanceof Error && err.message === "token required") {
         toast.error("Modrinth token required");
+      } else if (err instanceof Error && err.message === "rate limited") {
+        setRateLimited(true);
+        toast.error(err.message);
       } else if (err instanceof Error) {
         toast.error(err.message);
       } else {
@@ -340,21 +413,39 @@ export default function Mods() {
         <ul className="max-h-60 overflow-y-auto space-y-xs">
           {checkResults.map((r) => (
             <li key={r.id} className="text-sm">
-              {r.name}: {r.status === "error" ? `Error: ${r.error}` : r.status === "outdated" ? `Update ${r.available_version} available` : "Up to date"}
+              {r.name}:{" "}
+              {r.status === "error"
+                ? `Error: ${r.error}`
+                : r.status === "outdated"
+                  ? `Update ${r.available_version} available`
+                  : "Up to date"}
             </li>
           ))}
         </ul>
         {checkProgress === mods.length && (
           <p className="mt-sm text-sm">
-            Up to date: {checkSummary.updated}, Outdated: {checkSummary.outdated}, Errors: {checkSummary.errors}
+            Up to date: {checkSummary.updated}, Outdated:{" "}
+            {checkSummary.outdated}, Errors: {checkSummary.errors}
           </p>
         )}
         <div className="mt-sm flex justify-end">
-          <Button size="sm" onClick={() => setCheckOpen(false)} disabled={checkingAll}>
+          <Button
+            size="sm"
+            onClick={() => setCheckOpen(false)}
+            disabled={checkingAll}
+          >
             Close
           </Button>
         </div>
       </Modal>
+      {rateLimited && (
+        <div
+          className="rounded-md border border-amber-500 bg-amber-50 p-sm text-amber-900"
+          role="status"
+        >
+          Rate limit hit. Some requests are temporarily blocked.
+        </div>
+      )}
       <Link
         to="/instances"
         className="inline-flex items-center gap-xs text-sm text-muted-foreground hover:underline"
@@ -439,6 +530,67 @@ export default function Mods() {
               </Button>
             )}
           </div>
+        </div>
+      )}
+      {progress && (
+        <div className="space-y-xs" data-testid="sync-progress">
+          <div
+            className="h-2 bg-muted rounded"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={progress.total}
+            aria-valuenow={progress.processed}
+          >
+            <div
+              className="h-2 bg-primary rounded"
+              style={{
+                width: progress.total
+                  ? `${(progress.processed / progress.total) * 100}%`
+                  : "0%",
+              }}
+            />
+          </div>
+          <p className="text-sm">
+            {progress.processed}/{progress.total} processed (
+            {progress.succeeded} succeeded, {progress.failed} failed)
+          </p>
+          {progress.failures && progress.failures.length > 0 && (
+            <>
+              <Table className="text-sm">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Mod</TableHead>
+                    <TableHead>Error</TableHead>
+                    <TableHead className="text-right"></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {progress.failures.map((f) => (
+                    <TableRow key={f.name}>
+                      <TableCell>{f.name}</TableCell>
+                      <TableCell>{f.error}</TableCell>
+                      <TableCell className="text-right">
+                        <Button size="sm" onClick={handleResync}>
+                          Retry
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              {progress.status !== "running" && (
+                <div className="text-right">
+                  <Button
+                    size="sm"
+                    onClick={handleRetryFailed}
+                    data-testid="retry-failed"
+                  >
+                    Retry failed
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
       <div className="min-h-5 space-y-xs">
@@ -638,7 +790,10 @@ export default function Mods() {
                           className="h-8 px-sm"
                           disabled={!isModrinth}
                         >
-                          <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                          <ExternalLink
+                            className="h-4 w-4"
+                            aria-hidden="true"
+                          />
                         </Button>
                       </Tooltip>
                       <Tooltip text="Delete mod">
