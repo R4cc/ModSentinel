@@ -113,6 +113,20 @@ export async function getModMetadata(url: string): Promise<ModMetadata> {
   return parseJSON(res);
 }
 
+export interface ModSearchHit {
+  slug: string;
+  title: string;
+  description?: string;
+  icon_url?: string;
+}
+
+export async function searchMods(query: string): Promise<ModSearchHit[]> {
+  const res = await apiFetch(`/api/mods/search?q=${encodeURIComponent(query)}`);
+  if (res.status === 401) throw new Error("token required");
+  if (!res.ok) throw await parseError(res);
+  return parseJSON(res);
+}
+
 export async function getMods(instanceId: number): Promise<Mod[]> {
   const res = await apiFetch(`/api/mods?instance_id=${instanceId}`, {
     cache: "no-store",

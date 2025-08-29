@@ -4,7 +4,12 @@ import { cn } from '@/lib/utils';
 const Card = React.forwardRef(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn('rounded-md border border-border bg-background text-foreground shadow-md', className)}
+    className={cn(
+      'rounded-md border border-border bg-background text-foreground shadow-md',
+      // subtle gradient background overlay
+      'bg-[linear-gradient(180deg,rgba(0,0,0,0.02),transparent)]',
+      className,
+    )}
     {...props}
   />
 ));

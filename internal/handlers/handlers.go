@@ -41,9 +41,10 @@ import (
 )
 
 type modrinthClient interface {
-	Project(ctx context.Context, slug string) (*mr.Project, error)
-	Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error)
-	Resolve(ctx context.Context, slug string) (*mr.Project, string, error)
+    Project(ctx context.Context, slug string) (*mr.Project, error)
+    Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error)
+    Resolve(ctx context.Context, slug string) (*mr.Project, string, error)
+    Search(ctx context.Context, query string) (*mr.SearchResult, error)
 }
 
 var modClient modrinthClient = mr.NewClient()
@@ -433,9 +434,10 @@ func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 		r.With(requireAuth()).Post("/api/instances/{id:\\d+}/resync", goneHandler)
 		r.With(requireAuth()).Get("/api/instances/{id:\\d+}/resync", goneHandler)
 	}
-	r.Get("/api/mods", listModsHandler(db))
-	r.Post("/api/mods/metadata", metadataHandler())
-	r.Post("/api/mods", createModHandler(db))
+    r.Get("/api/mods", listModsHandler(db))
+    r.Post("/api/mods/metadata", metadataHandler())
+    r.Get("/api/mods/search", searchModsHandler())
+    r.Post("/api/mods", createModHandler(db))
 	r.Get("/api/mods/{id}/check", checkModHandler(db))
 	r.Put("/api/mods/{id}", updateModHandler(db))
 	r.Delete("/api/mods/{id}", deleteModHandler(db))
@@ -467,6 +469,33 @@ func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
     }
 
     return r
+}
+
+func searchModsHandler() http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        q := strings.TrimSpace(r.URL.Query().Get("q"))
+        if q == "" {
+            httpx.Write(w, r, httpx.BadRequest("missing query"))
+            return
+        }
+        res, err := modClient.Search(r.Context(), q)
+        if err != nil {
+            writeModrinthError(w, r, err)
+            return
+        }
+        type hit struct {
+            Slug        string `json:"slug"`
+            Title       string `json:"title"`
+            Description string `json:"description"`
+            IconURL     string `json:"icon_url"`
+        }
+        out := make([]hit, 0, len(res.Hits))
+        for _, h := range res.Hits {
+            out = append(out, hit{Slug: h.Slug, Title: h.Title, Description: h.Description, IconURL: h.IconURL})
+        }
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(out)
+    }
 }
 
 func serveFavicon(dist fs.FS) http.HandlerFunc {

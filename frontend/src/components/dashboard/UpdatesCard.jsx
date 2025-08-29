@@ -27,7 +27,7 @@ function UpdatesCard({ data, loading, error }) {
   }
 
   if (!data?.recent_updates?.length) {
-    return <p className='text-muted-foreground'>No updates.</p>;
+    return <p className='text-muted-foreground'>No updates in the last 7 days.</p>;
   }
 
   const groups = useMemo(() => {

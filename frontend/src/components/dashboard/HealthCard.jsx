@@ -55,7 +55,7 @@ function HealthCard({ data, loading, error }) {
           </Badge>
       </div>
       <div className='flex items-center justify-between'>
-        <span>Last sync</span>
+        <span>Last check</span>
         <span
           className='text-sm text-muted-foreground'
           title={data && data.last_sync ? new Date(data.last_sync * 1000).toLocaleString() : 'Never'}

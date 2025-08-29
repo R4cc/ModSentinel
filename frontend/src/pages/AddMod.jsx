@@ -15,13 +15,14 @@ import { Checkbox } from "@/components/ui/Checkbox.jsx";
 import { Badge } from "@/components/ui/Badge.jsx";
 import { Skeleton } from "@/components/ui/Skeleton.jsx";
 import { cn } from "@/lib/utils.js";
-import { addMod, getInstance, getSecretStatus } from "@/lib/api.ts";
+import { addMod, getInstance, getSecretStatus, searchMods } from "@/lib/api.ts";
 import { useNavigate, useParams, useLocation, Link } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, X } from "lucide-react";
+import ModIcon from "@/components/ModIcon.jsx";
 import { useAddModStore, initialState } from "@/stores/addModStore.js";
 import { parseJarFilename } from "@/lib/jar.ts";
 
-const steps = ["Mod URL", "Loader", "Minecraft Version", "Mod Version"];
+const steps = ["Select Mod", "Loader", "Minecraft Version", "Mod Version"];
 const loaders = [
   { id: "fabric", label: "Fabric" },
   { id: "forge", label: "Forge" },
@@ -59,6 +60,12 @@ export default function AddMod() {
   const safeModVersions = modVersions ?? [];
 
   const refs = [useRef(null), useRef(null), useRef(null), useRef(null)];
+  const didAutoSkipLoader = useRef(false);
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [results, setResults] = useState([]);
+  const [selectedHit, setSelectedHit] = useState(null);
+  const searchTimer = useRef(null);
 
   const navigate = useNavigate();
   const { id } = useParams();
@@ -114,6 +121,42 @@ export default function AddMod() {
     }
   }, [unresolvedFile, setUrl]);
 
+  // live search
+  useEffect(() => {
+    if (step !== 0) return;
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    const q = query.trim();
+    if (!q) {
+      setResults([]);
+      return;
+    }
+    // If a full Modrinth URL is pasted, search by slug part
+    let effective = q;
+    try {
+      const u = new URL(q);
+      const parts = u.pathname.split("/");
+      const idx = parts.findIndex((p) => ["mod","plugin","datapack","resourcepack"].includes(p));
+      if (idx !== -1 && parts[idx+1]) effective = parts[idx+1];
+    } catch {}
+    searchTimer.current = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const hits = await searchMods(effective);
+        setResults(hits || []);
+      } catch (err) {
+        setResults([]);
+        if (err instanceof Error && err.message === "token required") {
+          toast.error("Modrinth token required");
+        }
+      } finally {
+        setSearching(false);
+      }
+    }, 250);
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    };
+  }, [query, step]);
+
   useEffect(() => {
     if (step === 3 && refs[3].current) {
       refs[3].current.focus();
@@ -121,10 +164,16 @@ export default function AddMod() {
   }, [safeModVersions.length, step]);
 
   useEffect(() => {
-    if (step === 1 && instance?.enforce_same_loader) {
+    if (step === 1 && instance?.enforce_same_loader && !didAutoSkipLoader.current) {
+      didAutoSkipLoader.current = true;
       nextStep();
     }
   }, [step, instance, nextStep]);
+
+  // Reset auto-skip guard when instance changes
+  useEffect(() => {
+    didAutoSkipLoader.current = false;
+  }, [instanceId]);
 
   useEffect(() => {
     if (step === 2 && safeVersions.length === 0) {
@@ -247,24 +296,82 @@ export default function AddMod() {
                 exit={{ opacity: 0 }}
                 className="space-y-sm"
               >
-                <label className="block text-sm font-medium" htmlFor="url">
-                  Mod URL
-                </label>
-                <Input
-                  id="url"
-                  ref={refs[0]}
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  onBlur={(e) => validateUrl(e.target.value)}
-                  placeholder="https://..."
-                />
-                <p className="text-sm text-muted-foreground">
-                  Paste the mod page URL from Modrinth.
-                </p>
-                {urlError && (
-                  <p className="text-sm text-red-600" role="alert">
-                    {urlError}
-                  </p>
+                {!selectedHit ? (
+                  <>
+                    <label className="block text-sm font-medium" htmlFor="mod-search">
+                      Search Modrinth
+                    </label>
+                    <Input
+                      id="mod-search"
+                      ref={refs[0]}
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Type a mod name or paste a Modrinth link"
+                    />
+                    <div className="space-y-xs">
+                      {searching ? (
+                        <>
+                          <Skeleton className="h-16 w-full" />
+                          <Skeleton className="h-16 w-full" />
+                          <Skeleton className="h-16 w-full" />
+                        </>
+                      ) : (
+                        results.length > 0 && (
+                          <div className="max-h-60 overflow-y-auto space-y-xs">
+                            {results.map((h) => (
+                              <button
+                                type="button"
+                                key={h.slug}
+                                onClick={() => {
+                                  const u = `https://modrinth.com/mod/${h.slug}`;
+                                  setUrl(u);
+                                  validateUrl(u);
+                                  setSelectedHit(h);
+                                }}
+                                className="flex w-full items-center gap-sm rounded-md border p-sm text-left hover:border-primary"
+                              >
+                                <ModIcon url={h.icon_url} cacheKey={h.slug} />
+                                <div className="min-w-0">
+                                  <div className="font-medium truncate">{h.title}</div>
+                                  {h.description && (
+                                    <div className="text-sm text-muted-foreground truncate">
+                                      {h.description}
+                                    </div>
+                                  )}
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        )
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="relative rounded-md border p-sm">
+                    <button
+                      type="button"
+                      aria-label="Clear selection"
+                      className="absolute right-sm top-sm text-muted-foreground hover:text-foreground"
+                      onClick={() => {
+                        setSelectedHit(null);
+                        setUrl("");
+                        setQuery("");
+                      }}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                    <div className="flex items-center gap-sm">
+                      <ModIcon url={selectedHit.icon_url} cacheKey={selectedHit.slug} />
+                      <div className="min-w-0">
+                        <div className="font-medium truncate">{selectedHit.title}</div>
+                        {selectedHit.description && (
+                          <div className="text-sm text-muted-foreground truncate">
+                            {selectedHit.description}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 )}
               </motion.div>
             )}

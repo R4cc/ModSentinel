@@ -25,8 +25,8 @@ function SummaryCard({ data, loading, error }) {
   }
 
   const items = [
-    { label: 'Total', value: data.tracked, to: '/instances' },
-    { label: 'Up to date', value: data.up_to_date, to: '/instances' },
+    { label: 'Instances', value: data.instances ?? 0, to: '/instances' },
+    { label: 'Tracked mods', value: data.tracked, to: '/instances' },
     { label: 'Outdated', value: data.outdated, to: '/instances' },
   ];
 

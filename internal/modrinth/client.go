@@ -374,11 +374,13 @@ func (c *Client) Versions(ctx context.Context, slug, gameVersion, loader string)
 
 // SearchResult represents a Modrinth search response.
 type SearchResult struct {
-	Hits []struct {
-		ProjectID string `json:"project_id"`
-		Slug      string `json:"slug"`
-		Title     string `json:"title"`
-	} `json:"hits"`
+    Hits []struct {
+        ProjectID string `json:"project_id"`
+        Slug      string `json:"slug"`
+        Title     string `json:"title"`
+        Description string `json:"description"`
+        IconURL     string `json:"icon_url"`
+    } `json:"hits"`
 }
 
 // normalizeQuery trims whitespace, lowercases, and strips common version suffixes
