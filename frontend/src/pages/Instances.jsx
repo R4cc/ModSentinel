@@ -35,6 +35,7 @@ const loaders = [
 
 export default function Instances() {
   const [instances, setInstances] = useState([]);
+  const [suffixMap, setSuffixMap] = useState({}); // id -> index
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
@@ -95,11 +96,35 @@ export default function Instances() {
     try {
       const data = await getInstances();
       setInstances(data);
+      computeSuffixes(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load instances");
     } finally {
       setLoading(false);
     }
+  }
+
+  function computeSuffixes(list) {
+    const groups = new Map();
+    for (const i of list) {
+      const key = i.name || "";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(i);
+    }
+    const map = {};
+    for (const [_, arr] of groups) {
+      if (arr.length <= 1) continue;
+      arr.sort((a, b) => {
+        const ta = Date.parse(a.created_at || "");
+        const tb = Date.parse(b.created_at || "");
+        if (!isNaN(ta) && !isNaN(tb) && ta !== tb) return ta - tb;
+        return (a.id || 0) - (b.id || 0);
+      });
+      arr.forEach((inst, idx) => {
+        if (idx > 0) map[inst.id] = idx; // first has no suffix
+      });
+    }
+    setSuffixMap(map);
   }
 
   async function handleSync() {
@@ -370,7 +395,10 @@ export default function Instances() {
             >
               <CardHeader className="pb-0">
                 <div className="flex items-center justify-between gap-sm">
-                  <CardTitle className="truncate">{inst.name}</CardTitle>
+                  <CardTitle className="truncate">
+                    {inst.name}
+                    {suffixMap[inst.id] ? ` (${suffixMap[inst.id]})` : ""}
+                  </CardTitle>
                   <Badge
                     variant="secondary"
                     className={`capitalize border ${loaderBadgeClass(inst.loader)}`}

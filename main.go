@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"bufio"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -78,6 +80,9 @@ func main() {
 		adminMain(os.Args[2:])
 		return
 	}
+
+	// Load local environment overrides from .env (ignored by git)
+	loadEnvFile(".env")
 	path := resolveDBPath("/data/modsentinel.db")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		log.Fatal().Err(err).Str("dir", filepath.Dir(path)).Msg("create db dir")
@@ -108,6 +113,16 @@ func main() {
 	oauthSvc := oauth.New(db)
 	tokenpkg.Init(svc)
 	pppkg.Init(svc, cfg, oauthSvc)
+
+	// Optional: seed Modrinth token from environment for local testing
+	if envTok := strings.TrimSpace(os.Getenv("MODSENTINEL_MODRINTH_TOKEN")); envTok != "" {
+		if err := tokenpkg.SetToken(envTok); err != nil {
+			log.Warn().Err(err).Msg("failed to set modrinth token from env")
+		} else {
+			_, redacted, _ := tokenpkg.TokenForLog()
+			log.Info().Str("token", redacted).Msg("modrinth token provided via env")
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -149,6 +164,33 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal().Err(err).Msg("server failed")
 	}
+}
+
+func loadEnvFile(path string) {
+    f, err := os.Open(path)
+    if err != nil {
+        return
+    }
+    defer f.Close()
+    sc := bufio.NewScanner(f)
+    for sc.Scan() {
+        line := strings.TrimSpace(sc.Text())
+        if line == "" || strings.HasPrefix(line, "#") {
+            continue
+        }
+        if i := strings.Index(line, "="); i >= 0 {
+            key := strings.TrimSpace(line[:i])
+            val := strings.TrimSpace(line[i+1:])
+            if len(val) >= 2 {
+                if (strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"")) || (strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'")) {
+                    val = val[1:len(val)-1]
+                }
+            }
+            if os.Getenv(key) == "" {
+                _ = os.Setenv(key, val)
+            }
+        }
+    }
 }
 
 func adminMain(args []string) {

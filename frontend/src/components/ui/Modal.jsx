@@ -23,11 +23,12 @@ function Modal({ open, onClose, className, children, ...props }) {
         onClick={onClose}
         aria-hidden='true'
       />
-      <FocusTrap focusTrapOptions={{ returnFocusOnDeactivate: true }}>
+      <FocusTrap focusTrapOptions={{ returnFocusOnDeactivate: true, fallbackFocus: '.modal-focus-fallback' }}>
         <div
           role='dialog'
           aria-modal='true'
-          className={cn('relative z-10 w-full max-w-lg rounded-md bg-background p-lg shadow-md', className)}
+          className={cn('relative z-10 w-full max-w-lg rounded-md bg-background p-lg shadow-md modal-focus-fallback', className)}
+          tabIndex={-1}
           {...props}
         >
           {children}

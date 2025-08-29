@@ -8,10 +8,13 @@ import {
 import {
   Package,
   RefreshCw,
+  RotateCw,
   Trash2,
   Plus,
   ExternalLink,
   ArrowLeft,
+  Pencil,
+  Key,
 } from "lucide-react";
 import { Input } from "@/components/ui/Input.jsx";
 import { Select } from "@/components/ui/Select.jsx";
@@ -30,11 +33,13 @@ import { Skeleton } from "@/components/ui/Skeleton.jsx";
 import { EmptyState } from "@/components/ui/EmptyState.jsx";
 import ModIcon from "@/components/ModIcon.jsx";
 import { Tooltip } from "@/components/ui/Tooltip.jsx";
+import { Badge } from "@/components/ui/Badge.jsx";
 import {
   getMods,
   refreshMod,
   deleteMod,
   getInstance,
+  getInstances,
   updateInstance,
   instances,
   jobs,
@@ -64,9 +69,9 @@ export default function Mods() {
   const [hasToken, setHasToken] = useState(true);
   const openAddMod = useOpenAddMod(instanceId);
   const [instance, setInstance] = useState(null);
-  const [editingName, setEditingName] = useState(false);
+  const [nameSuffix, setNameSuffix] = useState(0);
+  const [editOpen, setEditOpen] = useState(false);
   const [name, setName] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [enforce, setEnforce] = useState(true);
   const [unmatched, setUnmatched] = useState([]);
   const [resyncing, setResyncing] = useState(false);
@@ -82,6 +87,24 @@ export default function Mods() {
     errors: 0,
   });
 
+  // helper for colored loader badge
+  function loaderBadgeClass(loader) {
+    switch ((loader || "").toLowerCase()) {
+      case "fabric":
+        return "bg-emerald-100 text-emerald-800 border-emerald-200";
+      case "forge":
+        return "bg-orange-100 text-orange-800 border-orange-200";
+      case "quilt":
+        return "bg-purple-100 text-purple-800 border-purple-200";
+      case "paper":
+      case "spigot":
+      case "bukkit":
+        return "bg-sky-100 text-sky-800 border-sky-200";
+      default:
+        return "bg-muted text-foreground";
+    }
+  }
+
   useEffect(() => {
     getSecretStatus("modrinth")
       .then((s) => setHasToken(s.exists))
@@ -94,6 +117,8 @@ export default function Mods() {
     setUnmatched([]);
     setLoading(true);
     fetchInstance();
+    // compute suffix against all instances for header disambiguation
+    computeNameSuffix();
     if (location.state?.mods) {
       setMods(location.state.mods);
       setLoading(false);
@@ -110,6 +135,32 @@ export default function Mods() {
       setUnmatched((prev) => prev.filter((f) => f !== location.state.resolved));
     }
   }, [instanceId, location.state]);
+
+  async function computeNameSuffix() {
+    try {
+      const [current, all] = await Promise.all([
+        getInstance(instanceId),
+        getInstances(),
+      ]);
+      const same = all.filter((i) => i.name === current.name);
+      if (same.length <= 1) {
+        setNameSuffix(0);
+        setInstance(current);
+        return;
+      }
+      same.sort((a, b) => {
+        const ta = Date.parse(a.created_at || "");
+        const tb = Date.parse(b.created_at || "");
+        if (!isNaN(ta) && !isNaN(tb) && ta !== tb) return ta - tb;
+        return (a.id || 0) - (b.id || 0);
+      });
+      const idx = same.findIndex((i) => i.id === current.id);
+      setNameSuffix(idx > 0 ? idx : 0);
+      setInstance(current);
+    } catch {
+      // fall back to existing fetch flow if any error
+    }
+  }
 
   useEffect(() => {
     return () => {
@@ -298,6 +349,9 @@ export default function Mods() {
         channel: m.channel,
         instance_id: m.instance_id,
       });
+      if (!Array.isArray(data)) {
+        throw new Error("Unexpected response");
+      }
       setMods(data);
       const updated = data.find((x) => x.id === m.id);
       if (updated && updated.available_version !== updated.current_version) {
@@ -339,33 +393,17 @@ export default function Mods() {
     }
   }
 
-  async function saveName(e) {
+  async function saveSettings(e) {
     e.preventDefault();
     if (!name.trim()) {
       toast.error("Name required");
       return;
     }
     try {
-      const updated = await updateInstance(instance.id, { name });
+      const updated = await updateInstance(instance.id, { name, enforce_same_loader: enforce });
       setInstance(updated);
       toast.success("Instance updated");
-      setEditingName(false);
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to save instance",
-      );
-    }
-  }
-
-  async function saveSettings(e) {
-    e.preventDefault();
-    try {
-      const updated = await updateInstance(instance.id, {
-        enforce_same_loader: enforce,
-      });
-      setInstance(updated);
-      toast.success("Instance updated");
-      setSettingsOpen(false);
+      setEditOpen(false);
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Failed to save instance",
@@ -453,82 +491,61 @@ export default function Mods() {
         <ArrowLeft className="h-4 w-4" aria-hidden="true" />
         Back to Instances
       </Link>
+      {!hasToken && (
+        <div
+          className="inline-flex max-w-xl items-center gap-sm rounded-md border border-yellow-200 bg-yellow-50 p-sm text-yellow-800"
+          role="status"
+        >
+          <Key className="h-4 w-4" aria-hidden />
+          <span className="text-sm">
+            Set a Modrinth token in Settings to enable update checks.
+          </span>
+        </div>
+      )}
       {instance && (
-        <div className="flex flex-wrap items-center gap-sm">
-          {editingName ? (
-            <form
-              className="flex flex-wrap items-center gap-sm flex-1"
-              onSubmit={saveName}
-            >
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="h-7 w-48"
-              />
-              <span className="text-lg font-normal text-muted-foreground capitalize">
-                ({instance.loader})
-              </span>
-              <Button size="sm" type="submit">
-                Save
-              </Button>
-              <Button
-                size="sm"
-                type="button"
-                variant="secondary"
-                onClick={() => setEditingName(false)}
-              >
-                Cancel
-              </Button>
-            </form>
-          ) : (
-            <h1 className="flex items-center gap-xs text-2xl font-bold flex-1">
-              {instance.name}
-              <span className="text-lg font-normal text-muted-foreground capitalize">
-                ({instance.loader})
-              </span>
-            </h1>
-          )}
-          <div className="flex flex-wrap items-center gap-sm ml-auto">
-            <Button
-              size="sm"
+        <div className="space-y-sm">
+          <div className="flex items-center gap-sm">
+            <h1 className="text-2xl font-bold truncate">{instance.name}{nameSuffix ? ` (${nameSuffix})` : ""}</h1>
+            <Badge
               variant="secondary"
+              className={`capitalize border ${loaderBadgeClass(instance.loader)}`}
+            >
+              {instance.loader || "unknown"}
+            </Badge>
+          </div>
+          <div className="flex flex-wrap items-center gap-sm">
+            <Button
+              variant="outline"
               onClick={handleCheckAll}
               disabled={checkingAll || !hasToken || mods.length === 0}
+              className="gap-xs"
             >
-              Check for Updates
-            </Button>
-            {!editingName && (
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => {
-                  setName(instance.name);
-                  setEditingName(true);
-                }}
-              >
-                Edit Name
-              </Button>
-            )}
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => {
-                setEnforce(instance.enforce_same_loader);
-                setSettingsOpen(true);
-              }}
-            >
-              Edit
+              <RefreshCw className="h-4 w-4" aria-hidden />
+              Check Updates
             </Button>
             {instance.pufferpanel_server_id && (
               <Button
-                size="sm"
                 variant="secondary"
                 onClick={handleResync}
                 disabled={resyncing}
+                className="gap-xs"
               >
-                {resyncing ? "Resyncing..." : "Resync"}
+                <RotateCw className="h-4 w-4" aria-hidden />
+                {resyncing ? "Resyncing" : "Resync"}
               </Button>
             )}
+            <Button
+              variant="outline"
+              onClick={() => {
+                setName(instance.name);
+                setEnforce(instance.enforce_same_loader);
+                setEditOpen(true);
+              }}
+              className="gap-xs"
+            >
+              <Pencil className="h-4 w-4" aria-hidden />
+              Edit
+            </Button>
           </div>
         </div>
       )}
@@ -834,11 +851,28 @@ export default function Mods() {
           </div>
         </>
       )}
-      <Modal open={settingsOpen} onClose={() => setSettingsOpen(false)}>
+      <Modal open={editOpen} onClose={() => setEditOpen(false)}>
         <form className="space-y-md" onSubmit={saveSettings}>
           <div className="space-y-xs">
+            <label htmlFor="inst_name" className="text-sm font-medium">
+              Name
+            </label>
+            <Input
+              id="inst_name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div className="space-y-xs">
             <span className="text-sm font-medium">Loader</span>
-            <p className="text-sm">{instance?.loader}</p>
+            <div>
+              <Badge
+                variant="secondary"
+                className={`capitalize border ${loaderBadgeClass(instance?.loader)}`}
+              >
+                {instance?.loader || "unknown"}
+              </Badge>
+            </div>
           </div>
           <div className="flex items-center gap-sm">
             <Checkbox
@@ -854,7 +888,7 @@ export default function Mods() {
             <Button
               type="button"
               variant="secondary"
-              onClick={() => setSettingsOpen(false)}
+              onClick={() => setEditOpen(false)}
             >
               Cancel
             </Button>
