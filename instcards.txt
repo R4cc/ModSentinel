@@ -1,0 +1,141 @@
+        err instanceof Error ? err.message : "Failed to delete instance",
+      );
+    }
+  }
+
+  return (
+    <div className="space-y-md">
+      <div className="grid gap-sm md:grid-cols-2 w-full max-w-3xl">
+        {!hasToken && (
+          <Card className="p-sm bg-yellow-50 border-yellow-200 text-yellow-800">
+            <div className="flex items-center gap-sm">
+              <Key className="h-4 w-4" aria-hidden />
+              <div>
+                <p className="text-sm font-medium">Modrinth token missing</p>
+                <p className="text-xs">
+                  Set a Modrinth token in Settings to enable update checks.
+                </p>
+              </div>
+            </div>
+          </Card>
+        )}
+        {!hasPuffer && (
+          <Card className="p-sm bg-yellow-50 border-yellow-200 text-yellow-800">
+            <div className="flex items-center gap-sm">
+              <Plug className="h-4 w-4" aria-hidden />
+              <div>
+                <p className="text-sm font-medium">PufferPanel not connected</p>
+                <p className="text-xs">
+                  Set PufferPanel credentials in Settings to enable sync.
+                </p>
+              </div>
+            </div>
+          </Card>
+        )}
+      </div>
+      <div className="flex justify-end md:justify-between gap-sm">
+        <Button onClick={openAdd}>Add instance</Button>
+        {hasPuffer && (
+          <Button
+            variant="secondary"
+            onClick={handleSync}
+            disabled={syncing}
+            aria-busy={syncing}
+          >
+            {syncing ? "Syncing..." : "Sync"}
+          </Button>
+        )}
+      </div>
+      {loading && (
+        <div className="grid grid-cols-1 gap-md sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Card key={i} className="p-md space-y-sm">
+              <Skeleton className="h-5 w-32" />
+              <Skeleton className="h-4 w-20" />
+              <Skeleton className="h-4 w-8" />
+            </Card>
+          ))}
+        </div>
+      )}
+      {!loading && error && (
+        <div className="flex flex-col items-center gap-sm">
+          <p className="text-sm text-muted-foreground">{error}</p>
+          <Button onClick={fetchInstances}>Retry</Button>
+        </div>
+      )}
+      {!loading && !error && instances.length === 0 && (
+        <EmptyState
+          icon={Server}
+          title="No instances"
+          message="You haven't added any instances yet."
+        />
+      )}
+      {!loading && !error && instances.length > 0 && (
+        <div
+          className="grid grid-cols-1 gap-md sm:grid-cols-2 lg:grid-cols-3"
+          data-testid="instance-grid"
+        >
+          {instances.map((inst) => (
+            <Card
+              key={inst.id}
+              role="link"
+              tabIndex={0}
+              onClick={() => navigate(`/instances/${inst.id}`)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") navigate(`/instances/${inst.id}`);
+              }}
+              aria-label={inst.name}
+              className="flex flex-col justify-between cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+            >
+              <CardHeader>
+                <CardTitle>{inst.name}</CardTitle>
+              </CardHeader>
+              <CardContent className="flex items-center justify-between text-sm">
+                <span className="capitalize">{inst.loader}</span>
+                <span>{inst.mod_count} mods</span>
+              </CardContent>
+              <CardFooter className="flex justify-end gap-xs">
+                <Button
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openEdit(inst);
+                  }}
+                >
+                  Edit
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openDelete(inst);
+                  }}
+                  aria-label="Delete instance"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </CardFooter>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <Modal open={open} onClose={() => setOpen(false)}>
+        <form className="space-y-md" onSubmit={handleSave}>
+          {hasPuffer && (
+            <div className="space-y-xs">
+              <label htmlFor="server" className="text-sm font-medium">
+                Server
+              </label>
+              {loadingServers ? (
+                <p className="text-sm">Loading...</p>
+              ) : serverError ? (
+                <div className="space-y-xs">
+                  <p className="text-sm">{serverError}</p>
+                  <Button
+                    type="button"
+                    onClick={fetchServers}
+                    disabled={loadingServers}
+                    aria-busy={loadingServers}
+                  >

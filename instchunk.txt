@@ -1,0 +1,121 @@
+    setOpen(true);
+    if (hasPuffer) fetchServers();
+  }
+
+  async function handleSave(e) {
+    e.preventDefault();
+    if (!selectedServer && !name.trim()) {
+      toast.error("Name required");
+      return;
+    }
+    if (selectedServer) {
+      try {
+        setScanning(true);
+        let res;
+        if (editing) {
+          res = await syncInstances(selectedServer, editing.id);
+        } else {
+          const created = await addInstance({
+            name: "",
+            loader: "",
+            enforce_same_loader: true,
+            pufferpanel_server_id: selectedServer,
+          });
+          res = await syncInstances(selectedServer, created.id);
+        }
+        toast.success("Synced");
+        setOpen(false);
+        fetchInstances();
+        navigate(`/instances/${res.instance.id}`, {
+          state: { unmatched: res.unmatched, mods: res.mods },
+        });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to sync");
+      } finally {
+        setScanning(false);
+      }
+      return;
+    }
+
+    if (editing) {
+      try {
+        const updated = await updateInstance(editing.id, { name });
+        setInstances((prev) =>
+          prev.map((i) => (i.id === updated.id ? { ...i, ...updated } : i)),
+        );
+        toast.success("Instance updated");
+        setOpen(false);
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to save instance",
+        );
+      }
+      return;
+    }
+
+    const tempId = Date.now();
+    const optimistic = {
+      id: tempId,
+      name,
+      loader,
+      enforce_same_loader: enforce,
+      mod_count: 0,
+    };
+    setInstances((prev) => [...prev, optimistic]);
+    setOpen(false);
+    try {
+      const created = await addInstance({
+        name,
+        loader,
+        enforce_same_loader: enforce,
+      });
+      setInstances((prev) =>
+        prev.map((i) => (i.id === tempId ? { ...created, mod_count: 0 } : i)),
+      );
+      toast.success("Instance added");
+      navigate(`/instances/${created.id}`);
+    } catch (err) {
+      setInstances((prev) => prev.filter((i) => i.id !== tempId));
+      toast.error(
+        err instanceof Error ? err.message : "Failed to save instance",
+      );
+    }
+  }
+
+  const [delState, setDelState] = useState({
+    open: false,
+    inst: null,
+    deleteMods: false,
+    targetId: null,
+  });
+
+  function openDelete(inst) {
+    const others = instances.filter((i) => i.id !== inst.id);
+    setDelState({
+      open: true,
+      inst,
+      deleteMods: others.length === 0,
+      targetId: others[0]?.id ?? null,
+    });
+  }
+
+  async function handleDelete(e) {
+    e.preventDefault();
+    const { inst, deleteMods, targetId } = delState;
+    if (!inst) return;
+    try {
+      await deleteInstance(
+        inst.id,
+        deleteMods ? undefined : targetId || undefined,
+      );
+      toast.success("Instance deleted");
+      setDelState({
+        open: false,
+        inst: null,
+        deleteMods: false,
+        targetId: null,
+      });
+      fetchInstances();
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to delete instance",

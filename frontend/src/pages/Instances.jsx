@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Server, Trash2 } from "lucide-react";
+import { Server, Trash2, Key, Plug, Package } from "lucide-react";
+import { Badge } from "@/components/ui/Badge.jsx";
 import { Button } from "@/components/ui/Button.jsx";
 import { Modal } from "@/components/ui/Modal.jsx";
 import { Input } from "@/components/ui/Input.jsx";
@@ -263,21 +264,58 @@ export default function Instances() {
     }
   }
 
+  function loaderBadgeClass(loader) {
+    switch ((loader || "").toLowerCase()) {
+      case "fabric":
+        return "bg-emerald-100 text-emerald-800 border-emerald-200";
+      case "forge":
+        return "bg-orange-100 text-orange-800 border-orange-200";
+      case "quilt":
+        return "bg-purple-100 text-purple-800 border-purple-200";
+      case "paper":
+      case "spigot":
+      case "bukkit":
+        return "bg-sky-100 text-sky-800 border-sky-200";
+      default:
+        return "bg-muted text-foreground";
+    }
+  }
+
   return (
     <div className="space-y-md">
-      <div className="min-h-5 space-y-xs">
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold">Instances</h1>
+      </div>
+      <div className="grid gap-sm md:grid-cols-2 w-full max-w-3xl">
         {!hasToken && (
-          <p className="text-sm text-muted-foreground">
-            Set a Modrinth token in Settings to enable update checks.
-          </p>
+          <Card className="p-sm bg-yellow-50 border-yellow-200 text-yellow-800">
+            <div className="flex items-center gap-sm">
+              <Key className="h-4 w-4" aria-hidden />
+              <div>
+                <p className="text-sm font-medium">Modrinth token missing</p>
+                <p className="text-xs">
+                  Set a Modrinth token in Settings to enable update checks.
+                </p>
+              </div>
+            </div>
+          </Card>
         )}
         {!hasPuffer && (
-          <p className="text-sm text-muted-foreground">
-            Set PufferPanel credentials in Settings to enable sync.
-          </p>
+          <Card className="p-sm bg-yellow-50 border-yellow-200 text-yellow-800">
+            <div className="flex items-center gap-sm">
+              <Plug className="h-4 w-4" aria-hidden />
+              <div>
+                <p className="text-sm font-medium">PufferPanel not connected</p>
+                <p className="text-xs">
+                  Set PufferPanel credentials in Settings to enable sync.
+                </p>
+              </div>
+            </div>
+          </Card>
         )}
       </div>
-      <div className="flex justify-end gap-sm">
+      <div className="flex justify-end md:justify-between gap-sm">
+        <Button onClick={openAdd}>Add instance</Button>
         {hasPuffer && (
           <Button
             variant="secondary"
@@ -288,7 +326,6 @@ export default function Instances() {
             {syncing ? "Syncing..." : "Sync"}
           </Button>
         )}
-        <Button onClick={openAdd}>Add instance</Button>
       </div>
       {loading && (
         <div className="grid grid-cols-1 gap-md sm:grid-cols-2 lg:grid-cols-3">
@@ -329,14 +366,24 @@ export default function Instances() {
                 if (e.key === "Enter") navigate(`/instances/${inst.id}`);
               }}
               aria-label={inst.name}
-              className="flex flex-col justify-between cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+              className="flex flex-col justify-between cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 transition-colors hover:border-primary/40 hover:shadow-lg"
             >
-              <CardHeader>
-                <CardTitle>{inst.name}</CardTitle>
+              <CardHeader className="pb-0">
+                <div className="flex items-center justify-between gap-sm">
+                  <CardTitle className="truncate">{inst.name}</CardTitle>
+                  <Badge
+                    variant="secondary"
+                    className={`capitalize border ${loaderBadgeClass(inst.loader)}`}
+                  >
+                    {inst.loader || "unknown"}
+                  </Badge>
+                </div>
               </CardHeader>
-              <CardContent className="flex items-center justify-between text-sm">
-                <span className="capitalize">{inst.loader}</span>
-                <span>{inst.mod_count} mods</span>
+              <CardContent className="pt-sm text-sm text-muted-foreground flex items-center justify-start">
+                <span className="flex items-center gap-xs">
+                  <Package className="h-4 w-4" aria-hidden />
+                  {inst.mod_count} mods
+                </span>
               </CardContent>
               <CardFooter className="flex justify-end gap-xs">
                 <Button

@@ -404,7 +404,7 @@ func goneHandler(w http.ResponseWriter, _ *http.Request) {
 
 // New builds a router with all HTTP handlers.
 func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
-	r := chi.NewRouter()
+    r := chi.NewRouter()
 
 	r.Use(securityHeaders)
 	r.Use(recordLatency)
@@ -452,10 +452,21 @@ func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 	})
 	r.Get("/api/dashboard", dashboardHandler(db))
 
-	static, _ := fs.Sub(dist, "frontend/dist")
-	r.Get("/*", serveStatic(static))
+    // In development, serve static assets from disk so changes appear without rebuilding Go.
+    // Set APP_ENV=development and run `npm run build:watch` in frontend.
+    if strings.ToLower(os.Getenv("APP_ENV")) != "production" {
+        if disk, err := fs.Sub(os.DirFS("."), "frontend/dist"); err == nil {
+            r.Get("/*", serveStatic(disk))
+        } else {
+            static, _ := fs.Sub(dist, "frontend/dist")
+            r.Get("/*", serveStatic(static))
+        }
+    } else {
+        static, _ := fs.Sub(dist, "frontend/dist")
+        r.Get("/*", serveStatic(static))
+    }
 
-	return r
+    return r
 }
 
 func serveFavicon(dist fs.FS) http.HandlerFunc {
