@@ -174,9 +174,9 @@ func Init(db *sql.DB) error {
 		return err
 	}
 
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS secrets (
+    _, err = db.Exec(`CREATE TABLE IF NOT EXISTS secrets (
        name TEXT PRIMARY KEY,
-       value BLOB NOT NULL,
+       value BLOB NOT NULL DEFAULT X'' ,
        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
    )`)
@@ -184,11 +184,11 @@ func Init(db *sql.DB) error {
 		return err
 	}
 
-	secretCols := map[string]string{
-		"value":      "BLOB NOT NULL",
-		"created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
-		"updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
-	}
+    secretCols := map[string]string{
+        "value":      "BLOB NOT NULL DEFAULT X''",
+        "created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+        "updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+    }
 
 	rows2, err := db.Query(`SELECT name FROM pragma_table_info('secrets')`)
 	if err != nil {
