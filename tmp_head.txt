@@ -1,0 +1,220 @@
+package handlers
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"database/sql"
+	"embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"sync"
+	"sync/atomic"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+
+	dbpkg "modsentinel/internal/db"
+	"modsentinel/internal/httpx"
+	logx "modsentinel/internal/logx"
+	mr "modsentinel/internal/modrinth"
+	oauth "modsentinel/internal/oauth"
+	pppkg "modsentinel/internal/pufferpanel"
+	"modsentinel/internal/secrets"
+	settingspkg "modsentinel/internal/settings"
+	tokenpkg "modsentinel/internal/token"
+
+	_ "modernc.org/sqlite"
+)
+
+//go:embed testdata/**
+var testFS embed.FS
+
+func TestMain(m *testing.M) {
+	os.Exit(m.Run())
+}
+
+func openTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:memdb1?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := dbpkg.Init(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	if err := dbpkg.Migrate(db); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+	stop := StartJobQueue(context.Background(), db)
+	t.Cleanup(func() { stop(context.Background()) })
+	return db
+}
+
+func waitJob(t *testing.T, db *sql.DB, id int) dbpkg.SyncJob {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		job, err := dbpkg.GetSyncJob(db, id)
+		if err != nil {
+			t.Fatalf("get job: %v", err)
+		}
+		switch job.Status {
+		case JobSucceeded, JobFailed, JobCanceled:
+			return *job
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for job, status %s", job.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+type fakeModClient struct{}
+
+func (fakeModClient) Project(ctx context.Context, slug string) (*mr.Project, error) {
+	return &mr.Project{Title: "Fake", IconURL: ""}, nil
+}
+
+func (fakeModClient) Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error) {
+	return []mr.Version{{
+		ID:            "1",
+		VersionNumber: "1.0",
+		VersionType:   "release",
+		DatePublished: time.Now(),
+		Files:         []mr.VersionFile{{URL: "http://example.com"}},
+	}}, nil
+}
+
+func (fakeModClient) Search(ctx context.Context, query string) (*mr.SearchResult, error) {
+	return &mr.SearchResult{Hits: []struct {
+		ProjectID string `json:"project_id"`
+		Slug      string `json:"slug"`
+		Title     string `json:"title"`
+	}{{ProjectID: "1", Slug: query, Title: "Fake"}}}, nil
+}
+
+func (fakeModClient) Resolve(ctx context.Context, slug string) (*mr.Project, string, error) {
+	return &mr.Project{Title: "Fake", IconURL: ""}, slug, nil
+}
+
+type matchClient struct{}
+
+func (matchClient) Project(ctx context.Context, slug string) (*mr.Project, error) {
+	return &mr.Project{Title: "Sodium", IconURL: ""}, nil
+}
+
+func (matchClient) Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error) {
+	return []mr.Version{{
+		ID:            "1",
+		VersionNumber: "1.0",
+		VersionType:   "release",
+		GameVersions:  []string{"1.20"},
+		Loaders:       []string{"fabric"},
+		Files:         []mr.VersionFile{{URL: "http://example.com"}},
+	}}, nil
+}
+
+func (matchClient) Resolve(ctx context.Context, slug string) (*mr.Project, string, error) {
+	return &mr.Project{Title: "Sodium", IconURL: ""}, "sodium", nil
+}
+
+type errClient struct{}
+
+func (errClient) Project(ctx context.Context, slug string) (*mr.Project, error) {
+	return nil, &mr.Error{Status: http.StatusUnauthorized}
+}
+
+func (errClient) Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error) {
+	return nil, &mr.Error{Status: http.StatusUnauthorized}
+}
+
+func (errClient) Search(ctx context.Context, query string) (*mr.SearchResult, error) {
+	return nil, &mr.Error{Status: http.StatusUnauthorized}
+}
+
+func (errClient) Resolve(ctx context.Context, slug string) (*mr.Project, string, error) {
+	return nil, "", &mr.Error{Status: http.StatusUnauthorized}
+}
+
+func (matchClient) Search(ctx context.Context, query string) (*mr.SearchResult, error) {
+	return &mr.SearchResult{Hits: []struct {
+		ProjectID string `json:"project_id"`
+		Slug      string `json:"slug"`
+		Title     string `json:"title"`
+	}{{ProjectID: "1", Slug: "sodium", Title: "Sodium"}}}, nil
+}
+
+func TestCreateModHandler_EnforceLoader(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	inst := &dbpkg.Instance{Name: "A", Loader: "fabric", EnforceSameLoader: true}
+	if err := dbpkg.InsertInstance(db, inst); err != nil {
+		t.Fatalf("insert instance: %v", err)
+	}
+
+	h := createModHandler(db)
+
+	payload := `{"url":"https://modrinth.com/mod/sodium","game_version":"1.20","loader":"forge","channel":"release","instance_id":` + strconv.Itoa(inst.ID) + `}`
+	req := httptest.NewRequest(http.MethodPost, "/api/mods", strings.NewReader(payload))
+	w := httptest.NewRecorder()
+
+	h(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d", w.Code)
+	}
+	var errResp httpx.Error
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if errResp.Message != "loader mismatch" {
+		t.Fatalf("want loader mismatch, got %q", errResp.Message)
+	}
+}
+
+func TestListModsHandler_ScopeAndCache(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	inst1 := &dbpkg.Instance{Name: "A", Loader: "fabric"}
+	if err := dbpkg.InsertInstance(db, inst1); err != nil {
+		t.Fatalf("insert inst1: %v", err)
+	}
+	inst2 := &dbpkg.Instance{Name: "B", Loader: "forge"}
+	if err := dbpkg.InsertInstance(db, inst2); err != nil {
+		t.Fatalf("insert inst2: %v", err)
+	}
+
+	if err := dbpkg.InsertMod(db, &dbpkg.Mod{Name: "M1", URL: "u1", InstanceID: inst1.ID}); err != nil {
+		t.Fatalf("insert mod1: %v", err)
+	}
+	if err := dbpkg.InsertMod(db, &dbpkg.Mod{Name: "M2", URL: "u2", InstanceID: inst2.ID}); err != nil {
+		t.Fatalf("insert mod2: %v", err)
+	}
+
+	h := listModsHandler(db)
+	req := httptest.NewRequest(http.MethodGet, "/api/mods?instance_id="+strconv.Itoa(inst1.ID), nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	if cc := w.Header().Get("Cache-Control"); cc != "max-age=60" {
+		t.Fatalf("cache-control %q", cc)
+	}
+	var mods []dbpkg.Mod

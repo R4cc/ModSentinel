@@ -99,11 +99,13 @@ func (fakeModClient) Versions(ctx context.Context, slug, gameVersion, loader str
 }
 
 func (fakeModClient) Search(ctx context.Context, query string) (*mr.SearchResult, error) {
-	return &mr.SearchResult{Hits: []struct {
-		ProjectID string `json:"project_id"`
-		Slug      string `json:"slug"`
-		Title     string `json:"title"`
-	}{{ProjectID: "1", Slug: query, Title: "Fake"}}}, nil
+    return &mr.SearchResult{Hits: []struct {
+        ProjectID   string `json:"project_id"`
+        Slug        string `json:"slug"`
+        Title       string `json:"title"`
+        Description string `json:"description"`
+        IconURL     string `json:"icon_url"`
+    }{{ProjectID: "1", Slug: query, Title: "Fake", Description: "", IconURL: ""}}}, nil
 }
 
 func (fakeModClient) Resolve(ctx context.Context, slug string) (*mr.Project, string, error) {
@@ -150,11 +152,13 @@ func (errClient) Resolve(ctx context.Context, slug string) (*mr.Project, string,
 }
 
 func (matchClient) Search(ctx context.Context, query string) (*mr.SearchResult, error) {
-	return &mr.SearchResult{Hits: []struct {
-		ProjectID string `json:"project_id"`
-		Slug      string `json:"slug"`
-		Title     string `json:"title"`
-	}{{ProjectID: "1", Slug: "sodium", Title: "Sodium"}}}, nil
+    return &mr.SearchResult{Hits: []struct {
+        ProjectID   string `json:"project_id"`
+        Slug        string `json:"slug"`
+        Title       string `json:"title"`
+        Description string `json:"description"`
+        IconURL     string `json:"icon_url"`
+    }{{ProjectID: "1", Slug: "sodium", Title: "Sodium", Description: "", IconURL: ""}}}, nil
 }
 
 func TestCreateModHandler_EnforceLoader(t *testing.T) {
