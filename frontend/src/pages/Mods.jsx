@@ -865,6 +865,7 @@ export default function Mods() {
                 <TableHead>Loader</TableHead>
                 <TableHead>Current</TableHead>
                 <TableHead>Available</TableHead>
+                <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
