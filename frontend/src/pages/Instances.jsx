@@ -206,6 +206,9 @@ export default function Instances() {
         // Track progress via SSE and show inline in the modal
         const es = new EventSource(`/api/jobs/${job.id}/events`);
         setJobSource(es);
+        // Close modal and refresh list immediately so the new instance appears
+        setOpen(false);
+        fetchInstances();
         es.onmessage = (ev) => {
           const data = JSON.parse(ev.data);
           setJobProgress(data);
@@ -221,7 +224,12 @@ export default function Instances() {
             if (data.status === "succeeded") {
               toast.success("Resynced");
               setOpen(false);
-              navigate(`/instances/${targetId}`);
+              const unmatched = Array.isArray(data.failures)
+                ? Array.from(new Set(data.failures.map((f) => f.name).filter(Boolean)))
+                : [];
+              navigate(`/instances/${targetId}`,
+                unmatched.length > 0 ? { state: { unmatched } } : undefined,
+              );
             } else if (data.status === "failed") {
               toast.error("Sync failed");
             } else {
@@ -349,7 +357,7 @@ export default function Instances() {
       </div>
       {/* Sync indicator card when a job is running or just finished from this page */}
       {jobProgress && (
-        <div className="rounded border p-sm space-y-xs">
+        <div className="rounded border p-sm space-y-xs w-full max-w-3xl">
           <div className="flex items-center justify-between gap-sm">
             <div className="flex items-center gap-sm">
               <RotateCw

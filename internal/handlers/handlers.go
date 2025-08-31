@@ -524,7 +524,8 @@ func listInstancesHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "max-age=60")
+		// Avoid stale list after add/sync flows
+		w.Header().Set("Cache-Control", "no-store")
 		json.NewEncoder(w).Encode(instances)
 	}
 }
@@ -543,7 +544,8 @@ func getInstanceHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "max-age=60")
+		// Avoid stale instance stats during/after sync
+		w.Header().Set("Cache-Control", "no-store")
 		json.NewEncoder(w).Encode(inst)
 	}
 }

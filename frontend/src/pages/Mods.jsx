@@ -15,6 +15,7 @@ import {
   ArrowLeft,
   Pencil,
   Key,
+  AlertTriangle,
 } from "lucide-react";
 import { Input } from "@/components/ui/Input.jsx";
 import { Select } from "@/components/ui/Select.jsx";
@@ -250,6 +251,12 @@ export default function Mods() {
         setResyncing(false);
         fetchInstance();
         fetchMods();
+        // Surface unresolved files as virtual entries
+        if (Array.isArray(data.failures) && data.failures.length > 0) {
+          setUnmatched(Array.from(new Set(data.failures.map((f) => f.name).filter(Boolean))));
+        } else {
+          setUnmatched([]);
+        }
         if (data.status === "succeeded") {
           toast.success("Resynced");
         } else {
@@ -323,10 +330,34 @@ export default function Mods() {
     setPage(1);
   }, [filter, sort, status, instanceId]);
 
-  const filtered = mods.filter((m) =>
+  // Build virtual unresolved entries from progress (when finished) and from navigation state
+  const unresolvedSet = new Set(unmatched);
+  if (progress && progress.status !== "running" && Array.isArray(progress.failures)) {
+    for (const f of progress.failures) if (f?.name) unresolvedSet.add(f.name);
+  }
+  const virtuals = Array.from(unresolvedSet).map((name, i) => ({
+    id: -1000 - i,
+    name,
+    icon_url: "",
+    url: "",
+    game_version: "",
+    loader: instance?.loader || "",
+    channel: "",
+    current_version: "",
+    available_version: "",
+    download_url: "",
+    instance_id: instanceId,
+    virtual: true,
+    file: name,
+  }));
+
+  const withVirtuals = [...mods, ...virtuals];
+
+  const filtered = withVirtuals.filter((m) =>
     m.name.toLowerCase().includes(filter.toLowerCase()),
   );
   const statusFiltered = filtered.filter((m) => {
+    if (m.virtual) return status === "all"; // only show virtuals in 'all'
     if (status === "up_to_date")
       return m.current_version === m.available_version;
     if (status === "outdated") return m.current_version !== m.available_version;
@@ -551,7 +582,7 @@ export default function Mods() {
       )}
       {/* Sync status / progress card */}
       {(progress || instance?.last_sync_at) && (
-        <div className="rounded border p-sm space-y-xs">
+        <div className="rounded border p-sm space-y-xs w-full max-w-3xl">
           <div className="flex items-center justify-between gap-sm">
             <div className="flex items-center gap-sm">
               <RotateCw
@@ -851,7 +882,21 @@ export default function Mods() {
                           String(m.id)
                         }
                       />
-                      {m.name || m.url}
+                      <span className="flex items-center gap-xs">
+                        {m.name || m.url}
+                        {m.virtual && (
+                          <Tooltip text="Mod could not be matched">
+                            <button
+                              type="button"
+                              className="text-red-600 hover:text-red-700"
+                              onClick={() => openAddMod(m.file || m.name)}
+                              aria-label="Resolve unmatched mod"
+                            >
+                              <AlertTriangle className="h-4 w-4" aria-hidden />
+                            </button>
+                          </Tooltip>
+                        )}
+                      </span>
                     </TableCell>
                     <TableCell>{m.game_version}</TableCell>
                     <TableCell>{m.loader}</TableCell>
@@ -864,7 +909,7 @@ export default function Mods() {
                           onClick={() => handleCheck(m)}
                           aria-label="Check for updates"
                           className="h-8 px-sm"
-                          disabled={!hasToken}
+                          disabled={m.virtual || !hasToken}
                         >
                           <RefreshCw className="h-4 w-4" aria-hidden="true" />
                         </Button>
@@ -884,7 +929,7 @@ export default function Mods() {
                           rel={projectUrl ? "noopener" : undefined}
                           aria-label="Open project page"
                           className="h-8 px-sm"
-                          disabled={!isModrinth}
+                          disabled={m.virtual || !isModrinth}
                         >
                           <ExternalLink
                             className="h-4 w-4"
@@ -892,16 +937,18 @@ export default function Mods() {
                           />
                         </Button>
                       </Tooltip>
-                      <Tooltip text="Delete mod">
-                        <Button
-                          variant="outline"
-                          onClick={() => handleDelete(m.id)}
-                          aria-label="Delete mod"
-                          className="h-8 px-sm"
-                        >
-                          <Trash2 className="h-4 w-4" aria-hidden="true" />
-                        </Button>
-                      </Tooltip>
+                      {!m.virtual && (
+                        <Tooltip text="Delete mod">
+                          <Button
+                            variant="outline"
+                            onClick={() => handleDelete(m.id)}
+                            aria-label="Delete mod"
+                            className="h-8 px-sm"
+                          >
+                            <Trash2 className="h-4 w-4" aria-hidden="true" />
+                          </Button>
+                        </Tooltip>
+                      )}
                     </TableCell>
                   </TableRow>
                 );
