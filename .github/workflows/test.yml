@@ -1,24 +1,70 @@
-name: test
+name: CI
 
 on:
   push:
   pull_request:
 
 jobs:
-  test:
+  backend-unit-tests:
+    name: Backend Unit Tests (Go)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
-      - run: go test ./...
-      - uses: actions/setup-node@v4
+          go-version: '1.24.x'
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -count=1 ./...
+      - name: Build backend (ensures go:embed succeeds)
+        run: |
+          # Frontend dist is committed; build verifies embedding works
+          CGO_ENABLED=0 go build -trimpath -o modsentinel
+
+  frontend-unit-tests:
+    name: Frontend Unit Tests (Vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
+      - name: Install deps
         working-directory: frontend
-      - run: npm test || npm run build
+        run: npm ci
+      - name: Run unit tests
         working-directory: frontend
+        env:
+          CI: '1'
+        run: npm run test
+      - name: Build frontend (bundle sanity check)
+        working-directory: frontend
+        run: npm run build
+
+  container-smoke-build:
+    name: Container Build (Smoke Test)
+    runs-on: ubuntu-latest
+    needs: [backend-unit-tests, frontend-unit-tests]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: false
+          platforms: linux/amd64
+          tags: local/modsentinel:test
