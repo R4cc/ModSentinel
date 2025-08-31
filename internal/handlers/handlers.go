@@ -313,34 +313,40 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 }
 
 func securityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		style := "style-src 'self'"
-		ctx := r.Context()
-		if os.Getenv("APP_ENV") == "production" {
-			nonceBytes := make([]byte, 16)
-			if _, err := rand.Read(nonceBytes); err == nil {
-				nonce := base64.StdEncoding.EncodeToString(nonceBytes)
-				style += " 'nonce-" + nonce + "'"
-				ctx = context.WithValue(ctx, nonceCtxKey{}, nonce)
-			}
-		} else {
-			style += " 'unsafe-inline'"
-		}
-		connect := "connect-src 'self'"
-		if host := pppkg.APIHost(); host != "" {
-			connect += " " + host
-		}
-		csp := strings.Join([]string{
-			"default-src 'self'",
-			"frame-ancestors 'none'",
-			"base-uri 'none'",
-			style,
-			connect,
-			"img-src 'self' data: https:",
-		}, "; ")
-		w.Header().Set("Content-Security-Policy", csp)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        // Split style policy for elements vs. attributes to avoid blocking
+        // library-provided inline style attributes while keeping <style> tags
+        // protected by a nonce in production.
+        styleElem := "style-src-elem 'self'"
+        styleAttr := "style-src-attr 'unsafe-inline'"
+        ctx := r.Context()
+        if os.Getenv("APP_ENV") == "production" {
+            nonceBytes := make([]byte, 16)
+            if _, err := rand.Read(nonceBytes); err == nil {
+                nonce := base64.StdEncoding.EncodeToString(nonceBytes)
+                styleElem += " 'nonce-" + nonce + "'"
+                ctx = context.WithValue(ctx, nonceCtxKey{}, nonce)
+            }
+        } else {
+            // In development, allow inline styles fully for convenience
+            styleElem += " 'unsafe-inline'"
+        }
+        connect := "connect-src 'self'"
+        if host := pppkg.APIHost(); host != "" {
+            connect += " " + host
+        }
+        csp := strings.Join([]string{
+            "default-src 'self'",
+            "frame-ancestors 'none'",
+            "base-uri 'none'",
+            styleElem,
+            styleAttr,
+            connect,
+            "img-src 'self' data: https:",
+        }, "; ")
+        w.Header().Set("Content-Security-Policy", csp)
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
 }
 
 func csrfMiddleware(next http.Handler) http.Handler {
@@ -1073,7 +1079,7 @@ func testPufferHandler() http.HandlerFunc {
 }
 
 func listServersHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+        return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		status := http.StatusOK
 		cacheHit := false
@@ -1102,55 +1108,28 @@ func listServersHandler(db *sql.DB) http.HandlerFunc {
 				servers = ent.servers
 			}
 		}
-		if servers == nil {
-			var shared bool
-			var v any
-			v, err, shared = listServersSF.Do(creds.BaseURL, func() (any, error) {
-				svs, us, err := pppkg.ListServersWithStatus(r.Context())
-				upstreamStatus = us
-				if err != nil {
-					return nil, err
-				}
-				return svs, nil
-			})
-			deduped = shared
-			if err != nil {
-				status = writePPError(w, r, err)
-				return
-			}
-			servers = v.([]pppkg.Server)
-			listServersCache.Store(creds.BaseURL, listServersEntry{servers: servers, exp: time.Now().Add(listServersTTL)})
-		}
-		for _, s := range servers {
-			var id int
-			err := db.QueryRow(`SELECT id FROM instances WHERE pufferpanel_server_id=?`, s.ID).Scan(&id)
-			if err == sql.ErrNoRows {
-				name := sanitizeName(s.Name)
-				rn := []rune(name)
-				if len(rn) > dbpkg.InstanceNameMaxLen {
-					log.Warn().Str("server_id", s.ID).Msg("pufferpanel server name truncated")
-					name = string(rn[:dbpkg.InstanceNameMaxLen])
-				}
-				inst := dbpkg.Instance{Name: name, EnforceSameLoader: true, PufferpanelServerID: s.ID}
-				if err := validatePayload(&inst); err != nil {
-					status = http.StatusBadRequest
-					httpx.Write(w, r, err)
-					return
-				}
-				if err := dbpkg.InsertInstance(db, &inst); err != nil {
-					status = http.StatusInternalServerError
-					httpx.Write(w, r, httpx.Internal(err))
-					return
-				}
-			} else if err != nil {
-				status = http.StatusInternalServerError
-				httpx.Write(w, r, httpx.Internal(err))
-				return
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(servers)
-	}
+            if servers == nil {
+                var shared bool
+                var v any
+                v, err, shared = listServersSF.Do(creds.BaseURL, func() (any, error) {
+                    svs, us, err := pppkg.ListServersWithStatus(r.Context())
+                    upstreamStatus = us
+                    if err != nil {
+                        return nil, err
+                    }
+                    return svs, nil
+                })
+                deduped = shared
+                if err != nil {
+                    status = writePPError(w, r, err)
+                    return
+                }
+                servers = v.([]pppkg.Server)
+                listServersCache.Store(creds.BaseURL, listServersEntry{servers: servers, exp: time.Now().Add(listServersTTL)})
+            }
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(servers)
+        }
 }
 
 func syncHandler(db *sql.DB) http.HandlerFunc {
