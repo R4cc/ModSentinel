@@ -64,7 +64,7 @@ export default function Mods() {
   const status = searchParams.get("status") || "all";
   const [sort, setSort] = useState("name-asc");
   const [page, setPage] = useState(1);
-  const perPage = 10;
+  const perPage = 40;
   const { confirm, ConfirmModal } = useConfirm();
   const [hasToken, setHasToken] = useState(true);
   const openAddMod = useOpenAddMod(instanceId);

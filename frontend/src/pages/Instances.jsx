@@ -26,6 +26,7 @@ import {
   getPufferServers,
 } from "@/lib/api.ts";
 import { toast } from "@/lib/toast.ts";
+import { jobs } from "@/lib/api.ts";
 
 const loaders = [
   { id: "fabric", label: "Fabric" },
@@ -52,6 +53,14 @@ export default function Instances() {
   const [loadingServers, setLoadingServers] = useState(false);
   const [serverError, setServerError] = useState("");
   const [scanning, setScanning] = useState(false);
+  const [jobProgress, setJobProgress] = useState(null);
+  const [jobSource, setJobSource] = useState(null);
+
+  useEffect(() => {
+    return () => {
+      if (jobSource) jobSource.close();
+    };
+  }, [jobSource]);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -177,26 +186,49 @@ export default function Instances() {
     if (selectedServer) {
       try {
         setScanning(true);
-        let res;
-        if (editing) {
-          res = await syncInstances(selectedServer, editing.id);
-        } else {
+        setJobProgress(null);
+        // Determine target instance id
+        let targetId = editing?.id;
+        if (!editing) {
           const created = await addInstance({
             name: "",
             loader: "",
             enforce_same_loader: true,
             pufferpanel_server_id: selectedServer,
           });
-          res = await syncInstances(selectedServer, created.id);
+          targetId = created.id;
         }
-        toast.success("Synced");
-        setOpen(false);
-        fetchInstances();
-        navigate(`/instances/${res.instance.id}`, {
-          state: { unmatched: res.unmatched, mods: res.mods },
-        });
+        const job = await syncInstances(selectedServer, targetId);
+        // Track progress via SSE and show inline in the modal
+        const es = new EventSource(`/api/jobs/${job.id}/events`);
+        setJobSource(es);
+        es.onmessage = (ev) => {
+          const data = JSON.parse(ev.data);
+          setJobProgress(data);
+          if (
+            data.status === "succeeded" ||
+            data.status === "failed" ||
+            data.status === "canceled"
+          ) {
+            es.close();
+            setJobSource(null);
+            setScanning(false);
+            fetchInstances();
+            if (data.status === "succeeded") {
+              toast.success("Resynced");
+              setOpen(false);
+              navigate(`/instances/${targetId}`);
+            } else if (data.status === "failed") {
+              toast.error("Sync failed");
+            } else {
+              toast.error("Sync canceled");
+            }
+          }
+        };
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to sync");
+        // Close the modal on error to avoid a stuck state
+        setOpen(false);
       } finally {
         setScanning(false);
       }
@@ -477,10 +509,63 @@ export default function Instances() {
                   ))}
                 </Select>
               )}
+              {jobProgress && (
+                <div className="mt-sm space-y-xs">
+                  <p className="text-sm">
+                    Sync progress: {jobProgress.processed}/{jobProgress.total} —
+                    Succeeded {jobProgress.succeeded}, Failed {jobProgress.failed}
+                  </p>
+                  {jobProgress.failures?.length > 0 && (
+                    <div className="max-h-32 overflow-auto border rounded p-xs text-sm">
+                      {jobProgress.failures.map((f, i) => (
+                        <div key={i} className="flex justify-between gap-sm">
+                          <span className="truncate" title={f.name}>{f.name}</span>
+                          <span className="text-destructive truncate" title={f.error}>
+                            {f.error}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {jobProgress.failed > 0 && (
+                    <div className="flex gap-sm">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={async () => {
+                          try {
+                            await jobs.retry(jobProgress.id);
+                            const es = new EventSource(`/api/jobs/${jobProgress.id}/events`);
+                            setJobSource(es);
+                            es.onmessage = (ev) => {
+                              const data = JSON.parse(ev.data);
+                              setJobProgress(data);
+                              if (
+                                data.status === "succeeded" ||
+                                data.status === "failed" ||
+                                data.status === "canceled"
+                              ) {
+                                es.close();
+                                setJobSource(null);
+                              }
+                            };
+                          } catch (e) {
+                            toast.error(
+                              e instanceof Error ? e.message : "Failed to retry",
+                            );
+                          }
+                        }}
+                      >
+                        Retry failed
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
           {selectedServer ? (
-            scanning && <p className="text-sm">Scanning...</p>
+            scanning && !jobProgress && <p className="text-sm">Starting sync...</p>
           ) : (
             <>
               <div className="space-y-xs">

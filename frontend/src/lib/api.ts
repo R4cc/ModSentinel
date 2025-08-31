@@ -265,11 +265,9 @@ export interface PufferServer {
   name: string;
 }
 
-export interface SyncResult {
-  instance: Instance;
-  unmatched: string[];
-  mods: Mod[];
-}
+// Historical: SyncResult was returned when sync ran inline.
+// The backend now enqueues a job and returns a Job. Clients should
+// track progress via /api/jobs/{id} and /events.
 
 export interface Job {
   id: number;
@@ -324,7 +322,7 @@ export async function getPufferServers(): Promise<PufferServer[]> {
 export async function syncInstances(
   serverId: string,
   instanceId: number,
-): Promise<SyncResult> {
+): Promise<Job> {
   const res = await apiFetch(`/api/instances/${instanceId}/sync`, {
     method: "POST",
     headers: {

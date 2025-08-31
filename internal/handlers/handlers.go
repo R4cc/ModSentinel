@@ -599,6 +599,18 @@ func createInstanceHandler(db *sql.DB) http.HandlerFunc {
                 }
             }
         }
+        // Fallback if derived name is still empty
+        if strings.TrimSpace(name) == "" {
+            base := "Server"
+            if serverIDSnake != "" {
+                base = fmt.Sprintf("Server %s", serverIDSnake)
+            }
+            rn := []rune(base)
+            if len(rn) > dbpkg.InstanceNameMaxLen {
+                base = string(rn[:dbpkg.InstanceNameMaxLen])
+            }
+            name = base
+        }
         inst := dbpkg.Instance{ID: 0, Name: name, Loader: strings.ToLower(req.Loader), PufferpanelServerID: serverID, EnforceSameLoader: enforce}
         tx, err := db.BeginTx(r.Context(), nil)
         if err != nil {
@@ -1647,8 +1659,15 @@ func serveStatic(static fs.FS) http.HandlerFunc {
 		}
 		if path == "/index.html" {
 			if nonce, ok := r.Context().Value(nonceCtxKey{}).(string); ok && nonce != "" {
+				// Expose nonce via meta tag for client-side frameworks if needed
 				meta := []byte("<meta name=\"csp-nonce\" content=\"" + nonce + "\">")
 				data = bytes.Replace(data, []byte("<head>"), []byte("<head>\n    "+string(meta)), 1)
+				// Also add nonce attribute to inline style tags to satisfy style-src-elem
+				// Replace <style> and <style ...> without nonce
+				s := string(data)
+				s = strings.ReplaceAll(s, "<style>", "<style nonce=\""+nonce+"\">")
+				s = strings.ReplaceAll(s, "<style ", "<style nonce=\""+nonce+"\" ")
+				data = []byte(s)
 			}
 		}
 		http.ServeContent(w, r, path, time.Now(), bytes.NewReader(data))
