@@ -885,16 +885,10 @@ export default function Mods() {
                       <span className="flex items-center gap-xs">
                         {m.name || m.url}
                         {m.virtual && (
-                          <Tooltip text="Mod could not be matched">
-                            <button
-                              type="button"
-                              className="text-red-600 hover:text-red-700"
-                              onClick={() => openAddMod(m.file || m.name)}
-                              aria-label="Resolve unmatched mod"
-                            >
-                              <AlertTriangle className="h-4 w-4" aria-hidden />
-                            </button>
-                          </Tooltip>
+                          <span className="inline-flex items-center gap-1 text-xs text-red-600" role="status">
+                            <AlertTriangle className="h-4 w-4" aria-hidden />
+                            Could not be matched
+                          </span>
                         )}
                       </span>
                     </TableCell>
@@ -903,51 +897,62 @@ export default function Mods() {
                     <TableCell>{m.current_version}</TableCell>
                     <TableCell>{m.available_version}</TableCell>
                     <TableCell className="flex gap-xs">
-                      <Tooltip text="Check for updates">
+                      {m.virtual ? (
                         <Button
                           variant="outline"
-                          onClick={() => handleCheck(m)}
-                          aria-label="Check for updates"
+                          onClick={() => openAddMod(m.file || m.name)}
+                          aria-label="Match mod"
                           className="h-8 px-sm"
-                          disabled={m.virtual || !hasToken}
                         >
-                          <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                          Match mod
                         </Button>
-                      </Tooltip>
-                      <Tooltip
-                        text={
-                          isModrinth
-                            ? "Open project page"
-                            : "Project page available only for Modrinth mods"
-                        }
-                      >
-                        <Button
-                          variant="outline"
-                          as={projectUrl ? "a" : "button"}
-                          href={projectUrl || undefined}
-                          target={projectUrl ? "_blank" : undefined}
-                          rel={projectUrl ? "noopener" : undefined}
-                          aria-label="Open project page"
-                          className="h-8 px-sm"
-                          disabled={m.virtual || !isModrinth}
-                        >
-                          <ExternalLink
-                            className="h-4 w-4"
-                            aria-hidden="true"
-                          />
-                        </Button>
-                      </Tooltip>
-                      {!m.virtual && (
-                        <Tooltip text="Delete mod">
-                          <Button
-                            variant="outline"
-                            onClick={() => handleDelete(m.id)}
-                            aria-label="Delete mod"
-                            className="h-8 px-sm"
+                      ) : (
+                        <>
+                          <Tooltip text="Check for updates">
+                            <Button
+                              variant="outline"
+                              onClick={() => handleCheck(m)}
+                              aria-label="Check for updates"
+                              className="h-8 px-sm"
+                              disabled={!hasToken}
+                            >
+                              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                            </Button>
+                          </Tooltip>
+                          <Tooltip
+                            text={
+                              isModrinth
+                                ? "Open project page"
+                                : "Project page available only for Modrinth mods"
+                            }
                           >
-                            <Trash2 className="h-4 w-4" aria-hidden="true" />
-                          </Button>
-                        </Tooltip>
+                            <Button
+                              variant="outline"
+                              as={projectUrl ? "a" : "button"}
+                              href={projectUrl || undefined}
+                              target={projectUrl ? "_blank" : undefined}
+                              rel={projectUrl ? "noopener" : undefined}
+                              aria-label="Open project page"
+                              className="h-8 px-sm"
+                              disabled={!isModrinth}
+                            >
+                              <ExternalLink
+                                className="h-4 w-4"
+                                aria-hidden="true"
+                              />
+                            </Button>
+                          </Tooltip>
+                          <Tooltip text="Delete mod">
+                            <Button
+                              variant="outline"
+                              onClick={() => handleDelete(m.id)}
+                              aria-label="Delete mod"
+                              className="h-8 px-sm"
+                            >
+                              <Trash2 className="h-4 w-4" aria-hidden="true" />
+                            </Button>
+                          </Tooltip>
+                        </>
                       )}
                     </TableCell>
                   </TableRow>
