@@ -1426,8 +1426,19 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
 		}
 		sort.Strings(files)
 	}
-	prog.setTotal(len(files))
-	matched := make([]dbpkg.Mod, 0)
+    prog.setTotal(len(files))
+    matched := make([]dbpkg.Mod, 0)
+
+    // Build a quick lookup of existing mods by canonical URL to avoid duplicates
+    existingMods, err := dbpkg.ListMods(db, inst.ID)
+    if err != nil {
+        httpx.Write(w, r, httpx.Internal(err))
+        return
+    }
+    existingByURL := make(map[string]dbpkg.Mod, len(existingMods))
+    for _, em := range existingMods {
+        existingByURL[strings.TrimSpace(strings.ToLower(em.URL))] = em
+    }
 	unmatched := make([]string, 0, len(files))
 
 	for _, f := range files {
@@ -1502,14 +1513,14 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                         _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
                         continue
                }
-		m := dbpkg.Mod{
-			Name:           proj.Title,
-			IconURL:        proj.IconURL,
-			URL:            fmt.Sprintf("https://modrinth.com/mod/%s", slug),
-			InstanceID:     inst.ID,
-			Channel:        strings.ToLower(v.VersionType),
-			CurrentVersion: v.VersionNumber,
-		}
+        m := dbpkg.Mod{
+            Name:           proj.Title,
+            IconURL:        proj.IconURL,
+            URL:            fmt.Sprintf("https://modrinth.com/mod/%s", slug),
+            InstanceID:     inst.ID,
+            Channel:        strings.ToLower(v.VersionType),
+            CurrentVersion: v.VersionNumber,
+        }
 		if len(v.GameVersions) > 0 {
 			m.GameVersion = v.GameVersions[0]
 		}
@@ -1518,9 +1529,9 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
 		} else {
 			m.Loader = inst.Loader
 		}
-		if len(v.Files) > 0 {
-			m.DownloadURL = v.Files[0].URL
-		}
+        if len(v.Files) > 0 {
+            m.DownloadURL = v.Files[0].URL
+        }
                if err := populateAvailableVersion(ctx, &m, slug); err != nil {
                         if ctx.Err() != nil {
                                 return
@@ -1528,6 +1539,27 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                         unmatched = append(unmatched, f)
                         prog.fail(f, err)
                         _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
+                        continue
+               }
+               // Deduplicate by canonical URL per instance. Update existing instead of inserting.
+               key := strings.TrimSpace(strings.ToLower(m.URL))
+               if prev, ok := existingByURL[key]; ok {
+                        // Update fields if changed to reflect current scan
+                        m.ID = prev.ID
+                        if prev.Name != m.Name || prev.IconURL != m.IconURL || prev.GameVersion != m.GameVersion || prev.Loader != m.Loader || prev.Channel != m.Channel || prev.CurrentVersion != m.CurrentVersion || prev.AvailableVersion != m.AvailableVersion || prev.AvailableChannel != m.AvailableChannel || prev.DownloadURL != m.DownloadURL {
+                                if err := dbpkg.UpdateMod(db, &m); err != nil {
+                                        if ctx.Err() != nil {
+                                                return
+                                        }
+                                        unmatched = append(unmatched, f)
+                                        prog.fail(f, err)
+                                        _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
+                                        continue
+                                }
+                        }
+                        matched = append(matched, m)
+                        prog.success()
+                        _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobSucceeded)
                         continue
                }
                if err := dbpkg.InsertMod(db, &m); err != nil {
@@ -1539,6 +1571,8 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                         _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
                         continue
                }
+               // Track newly inserted so subsequent duplicates in same run update instead of reinsert
+               existingByURL[key] = m
                matched = append(matched, m)
                prog.success()
                _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobSucceeded)
