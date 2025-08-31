@@ -32,7 +32,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-//go:embed all:frontend/dist favicon.ico
+//go:embed frontend/dist/* frontend/dist/assets/* favicon.ico
 var distFS embed.FS
 
 func resolveDBPath(p string) string {

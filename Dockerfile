@@ -1,15 +1,39 @@
-# Build stage
+########## Build stage ##########
 FROM golang:1.24-alpine AS build
+
 WORKDIR /src
+
+# Install Node.js for frontend build
+RUN apk add --no-cache nodejs npm
+
+# Go deps (better layer caching)
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
-RUN apk add --no-cache nodejs npm
-RUN (cd frontend && npm ci && npm run build)
-RUN CGO_ENABLED=0 go build -o modsentinel
 
-# Final stage
-FROM gcr.io/distroless/static
+# Frontend deps (better layer caching)
+COPY frontend/package*.json frontend/
+RUN npm ci --prefix frontend
+
+# Copy the rest of the source
+COPY . .
+
+# Build frontend (must exist before go:embed)
+RUN npm run build --prefix frontend \
+    && test -f frontend/dist/index.html
+
+# Build statically-linked server
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /modsentinel
+
+########## Final stage ##########
+# Use distroless base so HTTPS calls have CA certificates available.
+FROM gcr.io/distroless/base-debian12:nonroot
+
 WORKDIR /
-COPY --from=build /src/modsentinel /modsentinel
+
+COPY --from=build /modsentinel /modsentinel
+
+ENV APP_ENV=production
+EXPOSE 8080
+USER nonroot:nonroot
+
 ENTRYPOINT ["/modsentinel"]
