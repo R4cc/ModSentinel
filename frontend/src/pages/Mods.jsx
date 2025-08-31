@@ -493,7 +493,7 @@ export default function Mods() {
       </Link>
       {!hasToken && (
         <div
-          className="inline-flex max-w-xl items-center gap-sm rounded-md border border-yellow-200 bg-yellow-50 p-sm text-yellow-800"
+          className="mt-sm flex max-w-xl items-center gap-sm rounded-md border border-yellow-200 bg-yellow-50 p-sm text-yellow-800"
           role="status"
         >
           <Key className="h-4 w-4" aria-hidden />
@@ -611,11 +611,6 @@ export default function Mods() {
         </div>
       )}
       <div className="min-h-5 space-y-xs">
-        {!hasToken && (
-          <p className="text-sm text-muted-foreground">
-            Set a Modrinth token in Settings to enable update checks.
-          </p>
-        )}
         {instance?.pufferpanel_server_id && !instance?.last_sync_at && (
           <p className="text-sm text-muted-foreground">
             Instance has never been synced from PufferPanel.
