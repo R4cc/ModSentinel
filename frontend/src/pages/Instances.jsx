@@ -47,6 +47,7 @@ export default function Instances() {
   const [enforce, setEnforce] = useState(true);
   const [hasToken, setHasToken] = useState(true);
   const [hasPuffer, setHasPuffer] = useState(false);
+  const [pufferLoaded, setPufferLoaded] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [servers, setServers] = useState([]);
   const [selectedServer, setSelectedServer] = useState("");
@@ -55,6 +56,7 @@ export default function Instances() {
   const [scanning, setScanning] = useState(false);
   const [jobProgress, setJobProgress] = useState(null);
   const [jobSource, setJobSource] = useState(null);
+  const [showFailures, setShowFailures] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -69,9 +71,11 @@ export default function Instances() {
 
   useEffect(() => {
     function check() {
+      setPufferLoaded(false);
       getSecretStatus("pufferpanel")
         .then((s) => setHasPuffer(s.exists))
-        .catch(() => setHasPuffer(false));
+        .catch(() => setHasPuffer(false))
+        .finally(() => setPufferLoaded(true));
     }
     check();
     window.addEventListener("pufferpanel-change", check);
@@ -163,7 +167,7 @@ export default function Instances() {
     setSelectedServer("");
     setServerError("");
     setOpen(true);
-    if (hasPuffer) fetchServers();
+    if (pufferLoaded && hasPuffer) fetchServers();
   }
 
   function openEdit(inst) {
@@ -174,7 +178,7 @@ export default function Instances() {
     setSelectedServer(inst.pufferpanel_server_id || "");
     setServerError("");
     setOpen(true);
-    if (hasPuffer) fetchServers();
+    if (pufferLoaded && hasPuffer) fetchServers();
   }
 
   async function handleSave(e) {
@@ -343,6 +347,89 @@ export default function Instances() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Instances</h1>
       </div>
+      {/* Sync indicator card when a job is running or just finished from this page */}
+      {jobProgress && (
+        <div className="rounded border p-sm space-y-xs">
+          <div className="flex items-center justify-between gap-sm">
+            <div className="flex items-center gap-sm">
+              <RotateCw
+                className={
+                  jobProgress.status === "running" ? "h-4 w-4 animate-spin" : "h-4 w-4 opacity-60"
+                }
+                aria-hidden
+              />
+              <p className="text-sm font-medium">
+                {jobProgress.status === "running" ? "Syncing from PufferPanel" : "Sync summary"}
+              </p>
+            </div>
+          </div>
+          {jobProgress.status === "running" ? (
+            <>
+              <div
+                className="h-2 bg-muted rounded"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={jobProgress.total}
+                aria-valuenow={jobProgress.processed}
+              >
+                <div
+                  className="h-2 bg-primary rounded transition-[width] duration-300"
+                  style={{
+                    width: jobProgress.total
+                      ? `${(jobProgress.processed / jobProgress.total) * 100}%`
+                      : "0%",
+                  }}
+                />
+              </div>
+              <p className="text-sm">
+                {jobProgress.processed}/{jobProgress.total} processed (
+                {jobProgress.succeeded} succeeded, {jobProgress.failed} failed)
+              </p>
+            </>
+          ) : (
+            <>
+              {(() => {
+                const total = jobProgress.total || 0;
+                const ok = jobProgress.succeeded || 0;
+                const fail = jobProgress.failed || 0;
+                const okPct = total ? (ok / total) * 100 : 0;
+                const failPct = total ? (fail / total) * 100 : 0;
+                return (
+                  <div className="h-2 bg-muted rounded overflow-hidden">
+                    <div className="h-2 bg-emerald-500 inline-block" style={{ width: `${okPct}%` }} />
+                    <div className="h-2 bg-red-500 inline-block" style={{ width: `${failPct}%` }} />
+                  </div>
+                );
+              })()}
+              <div className="flex items-center justify-between">
+                <p className="text-sm">
+                  {jobProgress.succeeded} succeeded, {jobProgress.failed} failed
+                </p>
+                {jobProgress.failed > 0 && (
+                  <Button size="sm" variant="secondary" onClick={() => setShowFailures((v) => !v)}>
+                    {showFailures ? "Hide failures" : "View failures"}
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+          {showFailures && jobProgress.failures?.length > 0 && (
+            <div className="max-h-48 overflow-auto border rounded p-xs text-sm">
+              {jobProgress.failures.map((f, i) => (
+                <div key={i} className="flex justify-between gap-sm">
+                  <span className="truncate" title={f.name}>{f.name}</span>
+                  <span className="text-destructive truncate" title={f.error}>{f.error}</span>
+                </div>
+              ))}
+              {jobProgress.status !== "running" && (
+                <div className="text-right mt-xs">
+                  <Button size="sm" onClick={async () => { try { await jobs.retry(jobProgress.id); } catch (e) { toast.error(e instanceof Error ? e.message : "Failed to retry"); } }}>Retry failed</Button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       <div className="grid gap-sm md:grid-cols-2 w-full max-w-3xl">
         {!hasToken && (
           <Card className="p-sm bg-yellow-50 border-yellow-200 text-yellow-800">
@@ -357,7 +444,7 @@ export default function Instances() {
             </div>
           </Card>
         )}
-        {!hasPuffer && (
+        {pufferLoaded && !hasPuffer && (
           <Card className="p-sm bg-yellow-50 border-yellow-200 text-yellow-800">
             <div className="flex items-center gap-sm">
               <Plug className="h-4 w-4" aria-hidden />
@@ -373,7 +460,7 @@ export default function Instances() {
       </div>
       <div className="flex justify-end md:justify-between gap-sm">
         <Button onClick={openAdd}>Add instance</Button>
-        {hasPuffer && (
+        {pufferLoaded && hasPuffer && (
           <Button
             variant="secondary"
             onClick={handleSync}
