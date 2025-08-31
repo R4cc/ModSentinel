@@ -163,6 +163,8 @@ export interface NewMod {
   game_version: string;
   loader: string;
   channel: string;
+  // Optional: exact Modrinth version id chosen in wizard
+  version_id?: string;
   instance_id: number;
 }
 

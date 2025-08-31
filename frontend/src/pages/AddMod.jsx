@@ -211,6 +211,7 @@ export default function AddMod() {
         loader,
         game_version: mcVersion,
         channel: selected.version_type,
+        version_id: selected.id,
         instance_id: instanceId,
       });
       if (resp?.warning) {

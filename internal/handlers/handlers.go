@@ -762,58 +762,153 @@ func metadataHandler() http.HandlerFunc {
 }
 
 func createModHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var m dbpkg.Mod
-		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-			httpx.Write(w, r, httpx.BadRequest("invalid json"))
-			return
-		}
-		if err := validatePayload(&m); err != nil {
-			httpx.Write(w, r, err)
-			return
-		}
-		inst, err := dbpkg.GetInstance(db, m.InstanceID)
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		warning := ""
-		if !strings.EqualFold(inst.Loader, m.Loader) {
-			if inst.EnforceSameLoader {
-				httpx.Write(w, r, httpx.BadRequest("loader mismatch"))
-				return
-			}
-			warning = "loader mismatch"
-		}
-		slug, err := parseModrinthSlug(m.URL)
-		if err != nil {
-			httpx.Write(w, r, httpx.BadRequest(err.Error()))
-			return
-		}
-		if err := populateProjectInfo(r.Context(), &m, slug); err != nil {
-			writeModrinthError(w, r, err)
-			return
-		}
-		if err := populateVersions(r.Context(), &m, slug); err != nil {
-			writeModrinthError(w, r, err)
-			return
-		}
-		if err := dbpkg.InsertMod(db, &m); err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		mods, err := dbpkg.ListMods(db, m.InstanceID)
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		json.NewEncoder(w).Encode(struct {
-			Mods    []dbpkg.Mod `json:"mods"`
-			Warning string      `json:"warning,omitempty"`
-		}{mods, warning})
-	}
+    return func(w http.ResponseWriter, r *http.Request) {
+        // Accept core mod fields plus an optional explicit version id chosen in the wizard
+        var req struct {
+            dbpkg.Mod
+            VersionID string `json:"version_id"`
+        }
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+            httpx.Write(w, r, httpx.BadRequest("invalid json"))
+            return
+        }
+        m := req.Mod
+        if err := validatePayload(&m); err != nil {
+            httpx.Write(w, r, err)
+            return
+        }
+        inst, err := dbpkg.GetInstance(db, m.InstanceID)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        warning := ""
+        if !strings.EqualFold(inst.Loader, m.Loader) {
+            if inst.EnforceSameLoader {
+                httpx.Write(w, r, httpx.BadRequest("loader mismatch"))
+                return
+            }
+            warning = "loader mismatch"
+        }
+        slug, err := parseModrinthSlug(m.URL)
+        if err != nil {
+            httpx.Write(w, r, httpx.BadRequest(err.Error()))
+            return
+        }
+        if err := populateProjectInfo(r.Context(), &m, slug); err != nil {
+            writeModrinthError(w, r, err)
+            return
+        }
+        // If client provided an explicit Modrinth version ID, honor it.
+        if vid := strings.TrimSpace(req.VersionID); vid != "" {
+            versions, err := modClient.Versions(r.Context(), slug, m.GameVersion, m.Loader)
+            if err != nil {
+                writeModrinthError(w, r, err)
+                return
+            }
+            found := false
+            for _, v := range versions {
+                if v.ID == vid {
+                    m.CurrentVersion = v.VersionNumber
+                    m.Channel = strings.ToLower(v.VersionType)
+                    if len(v.Files) > 0 {
+                        m.DownloadURL = v.Files[0].URL
+                    }
+                    found = true
+                    break
+                }
+            }
+            if !found {
+                httpx.Write(w, r, httpx.BadRequest("selected version not found"))
+                return
+            }
+            if err := populateAvailableVersion(r.Context(), &m, slug); err != nil {
+                writeModrinthError(w, r, err)
+                return
+            }
+        } else {
+            if err := populateVersions(r.Context(), &m, slug); err != nil {
+                writeModrinthError(w, r, err)
+                return
+            }
+        }
+        if err := dbpkg.InsertMod(db, &m); err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        // If this instance is linked to PufferPanel, attempt to download the selected file
+        // and upload it to the appropriate folder on the server (mods/ or plugins/).
+        if inst.PufferpanelServerID != "" && m.DownloadURL != "" {
+            folder := "mods/"
+            switch strings.ToLower(inst.Loader) {
+            case "paper", "spigot", "bukkit":
+                folder = "plugins/"
+            }
+            // Derive filename from URL path; fallback to slug-version.jar
+            filename := func(raw string) string {
+                if u, err := urlpkg.Parse(raw); err == nil {
+                    p := u.Path
+                    if i := strings.LastIndex(p, "/"); i != -1 && i+1 < len(p) {
+                        name := p[i+1:]
+                        if name != "" {
+                            return name
+                        }
+                    }
+                }
+                base := slug
+                if base == "" {
+                    base = m.Name
+                }
+                base = strings.TrimSpace(base)
+                if base == "" {
+                    base = "mod"
+                }
+                ver := strings.TrimSpace(m.CurrentVersion)
+                if ver == "" {
+                    ver = "latest"
+                }
+                return base + "-" + ver + ".jar"
+            }(m.DownloadURL)
+            // Fetch file bytes
+            reqDL, err := http.NewRequestWithContext(r.Context(), http.MethodGet, m.DownloadURL, nil)
+            if err == nil {
+                resp, err := http.DefaultClient.Do(reqDL)
+                if err == nil {
+                    defer resp.Body.Close()
+                    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+                        data, _ := io.ReadAll(resp.Body)
+                        if len(data) > 0 {
+                            if err := pppkg.PutFile(r.Context(), inst.PufferpanelServerID, folder+filename, data); err != nil {
+                                // Surface as a non-fatal warning
+                                if warning == "" {
+                                    warning = "failed to upload file to PufferPanel"
+                                }
+                            }
+                        } else if warning == "" {
+                            warning = "failed to download selected file"
+                        }
+                    } else if warning == "" {
+                        warning = "failed to download selected file"
+                    }
+                } else if warning == "" {
+                    warning = "failed to download selected file"
+                }
+            } else if warning == "" {
+                warning = "failed to download selected file"
+            }
+        }
+        mods, err := dbpkg.ListMods(db, m.InstanceID)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        w.Header().Set("Content-Type", "application/json")
+        w.Header().Set("Cache-Control", "no-store")
+        json.NewEncoder(w).Encode(struct {
+            Mods    []dbpkg.Mod `json:"mods"`
+            Warning string      `json:"warning,omitempty"`
+        }{mods, warning})
+    }
 }
 
 func checkModHandler(db *sql.DB) http.HandlerFunc {
