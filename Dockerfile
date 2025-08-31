@@ -17,6 +17,9 @@ RUN npm ci --prefix frontend
 # Copy the rest of the source
 COPY . .
 
+# Prepare a data dir to carry ownership into the runtime volume
+RUN mkdir -p /data
+
 # Build frontend (must exist before go:embed)
 RUN npm run build --prefix frontend \
     && test -f frontend/dist/index.html
@@ -31,6 +34,7 @@ FROM gcr.io/distroless/base-debian12:nonroot
 WORKDIR /
 
 COPY --from=build /modsentinel /modsentinel
+COPY --from=build --chown=nonroot:nonroot /data /data
 
 ENV APP_ENV=production
 EXPOSE 8080
