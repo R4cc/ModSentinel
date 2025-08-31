@@ -36,6 +36,9 @@ WORKDIR /
 COPY --from=build /modsentinel /modsentinel
 COPY --from=build --chown=nonroot:nonroot /data /data
 
+# Declare data directory for persistence by default
+VOLUME ["/data"]
+
 ENV APP_ENV=production
 EXPOSE 8080
 USER nonroot:nonroot

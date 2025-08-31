@@ -1,0 +1,20 @@
+services:
+  modsentinel:
+    # Use published image or build locally. Uncomment one option.
+    image: nl2109/modsentinel:latest
+    # build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Ensures static assets are served with CSP nonce; set to production for container use
+      - APP_ENV=production
+      # Optional: set an admin token to protect admin endpoints
+      # - ADMIN_TOKEN=change-me
+    volumes:
+      # Use a named volume so the app (running as nonroot) can write the SQLite DB and WAL files
+      - modsentinel-data:/data
+
+volumes:
+  modsentinel-data: {}
+
