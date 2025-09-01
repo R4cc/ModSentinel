@@ -624,7 +624,7 @@ export default function Mods() {
           </div>
           {/* Instance status overview */}
           {loading ? (
-            <div className="grid grid-cols-1 gap-sm sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-sm sm:grid-cols-3 max-w-3xl sm:max-w-4xl mx-auto">
               <Skeleton className="h-20 rounded-md shadow-sm" />
               <Skeleton className="h-20 rounded-md shadow-sm" />
               <Skeleton className="h-20 rounded-md shadow-sm" />

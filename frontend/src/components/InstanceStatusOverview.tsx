@@ -51,7 +51,7 @@ function StatCard({
           {icon}
         </span>
         <div className="flex items-baseline gap-xs">
-          <span className={cn("text-3xl font-bold leading-none", c.value)}>
+          <span className={cn("text-2xl font-bold leading-none", c.value)}>
             {value}
           </span>
           <span className="text-sm text-muted-foreground">{label}</span>
@@ -77,7 +77,7 @@ export default function InstanceStatusOverview({
   return (
     <div
       className={cn(
-        "grid grid-cols-1 gap-sm sm:grid-cols-3",
+        "grid grid-cols-1 gap-sm sm:grid-cols-3 max-w-3xl sm:max-w-4xl mx-auto",
         className,
       )}
       role="region"
@@ -104,4 +104,3 @@ export default function InstanceStatusOverview({
     </div>
   );
 }
-
