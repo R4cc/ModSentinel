@@ -9,6 +9,7 @@ import {
   Package,
   RefreshCw,
   RotateCw,
+  Download,
   Trash2,
   Plus,
   ExternalLink,
@@ -46,6 +47,7 @@ import {
   jobs,
   getSecretStatus,
   checkMod,
+  updateModVersion,
 } from "@/lib/api.ts";
 import { cn } from "@/lib/utils.js";
 import { toast } from "@/lib/toast.ts";
@@ -87,6 +89,7 @@ export default function Mods() {
     outdated: 0,
     errors: 0,
   });
+  const [updatingId, setUpdatingId] = useState(null);
 
   // helper for colored loader badge
   function loaderBadgeClass(loader) {
@@ -421,6 +424,20 @@ export default function Mods() {
       toast.success("Mod deleted");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to delete mod");
+    }
+  }
+
+  async function handleApplyUpdate(m) {
+    try {
+      setUpdatingId(m.id);
+      const updated = await updateModVersion(m.id);
+      // Update row in-place
+      setMods((prev) => prev.map((x) => (x.id === m.id ? updated : x)));
+      toast.success(`Updated ${updated.name || "mod"} to ${updated.current_version}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to apply update");
+    } finally {
+      setUpdatingId(null);
     }
   }
 
@@ -872,8 +889,10 @@ export default function Mods() {
               {current.map((m) => {
                 const projectUrl = getProjectUrl(m);
                 const isModrinth = !!projectUrl;
+                const outdated =
+                  (m.available_version || "") !== "" && m.available_version !== m.current_version;
                 return (
-                  <TableRow key={m.id}>
+                  <TableRow key={m.id} className={cn(outdated && "bg-emerald-50/60")}> 
                     <TableCell className="flex items-center gap-sm font-medium">
                       <ModIcon
                         url={m.icon_url}
@@ -909,17 +928,25 @@ export default function Mods() {
                         </Button>
                       ) : (
                         <>
-                          <Tooltip text="Check for updates">
-                            <Button
-                              variant="outline"
-                              onClick={() => handleCheck(m)}
-                              aria-label="Check for updates"
-                              className="h-8 px-sm"
-                              disabled={!hasToken}
-                            >
-                              <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                            </Button>
-                          </Tooltip>
+                          {outdated && (
+                            <Tooltip text="Apply update">
+                              <Button
+                                variant="outline"
+                                onClick={() => handleApplyUpdate(m)}
+                                aria-label="Apply update"
+                                className="h-8 px-sm border-emerald-300 text-emerald-700 hover:bg-emerald-100"
+                                disabled={updatingId === m.id}
+                              >
+                                <Download
+                                  className={cn(
+                                    "h-4 w-4",
+                                    updatingId === m.id && "animate-bounce"
+                                  )}
+                                  aria-hidden="true"
+                                />
+                              </Button>
+                            </Tooltip>
+                          )}
                           <Tooltip
                             text={
                               isModrinth
