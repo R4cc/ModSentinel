@@ -77,7 +77,7 @@ export default function InstanceStatusOverview({
   return (
     <div
       className={cn(
-        "grid grid-cols-1 gap-sm sm:grid-cols-3 max-w-3xl sm:max-w-4xl mx-auto",
+        "grid grid-cols-1 gap-sm sm:grid-cols-3 max-w-3xl sm:max-w-4xl",
         className,
       )}
       role="region"
