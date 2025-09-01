@@ -1168,7 +1168,8 @@ func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
             httpx.Write(w, r, httpx.BadRequest("no update available"))
             return
         }
-        versions, err := modClient.Versions(r.Context(), slug, prev.GameVersion, prev.Loader)
+        // Fetch all versions for the project; avoid over-filtering so we can match exact version_number
+        versions, err := modClient.Versions(r.Context(), slug, "", "")
         if err != nil {
             writeModrinthError(w, r, err)
             return
