@@ -1,28 +1,30 @@
-########## Build stage ##########
+########## Frontend build stage ##########
+FROM node:20-alpine AS webbuild
+
+WORKDIR /src
+# Install deps
+COPY frontend/package*.json frontend/
+RUN npm ci --prefix frontend
+# Copy sources and build
+COPY frontend frontend
+RUN npm run build --prefix frontend \
+    && test -f frontend/dist/index.html
+
+########## Go build stage ##########
 FROM golang:1.24-alpine AS build
 
 WORKDIR /src
-
-# Install Node.js for frontend build
-RUN apk add --no-cache nodejs npm
 
 # Go deps (better layer caching)
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Frontend deps (better layer caching)
-COPY frontend/package*.json frontend/
-RUN npm ci --prefix frontend
-
-# Copy the rest of the source
+# Copy the rest of the source and built frontend assets
 COPY . .
+COPY --from=webbuild /src/frontend/dist ./frontend/dist
 
 # Prepare a data dir to carry ownership into the runtime volume
 RUN mkdir -p /data
-
-# Build frontend (must exist before go:embed)
-RUN npm run build --prefix frontend \
-    && test -f frontend/dist/index.html
 
 # Build statically-linked server
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /modsentinel
