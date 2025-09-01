@@ -1997,10 +1997,23 @@ func CheckUpdates(ctx context.Context, db *sql.DB) {
 }
 
 type modMetadata struct {
-	GameVersions []string     `json:"game_versions"`
-	Loaders      []string     `json:"loaders"`
-	Channels     []string     `json:"channels"`
-	Versions     []mr.Version `json:"versions"`
+    GameVersions []string   `json:"game_versions"`
+    Loaders      []string   `json:"loaders"`
+    Channels     []string   `json:"channels"`
+    Versions     []uiVersion `json:"versions"`
+}
+
+// uiVersion mirrors mr.Version JSON while adding UI helper flags.
+type uiVersion struct {
+    ID            string        `json:"id"`
+    VersionNumber string        `json:"version_number"`
+    VersionType   string        `json:"version_type"`
+    DatePublished time.Time     `json:"date_published"`
+    GameVersions  []string      `json:"game_versions"`
+    Loaders       []string      `json:"loaders"`
+    Files         []mr.VersionFile `json:"files"`
+    IsNewest      bool          `json:"is_newest"`
+    IsPrerelease  bool          `json:"is_prerelease"`
 }
 
 func fetchModMetadata(ctx context.Context, rawURL string) (*modMetadata, error) {
@@ -2008,24 +2021,43 @@ func fetchModMetadata(ctx context.Context, rawURL string) (*modMetadata, error) 
 	if err != nil {
 		return nil, err
 	}
-	versions, err := modClient.Versions(ctx, slug, "", "")
-	if err != nil {
-		return nil, err
-	}
-	meta := &modMetadata{}
-	gvSet := map[string]struct{}{}
-	ldSet := map[string]struct{}{}
-	chSet := map[string]struct{}{}
-	for _, v := range versions {
-		meta.Versions = append(meta.Versions, v)
-		for _, gv := range v.GameVersions {
-			gvSet[gv] = struct{}{}
-		}
-		for _, ld := range v.Loaders {
-			ldSet[ld] = struct{}{}
-		}
-		chSet[strings.ToLower(v.VersionType)] = struct{}{}
-	}
+    versions, err := modClient.Versions(ctx, slug, "", "")
+    if err != nil {
+        return nil, err
+    }
+    meta := &modMetadata{}
+    // Determine newest by DatePublished
+    var newestIdx int = -1
+    for i, v := range versions {
+        if newestIdx == -1 || v.DatePublished.After(versions[newestIdx].DatePublished) {
+            newestIdx = i
+        }
+    }
+    gvSet := map[string]struct{}{}
+    ldSet := map[string]struct{}{}
+    chSet := map[string]struct{}{}
+    for i, v := range versions {
+        // Fill list helpers
+        for _, gv := range v.GameVersions {
+            gvSet[gv] = struct{}{}
+        }
+        for _, ld := range v.Loaders {
+            ldSet[ld] = struct{}{}
+        }
+        chSet[strings.ToLower(v.VersionType)] = struct{}{}
+        // Add UI-annotated version
+        meta.Versions = append(meta.Versions, uiVersion{
+            ID:            v.ID,
+            VersionNumber: v.VersionNumber,
+            VersionType:   v.VersionType,
+            DatePublished: v.DatePublished,
+            GameVersions:  append([]string(nil), v.GameVersions...),
+            Loaders:       append([]string(nil), v.Loaders...),
+            Files:         append([]mr.VersionFile(nil), v.Files...),
+            IsNewest:      i == newestIdx,
+            IsPrerelease:  strings.ToLower(v.VersionType) != "release",
+        })
+    }
 	for gv := range gvSet {
 		meta.GameVersions = append(meta.GameVersions, gv)
 	}
