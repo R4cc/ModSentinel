@@ -1155,7 +1155,22 @@ func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
             httpx.Write(w, r, httpx.Internal(err))
             return
         }
-        _ = dbpkg.InsertEvent(db, &dbpkg.ModEvent{InstanceID: m.InstanceID, ModID: &m.ID, Action: "updated", ModName: m.Name, From: prev.CurrentVersion, To: m.CurrentVersion})
+        // Ensure m.DownloadURL points to the new version's file for upload
+        if slug, err := parseModrinthSlug(m.URL); err == nil {
+            if versions, err2 := modClient.Versions(r.Context(), slug, m.GameVersion, m.Loader); err2 == nil {
+                for _, vv := range versions {
+                    if vv.VersionNumber == m.CurrentVersion {
+                        if len(vv.Files) > 0 && vv.Files[0].URL != "" {
+                            if m.DownloadURL != vv.Files[0].URL {
+                                m.DownloadURL = vv.Files[0].URL
+                                _ = dbpkg.UpdateMod(db, m)
+                            }
+                        }
+                        break
+                    }
+                }
+            }
+        }
         // Mirror change to PufferPanel if configured
         if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil && inst.PufferpanelServerID != "" {
             folder := "mods/"
@@ -1202,6 +1217,8 @@ func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
                 }
             }
         }
+        // Log event
+        _ = dbpkg.InsertEvent(db, &dbpkg.ModEvent{InstanceID: m.InstanceID, ModID: &m.ID, Action: "updated", ModName: m.Name, From: prev.CurrentVersion, To: m.CurrentVersion})
         w.Header().Set("Content-Type", "application/json")
         json.NewEncoder(w).Encode(m)
     }
