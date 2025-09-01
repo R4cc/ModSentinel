@@ -1733,12 +1733,7 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
 		httpx.Write(w, r, httpx.Internal(err))
 		return
 	}
-	creds, err := pppkg.Get()
-	if err != nil {
-		httpx.Write(w, r, httpx.Internal(err))
-		return
-	}
-	folder := "mods/"
+    folder := "mods/"
 	switch inst.Loader {
 	case "paper", "spigot":
 		folder = "plugins/"
@@ -1800,17 +1795,17 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
         meta := parseJarFilename(f)
         slug, ver := meta.Slug, meta.Version
         scanned := false
-		if creds.DeepScan && (slug == "" || ver == "") {
-			scanned = true
-			time.Sleep(100 * time.Millisecond)
-			data, err := pppkg.FetchFile(ctx, serverID, folder+f)
-			if err == nil {
-				s2, v2 := parseJarMetadata(data)
-				if s2 != "" && v2 != "" {
-					slug, ver = s2, v2
-				}
-			}
-		}
+        if slug == "" || ver == "" {
+            scanned = true
+            time.Sleep(100 * time.Millisecond)
+            data, err := pppkg.FetchFile(ctx, serverID, folder+f)
+            if err == nil {
+                s2, v2 := parseJarMetadata(data)
+                if s2 != "" && v2 != "" {
+                    slug, ver = s2, v2
+                }
+            }
+        }
                if slug == "" || ver == "" {
                         unmatched = append(unmatched, f)
                         prog.fail(f, errors.New("missing slug or version"))
@@ -1826,17 +1821,17 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                         continue
                }
                proj, slug, err := modClient.Resolve(ctx, slug)
-               if err != nil && creds.DeepScan && !scanned {
-			time.Sleep(100 * time.Millisecond)
-			data, err2 := pppkg.FetchFile(ctx, serverID, folder+f)
-			if err2 == nil {
-				s2, v2 := parseJarMetadata(data)
-				if s2 != "" && v2 != "" {
-					slug, ver = s2, v2
-					proj, slug, err = modClient.Resolve(ctx, slug)
-				}
-			}
-		}
+               if err != nil && !scanned {
+                    time.Sleep(100 * time.Millisecond)
+                    data, err2 := pppkg.FetchFile(ctx, serverID, folder+f)
+                    if err2 == nil {
+                        s2, v2 := parseJarMetadata(data)
+                        if s2 != "" && v2 != "" {
+                            slug, ver = s2, v2
+                            proj, slug, err = modClient.Resolve(ctx, slug)
+                        }
+                    }
+                }
                if err != nil {
                         if ctx.Err() != nil {
                                 return
@@ -1872,27 +1867,73 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                         _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
                         continue
                }
-		var v mr.Version
-		found := false
-		for _, vv := range versions {
-			if vv.VersionNumber == ver {
-				v = vv
-				found = true
-				break
-			}
-		}
+                var v mr.Version
+                found := false
+                for _, vv := range versions {
+                    if vv.VersionNumber == ver {
+                        v = vv
+                        found = true
+                        break
+                    }
+                }
                if !found {
-                        unmatched = append(unmatched, f)
-                        prog.fail(f, fmt.Errorf("version %s not found", ver))
-                        log.Debug().
-                            Int("instance_id", inst.ID).
-                            Str("server_id", serverID).
-                            Str("file", f).
-                            Str("slug", slug).
-                            Str("version", ver).
-                            Msg("modrinth match failed: version not found")
-                        _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
-                        continue
+                        // Attempt: deep scan if not already done
+                        if !scanned {
+                            time.Sleep(100 * time.Millisecond)
+                            if data, err2 := pppkg.FetchFile(ctx, serverID, folder+f); err2 == nil {
+                                if s2, v2 := parseJarMetadata(data); s2 != "" && v2 != "" {
+                                    slug, ver = s2, v2
+                                    if proj2, slug2, err2 := modClient.Resolve(ctx, slug); err2 == nil {
+                                        proj = proj2
+                                        slug = slug2
+                                        if vers2, err3 := modClient.Versions(ctx, slug, "", ""); err3 == nil {
+                                            for _, vv := range vers2 {
+                                                if vv.VersionNumber == ver { v = vv; found = true; break }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Fallback: search by normalized filename and try hits
+                        if !found {
+                            query := meta.Slug
+                            if strings.TrimSpace(query) == "" { query = strings.TrimSuffix(f, ".jar") }
+                            if res, errS := modClient.Search(ctx, query); errS == nil && len(res.Hits) > 0 {
+                                tried := 0
+                                for _, hit := range res.Hits {
+                                    tried++
+                                    if tried > 10 { break }
+                                    if vers3, errV := modClient.Versions(ctx, hit.Slug, "", ""); errV == nil {
+                                        for _, vv := range vers3 {
+                                            if vv.VersionNumber == ver {
+                                                if proj3, errP := modClient.Project(ctx, hit.Slug); errP == nil {
+                                                    proj = proj3
+                                                    slug = hit.Slug
+                                                    v = vv
+                                                    found = true
+                                                }
+                                                break
+                                            }
+                                        }
+                                    }
+                                    if found { break }
+                                }
+                            }
+                        }
+                        if !found {
+                            unmatched = append(unmatched, f)
+                            prog.fail(f, fmt.Errorf("version %s not found", ver))
+                            log.Debug().
+                                Int("instance_id", inst.ID).
+                                Str("server_id", serverID).
+                                Str("file", f).
+                                Str("slug", slug).
+                                Str("version", ver).
+                                Msg("modrinth match failed: version not found")
+                            _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
+                            continue
+                        }
                }
         m := dbpkg.Mod{
             Name:           proj.Title,
