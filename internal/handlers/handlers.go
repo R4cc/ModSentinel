@@ -1158,29 +1158,42 @@ func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
             httpx.Write(w, r, httpx.Internal(err))
             return
         }
-        m, err := dbpkg.ApplyUpdate(db, id)
+        // Determine target version (the available one) and its file URL from Modrinth
+        slug, err := parseModrinthSlug(prev.URL)
         if err != nil {
-            httpx.Write(w, r, httpx.Internal(err))
+            httpx.Write(w, r, httpx.BadRequest("invalid mod URL"))
             return
         }
-        // Ensure m.DownloadURL points to the new version's file for upload
-        if slug, err := parseModrinthSlug(m.URL); err == nil {
-            if versions, err2 := modClient.Versions(r.Context(), slug, m.GameVersion, m.Loader); err2 == nil {
-                for _, vv := range versions {
-                    if vv.VersionNumber == m.CurrentVersion {
-                        if len(vv.Files) > 0 && vv.Files[0].URL != "" {
-                            if m.DownloadURL != vv.Files[0].URL {
-                                m.DownloadURL = vv.Files[0].URL
-                                _ = dbpkg.UpdateMod(db, m)
-                            }
-                        }
-                        break
-                    }
-                }
+        if strings.TrimSpace(prev.AvailableVersion) == "" || prev.AvailableVersion == prev.CurrentVersion {
+            httpx.Write(w, r, httpx.BadRequest("no update available"))
+            return
+        }
+        versions, err := modClient.Versions(r.Context(), slug, prev.GameVersion, prev.Loader)
+        if err != nil {
+            writeModrinthError(w, r, err)
+            return
+        }
+        var newVer mr.Version
+        found := false
+        for _, vv := range versions {
+            if vv.VersionNumber == prev.AvailableVersion {
+                newVer = vv
+                found = true
+                break
             }
         }
-        // Mirror change to PufferPanel if configured
-        if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil && inst.PufferpanelServerID != "" {
+        if !found {
+            httpx.Write(w, r, httpx.BadRequest("selected update not found"))
+            return
+        }
+        if len(newVer.Files) == 0 || strings.TrimSpace(newVer.Files[0].URL) == "" {
+            httpx.Write(w, r, httpx.BadRequest("no downloadable file for update"))
+            return
+        }
+        targetURL := newVer.Files[0].URL
+
+        // Mirror change to PufferPanel if configured: upload new first, verify, then delete old
+        if inst, err2 := dbpkg.GetInstance(db, prev.InstanceID); err2 == nil && inst.PufferpanelServerID != "" {
             folder := "mods/"
             switch strings.ToLower(inst.Loader) {
             case "paper", "spigot", "bukkit":
@@ -1202,39 +1215,67 @@ func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
                 return base + "-" + ver + ".jar"
             }
             oldSlug, _ := parseModrinthSlug(prev.URL)
-            newSlug, _ := parseModrinthSlug(m.URL)
             oldName := deriveName(prev.DownloadURL, oldSlug, prev.Name, prev.CurrentVersion)
-            newName := deriveName(m.DownloadURL, newSlug, m.Name, m.CurrentVersion)
-            if oldName != newName || prev.CurrentVersion != m.CurrentVersion {
-                uploaded := false
-                if m.DownloadURL != "" {
-                    if reqDL, err := http.NewRequestWithContext(r.Context(), http.MethodGet, m.DownloadURL, nil); err == nil {
-                        if resp, err := http.DefaultClient.Do(reqDL); err == nil {
-                            defer resp.Body.Close()
-                            if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-                                if data, err := io.ReadAll(resp.Body); err == nil && len(data) > 0 {
-                                    if err := pppkg.PutFile(r.Context(), inst.PufferpanelServerID, folder+newName, data); err == nil {
-                                        if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
-                                            for _, f := range files {
-                                                if !f.IsDir && strings.EqualFold(f.Name, newName) { uploaded = true; break }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if uploaded {
-                    if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
-                        for _, f := range files {
-                            if !f.IsDir && strings.EqualFold(f.Name, oldName) { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName); break }
-                        }
-                    } else { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName) }
-                }
+            newName := deriveName(targetURL, slug, prev.Name, prev.AvailableVersion)
+
+            // Download new artifact
+            reqDL, err := http.NewRequestWithContext(r.Context(), http.MethodGet, targetURL, nil)
+            if err != nil {
+                httpx.Write(w, r, httpx.Internal(err))
+                return
             }
+            resp, err := http.DefaultClient.Do(reqDL)
+            if err != nil {
+                httpx.Write(w, r, httpx.Internal(err))
+                return
+            }
+            defer resp.Body.Close()
+            if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+                httpx.Write(w, r, httpx.BadRequest("failed to download update file"))
+                return
+            }
+            data, err := io.ReadAll(resp.Body)
+            if err != nil || len(data) == 0 {
+                httpx.Write(w, r, httpx.Internal(fmt.Errorf("invalid file content")))
+                return
+            }
+            if err := pppkg.PutFile(r.Context(), inst.PufferpanelServerID, folder+newName, data); err != nil {
+                writePPError(w, r, err)
+                return
+            }
+            // Verify presence
+            if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
+                present := false
+                for _, f := range files {
+                    if !f.IsDir && strings.EqualFold(f.Name, newName) { present = true; break }
+                }
+                if !present {
+                    httpx.Write(w, r, httpx.Internal(fmt.Errorf("update verification failed")))
+                    return
+                }
+            } else {
+                writePPError(w, r, err)
+                return
+            }
+            // Delete old (best-effort)
+            if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
+                for _, f := range files {
+                    if !f.IsDir && strings.EqualFold(f.Name, oldName) { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName); break }
+                }
+            } else { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName) }
         }
-        // Log event
+        // Now commit DB update to reflect PufferPanel (only after upload verified)
+        if _, err := db.Exec(`UPDATE mods SET current_version=?, channel=?, download_url=? WHERE id=?`, prev.AvailableVersion, prev.AvailableChannel, targetURL, prev.ID); err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        // Record update in updates table and fetch updated row
+        _ = dbpkg.InsertUpdateIfNew(db, prev.ID, prev.AvailableVersion)
+        m, err := dbpkg.GetMod(db, prev.ID)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
         _ = dbpkg.InsertEvent(db, &dbpkg.ModEvent{InstanceID: m.InstanceID, ModID: &m.ID, Action: "updated", ModName: m.Name, From: prev.CurrentVersion, To: m.CurrentVersion})
         w.Header().Set("Content-Type", "application/json")
         json.NewEncoder(w).Encode(m)
