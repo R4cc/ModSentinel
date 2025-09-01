@@ -11,12 +11,7 @@ import { Select } from "@/components/ui/Select.jsx";
 import { Input } from "@/components/ui/Input.jsx";
 import { Button } from "@/components/ui/Button.jsx";
 import { Checkbox } from "@/components/ui/Checkbox.jsx";
-import {
-  getSecretStatus,
-  saveSecret,
-  clearSecret,
-  testPuffer,
-} from "@/lib/api.ts";
+import { getSecretStatus, saveSecret, clearSecret, testPuffer, searchMods } from "@/lib/api.ts";
 
 export default function Settings() {
   const { theme, setTheme, interval, setInterval } = usePreferences();
@@ -51,10 +46,8 @@ export default function Settings() {
   }, []);
 
   async function handleSave() {
-    if (!token) {
-      toast.error("Token cannot be empty");
-      return;
-    }
+    if (!token && hasToken) { toast.success("Token unchanged"); return; }
+    if (!token) { toast.error("Token cannot be empty"); return; }
     try {
       await saveSecret("modrinth", { token });
       setToken("");
@@ -80,17 +73,15 @@ export default function Settings() {
   }
 
   async function handlePufferSave() {
-    if (!baseUrl || !clientId || !clientSecret) {
-      toast.error("All fields required");
-      return;
-    }
+    if (!baseUrl) { toast.error("Base URL required"); return; }
+    if (!hasPuffer && (!clientId || !clientSecret)) { toast.error("Client ID and Secret required"); return; }
     try {
       await saveSecret("pufferpanel", {
         base_url: baseUrl,
         client_id: clientId,
         client_secret: clientSecret,
-        scopes,
-        deep_scan: deepScan,
+        scopes: "server.view server.files.view server.files.edit",
+        deep_scan: true,
       });
       setBaseUrl("");
       setClientId("");
@@ -113,8 +104,6 @@ export default function Settings() {
       setBaseUrl("");
       setClientId("");
       setClientSecret("");
-      setDeepScan(false);
-      setScopes("server.view server.files.view server.files.edit");
       setPufferLast4("");
       setHasPuffer(false);
       toast.success("Credentials cleared");
