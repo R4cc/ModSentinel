@@ -380,6 +380,7 @@ type SearchResult struct {
         Title     string `json:"title"`
         Description string `json:"description"`
         IconURL     string `json:"icon_url"`
+        Downloads   int    `json:"downloads"`
     } `json:"hits"`
 }
 
@@ -426,26 +427,44 @@ func (c *Client) Search(ctx context.Context, query string) (*SearchResult, error
 }
 
 // Resolve fetches a project by slug, falling back to search when the slug is not found.
-func (c *Client) Resolve(ctx context.Context, slug string) (*Project, string, error) {
-	proj, err := c.Project(ctx, slug)
-	if err == nil {
-		return proj, slug, nil
-	}
-	var apiErr *Error
-	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
-		return nil, "", err
-	}
-	res, err := c.Search(ctx, slug)
-	if err != nil {
-		return nil, "", err
-	}
-	if len(res.Hits) == 0 {
-		return nil, "", &Error{Status: http.StatusNotFound, Message: "project not found"}
-	}
-	slug = res.Hits[0].Slug
-	proj, err = c.Project(ctx, slug)
-	if err != nil {
-		return nil, "", err
-	}
-	return proj, slug, nil
+func (c *Client) Resolve(ctx context.Context, candidate string) (*Project, string, error) {
+    // Try treating candidate as a slug first
+    if proj, err := c.Project(ctx, candidate); err == nil {
+        return proj, candidate, nil
+    } else {
+        var apiErr *Error
+        if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
+            return nil, "", err
+        }
+    }
+    // Search fallback: pick exact title match (case-insensitive) first, else highest downloads
+    res, err := c.Search(ctx, candidate)
+    if err != nil {
+        return nil, "", err
+    }
+    if len(res.Hits) == 0 {
+        return nil, "", &Error{Status: http.StatusNotFound, Message: "project not found"}
+    }
+    // exact title match
+    candLower := strings.ToLower(strings.TrimSpace(candidate))
+    var bestSlug string
+    var bestDL int
+    for _, h := range res.Hits {
+        if strings.ToLower(strings.TrimSpace(h.Title)) == candLower {
+            bestSlug = h.Slug
+            break
+        }
+        if h.Downloads > bestDL {
+            bestDL = h.Downloads
+            bestSlug = h.Slug
+        }
+    }
+    if bestSlug == "" {
+        bestSlug = res.Hits[0].Slug
+    }
+    proj, err := c.Project(ctx, bestSlug)
+    if err != nil {
+        return nil, "", err
+    }
+    return proj, bestSlug, nil
 }

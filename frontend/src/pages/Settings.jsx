@@ -189,12 +189,12 @@ export default function Settings() {
             <div className="flex gap-sm">
               <Input
                 id="token"
-                type={show ? "text" : "password"}
-                value={token}
+                type="text"
+                value={token || (hasToken ? `****************${tokenLast4}` : "")}
                 onChange={(e) => setToken(e.target.value)}
                 className="flex-1"
               />
-              <Button variant="secondary" onClick={() => setShow((s) => !s)}>
+              <Button className={hasToken ? "hidden" : ""} variant="secondary" onClick={() => setShow((s) => !s)}>
                 {show ? "Hide" : "Show"}
               </Button>
             </div>

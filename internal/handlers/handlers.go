@@ -51,8 +51,9 @@ var modClient modrinthClient = mr.NewClient()
 
 // allow tests to stub PufferPanel interactions
 var (
-	ppGetServer = pppkg.GetServer
-	ppListPath  = pppkg.ListPath
+    ppGetServer = pppkg.GetServer
+    ppListPath  = pppkg.ListPath
+    ppFetchFile = pppkg.FetchFile
 )
 
 var lastSync atomic.Int64
@@ -1836,16 +1837,36 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
         }
         meta := parseJarFilename(f)
         slug, ver := meta.Slug, meta.Version
+        detectedLoader := ""
+        // Prefer metadata in jar over filename when available
+        if data, err := ppFetchFile(ctx, serverID, folder+f); err == nil {
+            if s2, v2, l2 := parseJarMetadata(data); s2 != "" || v2 != "" || l2 != "" {
+                if s2 != "" { slug = s2 }
+                if v2 != "" { ver = v2 }
+                if ml := mapLoader(l2); ml != "" { detectedLoader = ml }
+            }
+        }
+        // Build candidate alias key
+        base := strings.TrimSuffix(strings.ToLower(f), ".jar")
+        cand := meta.Slug
+        if cand == "" { cand = base }
+        cand = normalizeCandidate(cand)
+        // Check alias map first to avoid repeated searches
+        if cand != "" {
+            if mapped, ok, _ := dbpkg.GetAlias(db, inst.ID, cand); ok && mapped != "" {
+                slug = mapped
+            }
+        }
         scanned := false
         if slug == "" || ver == "" {
             scanned = true
             time.Sleep(100 * time.Millisecond)
-            data, err := pppkg.FetchFile(ctx, serverID, folder+f)
+            data, err := ppFetchFile(ctx, serverID, folder+f)
             if err == nil {
-                s2, v2 := parseJarMetadata(data)
-                if s2 != "" && v2 != "" {
-                    slug, ver = s2, v2
-                }
+                s2, v2, l2 := parseJarMetadata(data)
+                if s2 != "" { slug = s2 }
+                if v2 != "" { ver = v2 }
+                if ml := mapLoader(l2); ml != "" { detectedLoader = ml }
             }
         }
                if slug == "" || ver == "" {
@@ -1862,16 +1883,17 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                         }
                         continue
                }
+               // Resolve canonical slug and remember alias on success
                proj, slug, err := modClient.Resolve(ctx, slug)
                if err != nil && !scanned {
                     time.Sleep(100 * time.Millisecond)
-                    data, err2 := pppkg.FetchFile(ctx, serverID, folder+f)
+                    data, err2 := ppFetchFile(ctx, serverID, folder+f)
                     if err2 == nil {
-                        s2, v2 := parseJarMetadata(data)
-                        if s2 != "" && v2 != "" {
-                            slug, ver = s2, v2
-                            proj, slug, err = modClient.Resolve(ctx, slug)
-                        }
+                        s2, v2, l2 := parseJarMetadata(data)
+                        if s2 != "" { slug = s2 }
+                        if v2 != "" { ver = v2 }
+                        if ml := mapLoader(l2); ml != "" { detectedLoader = ml }
+                        proj, slug, err = modClient.Resolve(ctx, slug)
                     }
                 }
                if err != nil {
@@ -1891,46 +1913,53 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                         _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
                         continue
                }
-               versions, err := modClient.Versions(ctx, slug, "", "")
-               if err != nil {
-                        if ctx.Err() != nil {
-                                return
-                        }
-                        unmatched = append(unmatched, f)
-                        prog.fail(f, err)
-                        log.Debug().
-                            Int("instance_id", inst.ID).
-                            Str("server_id", serverID).
-                            Str("file", f).
-                            Str("slug", slug).
-                            Str("version", ver).
-                            Err(err).
-                            Msg("modrinth versions fetch failed")
-                        _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
-                        continue
-               }
-                var v mr.Version
-                found := false
-                for _, vv := range versions {
-                    if vv.VersionNumber == ver {
-                        v = vv
-                        found = true
-                        break
-                    }
-                }
+               // Remember alias mapping for future runs
+               if cand != "" && slug != "" { _ = dbpkg.SetAlias(db, inst.ID, cand, slug) }
+        versions, err := modClient.Versions(ctx, slug, "", "")
+        if err != nil {
+            if ctx.Err() != nil {
+                return
+            }
+            unmatched = append(unmatched, f)
+            prog.fail(f, err)
+            log.Debug().
+                Int("instance_id", inst.ID).
+                Str("server_id", serverID).
+                Str("file", f).
+                Str("slug", slug).
+                Str("version", ver).
+                Err(err).
+                Msg("modrinth versions fetch failed")
+            _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
+            continue
+        }
+        var v mr.Version
+        found := false
+        // First try normalized exact version match
+        verNorm := normalizeVersion(ver)
+        for _, vv := range versions {
+            if normalizeVersion(vv.VersionNumber) == verNorm {
+                v = vv
+                found = true
+                break
+            }
+        }
                if !found {
                         // Attempt: deep scan if not already done
                         if !scanned {
                             time.Sleep(100 * time.Millisecond)
                             if data, err2 := pppkg.FetchFile(ctx, serverID, folder+f); err2 == nil {
-                                if s2, v2 := parseJarMetadata(data); s2 != "" && v2 != "" {
-                                    slug, ver = s2, v2
+                                if s2, v2, l2 := parseJarMetadata(data); s2 != "" || v2 != "" || l2 != "" {
+                                    if s2 != "" { slug = s2 }
+                                    if v2 != "" { ver = v2 }
+                                    if l2 != "" { detectedLoader = l2 }
                                     if proj2, slug2, err2 := modClient.Resolve(ctx, slug); err2 == nil {
                                         proj = proj2
                                         slug = slug2
                                         if vers2, err3 := modClient.Versions(ctx, slug, "", ""); err3 == nil {
+                                            verNorm = normalizeVersion(ver)
                                             for _, vv := range vers2 {
-                                                if vv.VersionNumber == ver { v = vv; found = true; break }
+                                                if normalizeVersion(vv.VersionNumber) == verNorm { v = vv; found = true; break }
                                             }
                                         }
                                     }
@@ -1941,21 +1970,53 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                         if !found {
                             query := meta.Slug
                             if strings.TrimSpace(query) == "" { query = strings.TrimSuffix(f, ".jar") }
+                            query = normalizeCandidate(query)
                             if res, errS := modClient.Search(ctx, query); errS == nil && len(res.Hits) > 0 {
                                 tried := 0
                                 for _, hit := range res.Hits {
                                     tried++
                                     if tried > 10 { break }
                                     if vers3, errV := modClient.Versions(ctx, hit.Slug, "", ""); errV == nil {
+                                        // First try normalized exact
                                         for _, vv := range vers3 {
-                                            if vv.VersionNumber == ver {
+                                            if normalizeVersion(vv.VersionNumber) == verNorm {
                                                 if proj3, errP := modClient.Project(ctx, hit.Slug); errP == nil {
                                                     proj = proj3
                                                     slug = hit.Slug
+                                                    if cand != "" { _ = dbpkg.SetAlias(db, inst.ID, cand, slug) }
                                                     v = vv
                                                     found = true
                                                 }
                                                 break
+                                            }
+                                        }
+                                        // Then heuristic newest with filename similarity and loader
+                                        if !found {
+                                            var best mr.Version
+                                            var bestTime time.Time
+                                            nameTokens := tokenizeFilename(f)
+                                            for _, vv := range vers3 {
+                                                if detectedLoader != "" && len(vv.Loaders) > 0 {
+                                                    okL := false
+                                                    for _, ld := range vv.Loaders { if mapLoader(ld) == detectedLoader { okL = true; break } }
+                                                    if !okL && len(vv.Loaders) == 1 { continue }
+                                                }
+                                                sim := 0.0
+                                                if len(vv.Files) > 0 {
+                                                    b := basenameFromURL(vv.Files[0].URL)
+                                                    sim = jaccard(nameTokens, tokenizeFilename(b))
+                                                }
+                                                if sim < 0.3 { continue }
+                                                if vv.DatePublished.After(bestTime) { best = vv; bestTime = vv.DatePublished }
+                                            }
+                                            if best.ID != "" {
+                                                if proj3, errP := modClient.Project(ctx, hit.Slug); errP == nil {
+                                                    proj = proj3
+                                                    slug = hit.Slug
+                                                    if cand != "" { _ = dbpkg.SetAlias(db, inst.ID, cand, slug) }
+                                                    v = best
+                                                    found = true
+                                                }
                                             }
                                         }
                                     }
@@ -1988,11 +2049,18 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
 		if len(v.GameVersions) > 0 {
 			m.GameVersion = v.GameVersions[0]
 		}
-		if len(v.Loaders) > 0 {
-			m.Loader = v.Loaders[0]
-		} else {
-			m.Loader = inst.Loader
-		}
+        // Choose loader for the mod record
+        // Prefer detected loader from jar metadata when present
+        if detectedLoader != "" {
+            m.Loader = detectedLoader
+        } else if len(v.Loaders) > 0 {
+            // Map the first supported loader from version metadata, ignoring "minecraft"
+            chosen := ""
+            for _, ld := range v.Loaders { if ml := mapLoader(ld); ml != "" { chosen = ml; break } }
+            if chosen != "" { m.Loader = chosen } else { m.Loader = mapLoader(inst.Loader) }
+        } else {
+            m.Loader = mapLoader(inst.Loader)
+        }
         if len(v.Files) > 0 {
             m.DownloadURL = v.Files[0].URL
         }
@@ -2469,28 +2537,164 @@ func parseJarFilename(name string) jarMeta {
 	return meta
 }
 
-func parseJarMetadata(data []byte) (slug, version string) {
-	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return "", ""
-	}
-	for _, f := range zr.File {
-		if f.Name == "fabric.mod.json" || f.Name == "quilt.mod.json" {
-			rc, err := f.Open()
-			if err != nil {
-				continue
-			}
-			var meta struct {
-				ID      string `json:"id"`
-				Version string `json:"version"`
-			}
-			if err := json.NewDecoder(rc).Decode(&meta); err == nil {
-				slug = meta.ID
-				version = meta.Version
-			}
-			rc.Close()
-			return slug, version
-		}
-	}
-	return "", ""
+// normalizeCandidate prepares a filename-derived candidate string for lookup
+// - lowercases
+// - replaces spaces/underscores with dashes
+// - drops brackets and parentheses
+func normalizeCandidate(s string) string {
+    s = strings.ToLower(strings.TrimSpace(s))
+    repl := strings.NewReplacer("[", "", "]", "", "(", "", ")", "")
+    s = repl.Replace(s)
+    s = strings.ReplaceAll(s, " ", "-")
+    s = strings.ReplaceAll(s, "_", "-")
+    s = strings.Trim(s, "-")
+    return s
+}
+
+// normalizeVersion trims and simplifies version strings for matching.
+// - lowercase
+// - trim leading 'v'
+// - drop build metadata (+...)
+// - strip MC version suffixes like -1.21.5
+// - remove loader suffixes like -fabric, -neoforge, -forge, -quilt, -paper, -spigot, -bukkit
+// - collapse -b- tags (e.g., -b123)
+func normalizeVersion(s string) string {
+    s = strings.ToLower(strings.TrimSpace(s))
+    s = strings.TrimPrefix(s, "v")
+    if i := strings.Index(s, "+"); i >= 0 {
+        s = s[:i]
+    }
+    // strip mc version suffix like -1.21.5 or _1.20
+    reMC := regexp.MustCompile(`[-_](?:1\.\d+(?:\.\d+)?)$`)
+    s = reMC.ReplaceAllString(s, "")
+    // remove loader suffixes at end
+    reLoader := regexp.MustCompile(`[-_](fabric|neoforge|forge|quilt|paper|spigot|bukkit)$`)
+    s = reLoader.ReplaceAllString(s, "")
+    // collapse -b- build tags
+    reB := regexp.MustCompile(`[-_]?b\d+`)
+    s = reB.ReplaceAllString(s, "")
+    s = strings.Trim(s, "-_")
+    return s
+}
+
+func basenameFromURL(u string) string {
+    if u == "" { return "" }
+    if parsed, err := urlpkg.Parse(u); err == nil {
+        p := parsed.Path
+        if i := strings.LastIndex(p, "/"); i >= 0 && i+1 < len(p) {
+            return p[i+1:]
+        }
+        return p
+    }
+    return u
+}
+
+func tokenizeFilename(name string) map[string]struct{} {
+    name = strings.ToLower(name)
+    re := regexp.MustCompile(`[^a-z0-9]+`)
+    parts := re.Split(name, -1)
+    set := make(map[string]struct{}, len(parts))
+    for _, p := range parts {
+        p = strings.TrimSpace(p)
+        if len(p) == 0 { continue }
+        set[p] = struct{}{}
+    }
+    return set
+}
+
+func jaccard(a, b map[string]struct{}) float64 {
+    if len(a) == 0 || len(b) == 0 { return 0 }
+    inter := 0
+    union := len(a)
+    for t := range b { if _, ok := a[t]; ok { inter++ } else { union++ } }
+    if union == 0 { return 0 }
+    return float64(inter) / float64(union)
+}
+
+// mapLoader canonicalizes loader tokens to supported values.
+// Supported: fabric, quilt, forge, neoforge, datapack, resourcepack. Never "minecraft".
+func mapLoader(s string) string {
+    s = strings.ToLower(strings.TrimSpace(s))
+    switch s {
+    case "fabric":
+        return "fabric"
+    case "quilt":
+        return "quilt"
+    case "forge":
+        return "forge"
+    case "neoforge":
+        return "neoforge"
+    case "datapack":
+        return "datapack"
+    case "resourcepack":
+        return "resourcepack"
+    default:
+        // Discard "minecraft" or unknowns
+        return ""
+    }
+}
+
+func parseJarMetadata(data []byte) (slug, version, loader string) {
+    zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+    if err != nil {
+        return "", "", ""
+    }
+    for _, f := range zr.File {
+        // Fabric/Quilt
+        if f.Name == "fabric.mod.json" || f.Name == "quilt.mod.json" {
+            rc, err := f.Open()
+            if err != nil {
+                continue
+            }
+            var meta struct {
+                ID      string `json:"id"`
+                Version string `json:"version"`
+            }
+            if err := json.NewDecoder(rc).Decode(&meta); err == nil {
+                slug = meta.ID
+                version = meta.Version
+                if f.Name == "fabric.mod.json" {
+                    loader = "fabric"
+                } else {
+                    loader = "quilt"
+                }
+            }
+            rc.Close()
+            return slug, version, loader
+        }
+        // Forge / NeoForge
+        if strings.EqualFold(f.Name, "META-INF/mods.toml") || strings.EqualFold(f.Name, "META-INF/neoforge.mods.toml") {
+            rc, err := f.Open()
+            if err != nil {
+                continue
+            }
+            b, _ := io.ReadAll(rc)
+            rc.Close()
+            s := string(b)
+            // very light parsing without a TOML dependency
+            // look for first modId and version assignments
+            reID := regexp.MustCompile(`(?m)^\s*modId\s*=\s*"([^"]+)"`)
+            reVer := regexp.MustCompile(`(?m)^\s*version\s*=\s*"([^"]+)"`)
+            if m := reID.FindStringSubmatch(s); len(m) == 2 {
+                slug = m[1]
+            }
+            if m := reVer.FindStringSubmatch(s); len(m) == 2 {
+                version = m[1]
+            }
+            if strings.Contains(strings.ToLower(f.Name), "neoforge") {
+                loader = "neoforge"
+            } else {
+                loader = "forge"
+            }
+            if slug != "" || version != "" {
+                return slug, version, loader
+            }
+        }
+        // Resource packs
+        if strings.EqualFold(f.Name, "pack.mcmeta") {
+            // We cannot extract id/version reliably, but can mark loader
+            loader = "resourcepack"
+        }
+    }
+    return slug, version, loader
 }

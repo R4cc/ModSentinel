@@ -311,6 +311,17 @@ func Init(db *sql.DB) error {
             return err
         }
 
+        // Slug alias map per instance: alias (normalized candidate) -> canonical slug
+        _, err = db.Exec(`CREATE TABLE IF NOT EXISTS slug_aliases (
+            instance_id INTEGER NOT NULL,
+            alias TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            PRIMARY KEY(instance_id, alias)
+        )`)
+        if err != nil {
+            return err
+        }
+
 	// Migration: create a default instance and assign existing mods.
 	var instCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM instances`).Scan(&instCount); err != nil {
@@ -602,6 +613,26 @@ func ListEvents(db *sql.DB, instanceID, limit int) ([]ModEvent, error) {
         return nil, err
     }
     return out, nil
+}
+
+// GetAlias returns the canonical slug for a given alias/candidate within an instance.
+func GetAlias(db *sql.DB, instanceID int, alias string) (string, bool, error) {
+    var slug string
+    err := db.QueryRow(`SELECT slug FROM slug_aliases WHERE instance_id=? AND alias=?`, instanceID, alias).Scan(&slug)
+    if err == sql.ErrNoRows {
+        return "", false, nil
+    }
+    if err != nil {
+        return "", false, err
+    }
+    return slug, true, nil
+}
+
+// SetAlias upserts the alias mapping for an instance.
+func SetAlias(db *sql.DB, instanceID int, alias, slug string) error {
+    _, err := db.Exec(`INSERT INTO slug_aliases(instance_id, alias, slug) VALUES(?,?,?)
+ON CONFLICT(instance_id, alias) DO UPDATE SET slug=excluded.slug`, instanceID, alias, slug)
+    return err
 }
 
 // DashboardStats aggregates counts and recent updates for the dashboard.

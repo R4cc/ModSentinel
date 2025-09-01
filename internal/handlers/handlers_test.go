@@ -105,7 +105,8 @@ func (fakeModClient) Search(ctx context.Context, query string) (*mr.SearchResult
         Title       string `json:"title"`
         Description string `json:"description"`
         IconURL     string `json:"icon_url"`
-    }{{ProjectID: "1", Slug: query, Title: "Fake", Description: "", IconURL: ""}}}, nil
+        Downloads   int    `json:"downloads"`
+    }{{ProjectID: "1", Slug: query, Title: "Fake", Description: "", IconURL: "", Downloads: 0}}}, nil
 }
 
 func (fakeModClient) Resolve(ctx context.Context, slug string) (*mr.Project, string, error) {
@@ -158,7 +159,8 @@ func (matchClient) Search(ctx context.Context, query string) (*mr.SearchResult, 
         Title       string `json:"title"`
         Description string `json:"description"`
         IconURL     string `json:"icon_url"`
-    }{{ProjectID: "1", Slug: "sodium", Title: "Sodium", Description: "", IconURL: ""}}}, nil
+        Downloads   int    `json:"downloads"`
+    }{{ProjectID: "1", Slug: "sodium", Title: "Sodium", Description: "", IconURL: "", Downloads: 0}}}, nil
 }
 
 func TestCreateModHandler_EnforceLoader(t *testing.T) {
@@ -1719,4 +1721,94 @@ func TestJobEventsHandlerStreamsUpdates(t *testing.T) {
 	if !strings.Contains(data, "\"processed\":1") || !strings.Contains(data, "\"failures\"") {
 		t.Fatalf("got %s", data)
 	}
+}
+
+// Ensure per-file state is fresh: two different mods with the same numeric version
+// should not reuse slug/version across iterations.
+func TestPerformSync_StateIsolationSameVersion(t *testing.T) {
+    db := openTestDB(t)
+    defer db.Close()
+
+    inst := &dbpkg.Instance{Name: "i", Loader: "fabric"}
+    if err := dbpkg.InsertInstance(db, inst); err != nil { t.Fatalf("insert inst: %v", err) }
+
+    // Stub PufferPanel
+    origGet := ppGetServer
+    origList := ppListPath
+    origFetch := ppFetchFile
+    ppGetServer = func(ctx context.Context, id string) (*pppkg.ServerDetail, error) {
+        return &pppkg.ServerDetail{ID: id, Name: "srv", Environment: struct{ Type string `json:"type"` }{Type: "fabric"}}, nil
+    }
+    ppListPath = func(ctx context.Context, id, path string) ([]pppkg.FileEntry, error) {
+        return []pppkg.FileEntry{{Name: "NoChatReports-1.20.1-fabric.jar"}, {Name: "pandaantispam-1.20.1-fabric.jar"}}, nil
+    }
+    ppFetchFile = func(ctx context.Context, id, path string) ([]byte, error) { return nil, errors.New("skip") }
+    defer func() { ppGetServer = origGet; ppListPath = origList; ppFetchFile = origFetch }()
+
+    // Stub Modrinth client
+    old := modClient
+    modClient = isoClient{}
+    defer func() { modClient = old }()
+
+    // Invoke performSync
+    w := httptest.NewRecorder()
+    req := httptest.NewRequest(http.MethodPost, "/", nil)
+    prog := newJobProgress()
+    performSync(context.Background(), w, req, db, inst, "srv", prog, nil)
+
+    if w.Code != 0 && w.Code != http.StatusOK { // http.ResponseWriter may not set code; accept OK/zero
+        t.Fatalf("unexpected code %d", w.Code)
+    }
+    var resp struct{
+        Instance dbpkg.Instance `json:"instance"`
+        Unmatched []string `json:"unmatched"`
+        Mods []dbpkg.Mod `json:"mods"`
+    }
+    if err := json.NewDecoder(w.Body).Decode(&resp); err != nil { t.Fatalf("decode: %v", err) }
+    if len(resp.Mods) != 2 { t.Fatalf("mods len=%d", len(resp.Mods)) }
+    urls := map[string]bool{}
+    for _, m := range resp.Mods { urls[m.URL] = true }
+    if !urls["https://modrinth.com/mod/nochatreports"] || !urls["https://modrinth.com/mod/pandaantispam"] {
+        t.Fatalf("unexpected urls: %+v", urls)
+    }
+}
+
+type isoClient struct{}
+func (isoClient) Project(ctx context.Context, slug string) (*mr.Project, error) {
+    title := ""
+    switch strings.ToLower(slug) {
+    case "nochatreports": title = "NoChatReports"
+    case "pandaantispam": title = "PandaAntiSpam"
+    default: title = slug
+    }
+    return &mr.Project{Title: title, IconURL: ""}, nil
+}
+func (isoClient) Versions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error) {
+    return []mr.Version{{
+        ID: "1", VersionNumber: "1.20.1", VersionType: "release", DatePublished: time.Now(), Loaders: []string{"fabric"}, Files: []mr.VersionFile{{URL: "http://example.com/file.jar"}},
+    }}, nil
+}
+func (isoClient) Resolve(ctx context.Context, slug string) (*mr.Project, string, error) {
+    switch strings.ToLower(slug) {
+    case "nochatreports": return &mr.Project{Title: "NoChatReports"}, "nochatreports", nil
+    case "pandaantispam": return &mr.Project{Title: "PandaAntiSpam"}, "pandaantispam", nil
+    default:
+        return &mr.Project{Title: slug}, strings.ToLower(slug), nil
+    }
+}
+func (isoClient) Search(ctx context.Context, query string) (*mr.SearchResult, error) {
+    // prefer exact title slug mapping
+    hits := []struct {
+        ProjectID   string `json:"project_id"`
+        Slug        string `json:"slug"`
+        Title       string `json:"title"`
+        Description string `json:"description"`
+        IconURL     string `json:"icon_url"`
+        Downloads   int    `json:"downloads"`
+    }{}
+    q := strings.ToLower(query)
+    if strings.Contains(q, "nochat") { hits = append(hits, struct{ProjectID string `json:"project_id"`; Slug string `json:"slug"`; Title string `json:"title"`; Description string `json:"description"`; IconURL string `json:"icon_url"`; Downloads int `json:"downloads"`}{"1","nochatreports","NoChatReports","","", 10}) }
+    if strings.Contains(q, "panda") { hits = append(hits, struct{ProjectID string `json:"project_id"`; Slug string `json:"slug"`; Title string `json:"title"`; Description string `json:"description"`; IconURL string `json:"icon_url"`; Downloads int `json:"downloads"`}{"2","pandaantispam","PandaAntiSpam","","", 9}) }
+    if len(hits) == 0 { hits = append(hits, struct{ProjectID string `json:"project_id"`; Slug string `json:"slug"`; Title string `json:"title"`; Description string `json:"description"`; IconURL string `json:"icon_url"`; Downloads int `json:"downloads"`}{"3", q, query, "", "", 0}) }
+    return &mr.SearchResult{Hits: hits}, nil
 }
