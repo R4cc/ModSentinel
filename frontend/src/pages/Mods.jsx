@@ -591,7 +591,7 @@ export default function Mods() {
             </Button>
             {instance.pufferpanel_server_id && (
               <Button
-                variant="secondary"
+                variant="outline"
                 onClick={handleResync}
                 disabled={resyncing}
                 className="gap-xs"
@@ -601,7 +601,7 @@ export default function Mods() {
               </Button>
             )}
             <Button
-              variant="secondary"
+              variant="outline"
               onClick={openLogs}
               className="gap-xs"
             >
@@ -775,13 +775,6 @@ export default function Mods() {
           )}
         </div>
       )}
-      <div className="min-h-5 space-y-xs">
-        {instance?.pufferpanel_server_id && !instance?.last_sync_at && (
-          <p className="text-sm text-muted-foreground">
-            Instance has never been synced from PufferPanel.
-          </p>
-        )}
-      </div>
       {unmatched.length > 0 && (
         <div>
           <h2 className="text-lg font-medium">Unmatched files</h2>
@@ -852,7 +845,7 @@ export default function Mods() {
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
-              <TableHead>Game</TableHead>
+              <TableHead>Game Version</TableHead>
               <TableHead>Loader</TableHead>
               <TableHead>Current</TableHead>
               <TableHead>Available</TableHead>
