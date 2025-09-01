@@ -1030,28 +1030,36 @@ func updateModHandler(db *sql.DB) http.HandlerFunc {
             oldName := deriveName(prev.DownloadURL, oldSlug, prev.Name, prev.CurrentVersion)
             newName := deriveName(m.DownloadURL, newSlug, m.Name, m.CurrentVersion)
             if oldName != newName || prev.CurrentVersion != m.CurrentVersion {
-                // Try delete old
-                if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
-                    for _, f := range files {
-                        if !f.IsDir && strings.EqualFold(f.Name, oldName) {
-                            _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName)
-                            break
-                        }
-                    }
-                } else {
-                    _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName)
-                }
-                // Upload new
+                // Upload new first, verify, then delete old
+                uploaded := false
                 if m.DownloadURL != "" {
                     if reqDL, err := http.NewRequestWithContext(r.Context(), http.MethodGet, m.DownloadURL, nil); err == nil {
                         if resp, err := http.DefaultClient.Do(reqDL); err == nil {
                             defer resp.Body.Close()
                             if resp.StatusCode >= 200 && resp.StatusCode < 300 {
                                 if data, err := io.ReadAll(resp.Body); err == nil && len(data) > 0 {
-                                    _ = pppkg.PutFile(r.Context(), inst.PufferpanelServerID, folder+newName, data)
+                                    if err := pppkg.PutFile(r.Context(), inst.PufferpanelServerID, folder+newName, data); err == nil {
+                                        if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
+                                            for _, f := range files {
+                                                if !f.IsDir && strings.EqualFold(f.Name, newName) { uploaded = true; break }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
+                    }
+                }
+                if uploaded {
+                    if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
+                        for _, f := range files {
+                            if !f.IsDir && strings.EqualFold(f.Name, oldName) {
+                                _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName)
+                                break
+                            }
+                        }
+                    } else {
+                        _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName)
                     }
                 }
             }
@@ -1198,22 +1206,31 @@ func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
             oldName := deriveName(prev.DownloadURL, oldSlug, prev.Name, prev.CurrentVersion)
             newName := deriveName(m.DownloadURL, newSlug, m.Name, m.CurrentVersion)
             if oldName != newName || prev.CurrentVersion != m.CurrentVersion {
-                if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
-                    for _, f := range files {
-                        if !f.IsDir && strings.EqualFold(f.Name, oldName) { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName); break }
-                    }
-                } else { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName) }
+                uploaded := false
                 if m.DownloadURL != "" {
                     if reqDL, err := http.NewRequestWithContext(r.Context(), http.MethodGet, m.DownloadURL, nil); err == nil {
                         if resp, err := http.DefaultClient.Do(reqDL); err == nil {
                             defer resp.Body.Close()
                             if resp.StatusCode >= 200 && resp.StatusCode < 300 {
                                 if data, err := io.ReadAll(resp.Body); err == nil && len(data) > 0 {
-                                    _ = pppkg.PutFile(r.Context(), inst.PufferpanelServerID, folder+newName, data)
+                                    if err := pppkg.PutFile(r.Context(), inst.PufferpanelServerID, folder+newName, data); err == nil {
+                                        if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
+                                            for _, f := range files {
+                                                if !f.IsDir && strings.EqualFold(f.Name, newName) { uploaded = true; break }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+                }
+                if uploaded {
+                    if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
+                        for _, f := range files {
+                            if !f.IsDir && strings.EqualFold(f.Name, oldName) { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName); break }
+                        }
+                    } else { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName) }
                 }
             }
         }

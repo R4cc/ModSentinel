@@ -1081,9 +1081,12 @@ export default function Mods() {
           </div>
         </form>
       </Modal>
-      <Modal open={logsOpen} onClose={() => setLogsOpen(false)}>
-        <div className="space-y-sm max-w-3xl">
-          <h2 className="text-lg font-medium">Activity Logs</h2>
+      <Modal open={logsOpen} onClose={() => setLogsOpen(false)} className="max-w-5xl w-[92vw]">
+        <div className="space-y-sm">
+          <div className="flex items-center justify-between gap-sm">
+            <h2 className="text-lg font-medium">Activity Logs</h2>
+            <Button variant="secondary" size="sm" onClick={() => setLogsOpen(false)}>Close</Button>
+          </div>
           {logsLoading ? (
             <Skeleton className="h-32 w-full" />
           ) : logs.length === 0 ? (
@@ -1119,7 +1122,7 @@ export default function Mods() {
                           </span>
                         </TableCell>
                         <TableCell className="text-sm">{ev.mod_name}</TableCell>
-                        <TableCell className="text-sm">
+                        <TableCell className="text-sm whitespace-nowrap">
                           {ev.action === "updated" && ev.from_version
                             ? `${ev.from_version} → ${ev.to_version || ""}`
                             : ev.action === "added"
