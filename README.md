@@ -51,6 +51,32 @@ Start it:
 docker compose up -d
 ```
 
+Development profile with enhanced logging:
+
+```yaml
+services:
+  modsentinel-dev:
+    profiles: ["dev"]
+    image: nl2109/modsentinel:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - APP_ENV=dev
+      # - MODSENTINEL_MODRINTH_TOKEN=your-token-here
+    volumes:
+      - modsentinel-data:/data
+
+volumes:
+  modsentinel-data: {}
+```
+
+Run with the dev profile to enable debug logs (including Modrinth match failures and per-instance add/update events):
+
+```bash
+docker compose --profile dev up -d modsentinel-dev
+```
+
 Ingress/proxy note: route both `/api/*` and `/*` to the service so the SPA is served for non‑API routes.
 
 ## Configuration

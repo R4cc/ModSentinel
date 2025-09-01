@@ -1537,6 +1537,12 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
 	}
     prog.setTotal(len(files))
     matched := make([]dbpkg.Mod, 0)
+    log.Debug().
+        Int("instance_id", inst.ID).
+        Str("server_id", serverID).
+        Str("loader", inst.Loader).
+        Int("files_count", len(files)).
+        Msg("starting sync scan")
 
     // Build a quick lookup of existing mods by canonical URL to avoid duplicates
     existingMods, err := dbpkg.ListMods(db, inst.ID)
@@ -1550,13 +1556,13 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
     }
 	unmatched := make([]string, 0, len(files))
 
-	for _, f := range files {
-		if ctx.Err() != nil {
-			return
-		}
-		meta := parseJarFilename(f)
-		slug, ver := meta.Slug, meta.Version
-		scanned := false
+    for _, f := range files {
+        if ctx.Err() != nil {
+            return
+        }
+        meta := parseJarFilename(f)
+        slug, ver := meta.Slug, meta.Version
+        scanned := false
 		if creds.DeepScan && (slug == "" || ver == "") {
 			scanned = true
 			time.Sleep(100 * time.Millisecond)
@@ -1571,6 +1577,12 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                if slug == "" || ver == "" {
                         unmatched = append(unmatched, f)
                         prog.fail(f, errors.New("missing slug or version"))
+                        log.Debug().
+                            Int("instance_id", inst.ID).
+                            Str("server_id", serverID).
+                            Str("file", f).
+                            Bool("deep_scanned", scanned).
+                            Msg("modrinth match failed: missing slug or version")
                         if slug != "" {
                                 _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
                         }
@@ -1594,6 +1606,14 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                         }
                         unmatched = append(unmatched, f)
                         prog.fail(f, err)
+                        log.Debug().
+                            Int("instance_id", inst.ID).
+                            Str("server_id", serverID).
+                            Str("file", f).
+                            Str("slug", slug).
+                            Str("version", ver).
+                            Err(err).
+                            Msg("modrinth resolve failed")
                         _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
                         continue
                }
@@ -1604,6 +1624,14 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                         }
                         unmatched = append(unmatched, f)
                         prog.fail(f, err)
+                        log.Debug().
+                            Int("instance_id", inst.ID).
+                            Str("server_id", serverID).
+                            Str("file", f).
+                            Str("slug", slug).
+                            Str("version", ver).
+                            Err(err).
+                            Msg("modrinth versions fetch failed")
                         _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
                         continue
                }
@@ -1619,6 +1647,13 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                if !found {
                         unmatched = append(unmatched, f)
                         prog.fail(f, fmt.Errorf("version %s not found", ver))
+                        log.Debug().
+                            Int("instance_id", inst.ID).
+                            Str("server_id", serverID).
+                            Str("file", f).
+                            Str("slug", slug).
+                            Str("version", ver).
+                            Msg("modrinth match failed: version not found")
                         _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
                         continue
                }
@@ -1665,6 +1700,15 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                                         _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
                                         continue
                                 }
+                                log.Debug().
+                                    Int("instance_id", inst.ID).
+                                    Str("server_id", serverID).
+                                    Str("file", f).
+                                    Str("slug", slug).
+                                    Str("name", m.Name).
+                                    Str("version", m.CurrentVersion).
+                                    Str("loader", m.Loader).
+                                    Msg("updated mod for instance")
                         }
                         matched = append(matched, m)
                         prog.success()
@@ -1682,10 +1726,19 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                }
                // Track newly inserted so subsequent duplicates in same run update instead of reinsert
                existingByURL[key] = m
+               log.Debug().
+                    Int("instance_id", inst.ID).
+                    Str("server_id", serverID).
+                    Str("file", f).
+                    Str("slug", slug).
+                    Str("name", m.Name).
+                    Str("version", m.CurrentVersion).
+                    Str("loader", m.Loader).
+                    Msg("added mod to instance")
                matched = append(matched, m)
                prog.success()
                _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobSucceeded)
-	}
+    }
 	if err := dbpkg.UpdateInstanceSync(db, inst.ID, len(matched), 0, len(unmatched)); err != nil {
 		httpx.Write(w, r, httpx.Internal(err))
 		return

@@ -15,6 +15,21 @@ services:
       # Use a named volume so the app (running as nonroot) can write the SQLite DB and WAL files
       - modsentinel-data:/data
 
+  # Development profile with enhanced logging
+  modsentinel-dev:
+    profiles: ["dev"]
+    image: nl2109/modsentinel:latest
+    # build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - APP_ENV=dev
+      # Optionally seed the Modrinth token for local testing
+      # - MODSENTINEL_MODRINTH_TOKEN=your-token-here
+    volumes:
+      - modsentinel-data:/data
+
 volumes:
   modsentinel-data: {}
 

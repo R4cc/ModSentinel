@@ -75,7 +75,15 @@ func checkDBRW(db *sql.DB) error {
 }
 
 func main() {
-	log.Logger = zerolog.New(logx.NewRedactor(os.Stdout)).With().Timestamp().Logger()
+    log.Logger = zerolog.New(logx.NewRedactor(os.Stdout)).With().Timestamp().Logger()
+    // Enable more verbose logging in development
+    switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) {
+    case "dev", "development", "debug":
+        zerolog.SetGlobalLevel(zerolog.DebugLevel)
+        log.Info().Str("app_env", os.Getenv("APP_ENV")).Msg("debug logging enabled")
+    default:
+        // Keep default (info) level
+    }
 	if len(os.Args) > 1 && os.Args[1] == "admin" {
 		adminMain(os.Args[2:])
 		return
