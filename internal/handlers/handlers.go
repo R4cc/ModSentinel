@@ -1700,6 +1700,10 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
 	}
     prog.setTotal(len(files))
     matched := make([]dbpkg.Mod, 0)
+    // Track discovered canonical URLs from server to drive deletions
+    discovered := make(map[string]struct{})
+    // Basic counts
+    var addedCount, updatedCount int
     log.Debug().
         Int("instance_id", inst.ID).
         Str("server_id", serverID).
@@ -1850,6 +1854,7 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                }
                // Deduplicate by canonical URL per instance. Update existing instead of inserting.
                key := strings.TrimSpace(strings.ToLower(m.URL))
+               discovered[key] = struct{}{}
                if prev, ok := existingByURL[key]; ok {
                         // Update fields if changed to reflect current scan
                         m.ID = prev.ID
@@ -1863,6 +1868,7 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                                         _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
                                         continue
                                 }
+                                updatedCount++
                                 log.Debug().
                                     Int("instance_id", inst.ID).
                                     Str("server_id", serverID).
@@ -1889,6 +1895,8 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                }
                // Track newly inserted so subsequent duplicates in same run update instead of reinsert
                existingByURL[key] = m
+               discovered[key] = struct{}{}
+               addedCount++
                log.Debug().
                     Int("instance_id", inst.ID).
                     Str("server_id", serverID).
@@ -1902,21 +1910,54 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                prog.success()
                _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobSucceeded)
     }
-	if err := dbpkg.UpdateInstanceSync(db, inst.ID, len(matched), 0, len(unmatched)); err != nil {
-		httpx.Write(w, r, httpx.Internal(err))
-		return
-	}
-	inst2, err := dbpkg.GetInstance(db, inst.ID)
-	if err != nil {
-		httpx.Write(w, r, httpx.Internal(err))
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(struct {
-		Instance  dbpkg.Instance `json:"instance"`
-		Unmatched []string       `json:"unmatched"`
-		Mods      []dbpkg.Mod    `json:"mods"`
-	}{*inst2, unmatched, matched})
+    // Build a quick set of existing jar filenames for presence checks
+    fileSet := make(map[string]struct{}, len(files))
+    for _, name := range files { fileSet[strings.ToLower(name)] = struct{}{} }
+    // Delete mods from DB that have no corresponding jar on the server
+    for _, em := range existingMods {
+        // Candidates: basename of download_url, or slug-currentVersion.jar
+        candidates := []string{}
+        if u, err := urlpkg.Parse(em.DownloadURL); err == nil {
+            if p := u.Path; p != "" {
+                if i := strings.LastIndex(p, "/"); i != -1 && i+1 < len(p) {
+                    if nm := p[i+1:]; nm != "" { candidates = append(candidates, strings.ToLower(nm)) }
+                }
+            }
+        }
+        if slug, err := parseModrinthSlug(em.URL); err == nil {
+            base := strings.TrimSpace(slug)
+            if base == "" { base = strings.TrimSpace(em.Name) }
+            if base == "" { base = "mod" }
+            ver := strings.TrimSpace(em.CurrentVersion)
+            if ver == "" { ver = "latest" }
+            candidates = append(candidates, strings.ToLower(base+"-"+ver+".jar"))
+        }
+        present := false
+        for _, c := range candidates {
+            if _, ok := fileSet[c]; ok { present = true; break }
+        }
+        if !present {
+            _ = dbpkg.DeleteMod(db, em.ID)
+            updatedCount++ // treat deletions as instance changes for sync stats
+        }
+    }
+    if err := dbpkg.UpdateInstanceSync(db, inst.ID, addedCount, updatedCount, len(unmatched)); err != nil {
+        httpx.Write(w, r, httpx.Internal(err))
+        return
+    }
+    inst2, err := dbpkg.GetInstance(db, inst.ID)
+    if err != nil {
+        httpx.Write(w, r, httpx.Internal(err))
+        return
+    }
+    // Return full current mod list for the instance after sync
+    currentMods, _ := dbpkg.ListMods(db, inst.ID)
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(struct {
+        Instance  dbpkg.Instance `json:"instance"`
+        Unmatched []string       `json:"unmatched"`
+        Mods      []dbpkg.Mod    `json:"mods"`
+    }{*inst2, unmatched, currentMods})
 }
 
 func dashboardHandler(db *sql.DB) http.HandlerFunc {
