@@ -800,6 +800,9 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
             return
         }
         // If client provided an explicit Modrinth version ID, honor it.
+        // Keep the selected file URL separate so later enrichment does not overwrite it.
+        selectedURL := ""
+        selectedVersion := ""
         if vid := strings.TrimSpace(req.VersionID); vid != "" {
             versions, err := modClient.Versions(r.Context(), slug, m.GameVersion, m.Loader)
             if err != nil {
@@ -813,7 +816,9 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
                     m.Channel = strings.ToLower(v.VersionType)
                     if len(v.Files) > 0 {
                         m.DownloadURL = v.Files[0].URL
+                        selectedURL = m.DownloadURL
                     }
+                    selectedVersion = m.CurrentVersion
                     found = true
                     break
                 }
@@ -838,7 +843,16 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
         }
         // If this instance is linked to PufferPanel, attempt to download the selected file
         // and upload it to the appropriate folder on the server (mods/ or plugins/).
-        if inst.PufferpanelServerID != "" && m.DownloadURL != "" {
+        // Use the explicitly selected version file if provided, otherwise fall back to current m.DownloadURL.
+        dlURL := m.DownloadURL
+        verForName := m.CurrentVersion
+        if selectedURL != "" {
+            dlURL = selectedURL
+            if selectedVersion != "" {
+                verForName = selectedVersion
+            }
+        }
+        if inst.PufferpanelServerID != "" && dlURL != "" {
             folder := "mods/"
             switch strings.ToLower(inst.Loader) {
             case "paper", "spigot", "bukkit":
@@ -863,14 +877,14 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
                 if base == "" {
                     base = "mod"
                 }
-                ver := strings.TrimSpace(m.CurrentVersion)
+                ver := strings.TrimSpace(verForName)
                 if ver == "" {
                     ver = "latest"
                 }
                 return base + "-" + ver + ".jar"
-            }(m.DownloadURL)
+            }(dlURL)
             // Fetch file bytes
-            reqDL, err := http.NewRequestWithContext(r.Context(), http.MethodGet, m.DownloadURL, nil)
+            reqDL, err := http.NewRequestWithContext(r.Context(), http.MethodGet, dlURL, nil)
             if err == nil {
                 resp, err := http.DefaultClient.Do(reqDL)
                 if err == nil {
