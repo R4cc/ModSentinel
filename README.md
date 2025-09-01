@@ -71,10 +71,10 @@ volumes:
   modsentinel-data: {}
 ```
 
-Run with the dev profile to enable debug logs (including Modrinth match failures and per-instance add/update events):
+Run with the dev profile to enable debug logs (including Modrinth match failures and per-instance add/update events). The dev profile builds the image locally so the frontend is included:
 
 ```bash
-docker compose --profile dev up -d modsentinel-dev
+docker compose --profile dev up --build -d modsentinel-dev
 ```
 
 Ingress/proxy note: route both `/api/*` and `/*` to the service so the SPA is served for non‑API routes.
