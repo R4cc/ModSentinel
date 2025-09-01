@@ -47,6 +47,18 @@ type ModUpdate struct {
         UpdatedAt string `json:"updated_at"`
 }
 
+// ModEvent represents an instance activity log entry for mods.
+type ModEvent struct {
+    ID         int    `json:"id"`
+    InstanceID int    `json:"instance_id"`
+    ModID      *int   `json:"mod_id,omitempty"`
+    Action     string `json:"action"`
+    ModName    string `json:"mod_name"`
+    From       string `json:"from_version,omitempty"`
+    To         string `json:"to_version,omitempty"`
+    CreatedAt  string `json:"created_at"`
+}
+
 // ModSyncState tracks the last sync attempt for a mod on an instance.
 type ModSyncState struct {
         Slug        string `json:"slug"`
@@ -282,6 +294,21 @@ func Init(db *sql.DB) error {
  )`)
         if err != nil {
                 return err
+        }
+
+        // Activity log table for instance mod changes
+        _, err = db.Exec(`CREATE TABLE IF NOT EXISTS mod_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instance_id INTEGER NOT NULL,
+            mod_id INTEGER,
+            action TEXT NOT NULL,
+            mod_name TEXT NOT NULL,
+            from_version TEXT,
+            to_version TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`)
+        if err != nil {
+            return err
         }
 
 	// Migration: create a default instance and assign existing mods.
@@ -528,6 +555,53 @@ func InsertUpdateIfNew(db *sql.DB, modID int, version string) error {
 	_, err := db.Exec(`INSERT INTO updates(mod_id, version)
                SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM updates WHERE mod_id=? AND version=?)`, modID, version, modID, version)
 	return err
+}
+
+// InsertEvent stores a mod activity log entry.
+func InsertEvent(db *sql.DB, ev *ModEvent) error {
+    var modID any
+    if ev.ModID == nil {
+        modID = nil
+    } else {
+        modID = *ev.ModID
+    }
+    res, err := db.Exec(`INSERT INTO mod_events(instance_id, mod_id, action, mod_name, from_version, to_version) VALUES(?,?,?,?,?,?)`, ev.InstanceID, modID, ev.Action, ev.ModName, ev.From, ev.To)
+    if err != nil {
+        return err
+    }
+    if id, err2 := res.LastInsertId(); err2 == nil {
+        ev.ID = int(id)
+    }
+    return nil
+}
+
+// ListEvents returns recent mod events for an instance ordered by newest first.
+func ListEvents(db *sql.DB, instanceID, limit int) ([]ModEvent, error) {
+    if limit <= 0 || limit > 500 {
+        limit = 100
+    }
+    rows, err := db.Query(`SELECT id, instance_id, mod_id, action, mod_name, IFNULL(from_version,''), IFNULL(to_version,''), IFNULL(created_at,'') FROM mod_events WHERE instance_id=? ORDER BY id DESC LIMIT ?`, instanceID, limit)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+    out := []ModEvent{}
+    for rows.Next() {
+        var ev ModEvent
+        var modID sql.NullInt64
+        if err := rows.Scan(&ev.ID, &ev.InstanceID, &modID, &ev.Action, &ev.ModName, &ev.From, &ev.To, &ev.CreatedAt); err != nil {
+            return nil, err
+        }
+        if modID.Valid {
+            id := int(modID.Int64)
+            ev.ModID = &id
+        }
+        out = append(out, ev)
+    }
+    if err := rows.Err(); err != nil {
+        return nil, err
+    }
+    return out, nil
 }
 
 // DashboardStats aggregates counts and recent updates for the dashboard.

@@ -421,6 +421,7 @@ func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 	r.Get("/favicon.ico", serveFavicon(dist))
 	r.Get("/api/instances", listInstancesHandler(db))
 	r.Get("/api/instances/{id}", getInstanceHandler(db))
+    r.Get("/api/instances/{id:\\d+}/logs", listInstanceLogsHandler(db))
 	r.Post("/api/instances/validate", validateInstanceHandler())
 	r.Post("/api/instances", createInstanceHandler(db))
 	r.Put("/api/instances/{id}", updateInstanceHandler(db))
@@ -841,6 +842,8 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
             httpx.Write(w, r, httpx.Internal(err))
             return
         }
+        // Log event: mod added (best-effort)
+        _ = dbpkg.InsertEvent(db, &dbpkg.ModEvent{InstanceID: m.InstanceID, ModID: &m.ID, Action: "added", ModName: m.Name, To: m.CurrentVersion})
         // If this instance is linked to PufferPanel, attempt to download the selected file
         // and upload it to the appropriate folder on the server (mods/ or plugins/).
         // Use the explicitly selected version file if provided, otherwise fall back to current m.DownloadURL.
@@ -994,6 +997,9 @@ func updateModHandler(db *sql.DB) http.HandlerFunc {
             httpx.Write(w, r, httpx.Internal(err))
             return
         }
+        if prev.CurrentVersion != m.CurrentVersion {
+            _ = dbpkg.InsertEvent(db, &dbpkg.ModEvent{InstanceID: m.InstanceID, ModID: &m.ID, Action: "updated", ModName: m.Name, From: prev.CurrentVersion, To: m.CurrentVersion})
+        }
         // If instance is linked to PufferPanel and the version changed, reflect update on server
         if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil && inst.PufferpanelServerID != "" {
             folder := "mods/"
@@ -1076,6 +1082,8 @@ func deleteModHandler(db *sql.DB) http.HandlerFunc {
             return
         }
         // Attempt to delete the file from PufferPanel if linked
+        var before *dbpkg.Mod
+        if mb, err := dbpkg.GetMod(db, id); err == nil { before = mb }
         if m, err := dbpkg.GetMod(db, id); err == nil {
             if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil && inst.PufferpanelServerID != "" {
                 folder := "mods/"
@@ -1114,6 +1122,9 @@ func deleteModHandler(db *sql.DB) http.HandlerFunc {
             http.Error(w, err.Error(), http.StatusInternalServerError)
             return
         }
+        if before != nil {
+            _ = dbpkg.InsertEvent(db, &dbpkg.ModEvent{InstanceID: before.InstanceID, ModID: &before.ID, Action: "deleted", ModName: before.Name, From: before.CurrentVersion})
+        }
         mods, err := dbpkg.ListMods(db, instID)
         if err != nil {
             http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1144,6 +1155,7 @@ func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
             httpx.Write(w, r, httpx.Internal(err))
             return
         }
+        _ = dbpkg.InsertEvent(db, &dbpkg.ModEvent{InstanceID: m.InstanceID, ModID: &m.ID, Action: "updated", ModName: m.Name, From: prev.CurrentVersion, To: m.CurrentVersion})
         // Mirror change to PufferPanel if configured
         if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil && inst.PufferpanelServerID != "" {
             folder := "mods/"
@@ -1192,6 +1204,30 @@ func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
         }
         w.Header().Set("Content-Type", "application/json")
         json.NewEncoder(w).Encode(m)
+    }
+}
+
+func listInstanceLogsHandler(db *sql.DB) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        idStr := chi.URLParam(r, "id")
+        id, err := strconv.Atoi(idStr)
+        if err != nil {
+            httpx.Write(w, r, httpx.BadRequest("invalid id"))
+            return
+        }
+        limit := 100
+        if s := strings.TrimSpace(r.URL.Query().Get("limit")); s != "" {
+            if n, err := strconv.Atoi(s); err == nil {
+                limit = n
+            }
+        }
+        events, err := dbpkg.ListEvents(db, id, limit)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(events)
     }
 }
 
@@ -1868,6 +1904,9 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                                         _ = dbpkg.SetModSyncState(db, inst.ID, slug, ver, JobFailed)
                                         continue
                                 }
+                                if prev.CurrentVersion != m.CurrentVersion {
+                                    _ = dbpkg.InsertEvent(db, &dbpkg.ModEvent{InstanceID: m.InstanceID, ModID: &m.ID, Action: "updated", ModName: m.Name, From: prev.CurrentVersion, To: m.CurrentVersion})
+                                }
                                 updatedCount++
                                 log.Debug().
                                     Int("instance_id", inst.ID).
@@ -1897,6 +1936,7 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                existingByURL[key] = m
                discovered[key] = struct{}{}
                addedCount++
+               _ = dbpkg.InsertEvent(db, &dbpkg.ModEvent{InstanceID: m.InstanceID, ModID: &m.ID, Action: "added", ModName: m.Name, To: m.CurrentVersion})
                log.Debug().
                     Int("instance_id", inst.ID).
                     Str("server_id", serverID).
@@ -1938,6 +1978,7 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
         }
         if !present {
             _ = dbpkg.DeleteMod(db, em.ID)
+            _ = dbpkg.InsertEvent(db, &dbpkg.ModEvent{InstanceID: em.InstanceID, ModID: &em.ID, Action: "deleted", ModName: em.Name, From: em.CurrentVersion})
             updatedCount++ // treat deletions as instance changes for sync stats
         }
     }

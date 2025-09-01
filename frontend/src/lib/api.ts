@@ -59,6 +59,17 @@ export interface ModUpdate {
   updated_at: string;
 }
 
+export interface ModEvent {
+  id: number;
+  instance_id: number;
+  mod_id?: number;
+  action: "added" | "deleted" | "updated";
+  mod_name: string;
+  from_version?: string;
+  to_version?: string;
+  created_at: string;
+}
+
 async function parseJSON(res: Response): Promise<any> {
   const ct = res.headers.get("Content-Type") || "";
   if (!ct.includes("application/json")) return undefined;
@@ -249,6 +260,14 @@ export async function deleteMod(
 ): Promise<Mod[]> {
   const res = await apiFetch(`/api/mods/${id}?instance_id=${instanceId}`, {
     method: "DELETE",
+    cache: "no-store",
+  });
+  if (!res.ok) throw await parseError(res);
+  return parseJSON(res);
+}
+
+export async function getInstanceLogs(id: number, limit = 200): Promise<ModEvent[]> {
+  const res = await apiFetch(`/api/instances/${id}/logs?limit=${limit}`, {
     cache: "no-store",
   });
   if (!res.ok) throw await parseError(res);

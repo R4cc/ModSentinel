@@ -9,7 +9,9 @@ import {
   Package,
   RefreshCw,
   RotateCw,
+  FileText,
   Download,
+  Plus,
   Trash2,
   Plus,
   ExternalLink,
@@ -48,6 +50,7 @@ import {
   getSecretStatus,
   checkMod,
   updateModVersion,
+  getInstanceLogs,
 } from "@/lib/api.ts";
 import { cn } from "@/lib/utils.js";
 import { toast } from "@/lib/toast.ts";
@@ -90,6 +93,9 @@ export default function Mods() {
     errors: 0,
   });
   const [updatingId, setUpdatingId] = useState(null);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [logs, setLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
 
   // helper for colored loader badge
   function loaderBadgeClass(loader) {
@@ -459,6 +465,19 @@ export default function Mods() {
     }
   }
 
+  async function openLogs() {
+    setLogsOpen(true);
+    setLogsLoading(true);
+    try {
+      const data = await getInstanceLogs(instanceId, 250);
+      setLogs(data || []);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to load logs");
+    } finally {
+      setLogsLoading(false);
+    }
+  }
+
   function getProjectUrl(m) {
     const extractId = (url) => {
       if (!url) return null;
@@ -582,6 +601,14 @@ export default function Mods() {
                 {resyncing ? "Resyncing" : "Resync"}
               </Button>
             )}
+            <Button
+              variant="secondary"
+              onClick={openLogs}
+              className="gap-xs"
+            >
+              <FileText className="h-4 w-4" aria-hidden />
+              Logs
+            </Button>
             <Button
               variant="outline"
               onClick={() => {
@@ -1054,6 +1081,60 @@ export default function Mods() {
             <Button type="submit">Save</Button>
           </div>
         </form>
+      </Modal>
+      <Modal open={logsOpen} onClose={() => setLogsOpen(false)}>
+        <div className="space-y-sm max-w-3xl">
+          <h2 className="text-lg font-medium">Activity Logs</h2>
+          {logsLoading ? (
+            <Skeleton className="h-32 w-full" />
+          ) : logs.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No activity yet.</p>
+          ) : (
+            <div className="max-h-96 overflow-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Time</TableHead>
+                    <TableHead>Action</TableHead>
+                    <TableHead>Mod</TableHead>
+                    <TableHead>Details</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {logs.map((ev) => {
+                    const when = new Date(ev.created_at).toLocaleString();
+                    const color =
+                      ev.action === "added"
+                        ? "text-emerald-600"
+                        : ev.action === "deleted"
+                          ? "text-red-600"
+                          : "text-sky-600";
+                    const Icon = ev.action === "added" ? Plus : ev.action === "deleted" ? Trash2 : Download;
+                    return (
+                      <TableRow key={ev.id}>
+                        <TableCell className="whitespace-nowrap text-sm text-muted-foreground">{when}</TableCell>
+                        <TableCell className="text-sm">
+                          <span className={cn("inline-flex items-center gap-1", color)}>
+                            <Icon className="h-4 w-4" aria-hidden />
+                            {ev.action}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-sm">{ev.mod_name}</TableCell>
+                        <TableCell className="text-sm">
+                          {ev.action === "updated" && ev.from_version
+                            ? `${ev.from_version} → ${ev.to_version || ""}`
+                            : ev.action === "added"
+                              ? ev.to_version
+                              : ev.from_version}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </div>
       </Modal>
     </div>
   );
