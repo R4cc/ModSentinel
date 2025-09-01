@@ -940,18 +940,24 @@ func checkModHandler(db *sql.DB) http.HandlerFunc {
 }
 
 func updateModHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		idStr := chi.URLParam(r, "id")
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			httpx.Write(w, r, httpx.BadRequest("invalid id"))
-			return
-		}
-		var m dbpkg.Mod
-		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-			httpx.Write(w, r, httpx.BadRequest("invalid json"))
-			return
-		}
+    return func(w http.ResponseWriter, r *http.Request) {
+        idStr := chi.URLParam(r, "id")
+        id, err := strconv.Atoi(idStr)
+        if err != nil {
+            httpx.Write(w, r, httpx.BadRequest("invalid id"))
+            return
+        }
+        // Load existing mod to detect version/file changes for PufferPanel
+        prev, err := dbpkg.GetMod(db, id)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        var m dbpkg.Mod
+        if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+            httpx.Write(w, r, httpx.BadRequest("invalid json"))
+            return
+        }
 		m.ID = id
 		if err := validatePayload(&m); err != nil {
 			httpx.Write(w, r, err)
@@ -970,15 +976,71 @@ func updateModHandler(db *sql.DB) http.HandlerFunc {
 			writeModrinthError(w, r, err)
 			return
 		}
-		if err := dbpkg.UpdateMod(db, &m); err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		mods, err := dbpkg.ListMods(db, m.InstanceID)
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
+        if err := dbpkg.UpdateMod(db, &m); err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        // If instance is linked to PufferPanel and the version changed, reflect update on server
+        if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil && inst.PufferpanelServerID != "" {
+            folder := "mods/"
+            switch strings.ToLower(inst.Loader) {
+            case "paper", "spigot", "bukkit":
+                folder = "plugins/"
+            }
+            // Helper to derive filename from URL or fallback slug-version.jar
+            deriveName := func(rawURL, slug, defName, version string) string {
+                if u, err := urlpkg.Parse(rawURL); err == nil {
+                    p := u.Path
+                    if i := strings.LastIndex(p, "/"); i != -1 && i+1 < len(p) {
+                        name := p[i+1:]
+                        if name != "" {
+                            return name
+                        }
+                    }
+                }
+                base := strings.TrimSpace(slug)
+                if base == "" { base = strings.TrimSpace(defName) }
+                if base == "" { base = "mod" }
+                ver := strings.TrimSpace(version)
+                if ver == "" { ver = "latest" }
+                return base + "-" + ver + ".jar"
+            }
+            oldSlug, _ := parseModrinthSlug(prev.URL)
+            newSlug, _ := parseModrinthSlug(m.URL)
+            oldName := deriveName(prev.DownloadURL, oldSlug, prev.Name, prev.CurrentVersion)
+            newName := deriveName(m.DownloadURL, newSlug, m.Name, m.CurrentVersion)
+            if oldName != newName || prev.CurrentVersion != m.CurrentVersion {
+                // Try delete old
+                if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
+                    for _, f := range files {
+                        if !f.IsDir && strings.EqualFold(f.Name, oldName) {
+                            _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName)
+                            break
+                        }
+                    }
+                } else {
+                    _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName)
+                }
+                // Upload new
+                if m.DownloadURL != "" {
+                    if reqDL, err := http.NewRequestWithContext(r.Context(), http.MethodGet, m.DownloadURL, nil); err == nil {
+                        if resp, err := http.DefaultClient.Do(reqDL); err == nil {
+                            defer resp.Body.Close()
+                            if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+                                if data, err := io.ReadAll(resp.Body); err == nil && len(data) > 0 {
+                                    _ = pppkg.PutFile(r.Context(), inst.PufferpanelServerID, folder+newName, data)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        mods, err := dbpkg.ListMods(db, m.InstanceID)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		json.NewEncoder(w).Encode(mods)
@@ -986,28 +1048,63 @@ func updateModHandler(db *sql.DB) http.HandlerFunc {
 }
 
 func deleteModHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		idStr := chi.URLParam(r, "id")
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			http.Error(w, "invalid id", http.StatusBadRequest)
-			return
-		}
-		instStr := r.URL.Query().Get("instance_id")
-		instID, err := strconv.Atoi(instStr)
-		if err != nil {
-			http.Error(w, "invalid instance_id", http.StatusBadRequest)
-			return
-		}
-		if err := dbpkg.DeleteMod(db, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		mods, err := dbpkg.ListMods(db, instID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+    return func(w http.ResponseWriter, r *http.Request) {
+        idStr := chi.URLParam(r, "id")
+        id, err := strconv.Atoi(idStr)
+        if err != nil {
+            http.Error(w, "invalid id", http.StatusBadRequest)
+            return
+        }
+        instStr := r.URL.Query().Get("instance_id")
+        instID, err := strconv.Atoi(instStr)
+        if err != nil {
+            http.Error(w, "invalid instance_id", http.StatusBadRequest)
+            return
+        }
+        // Attempt to delete the file from PufferPanel if linked
+        if m, err := dbpkg.GetMod(db, id); err == nil {
+            if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil && inst.PufferpanelServerID != "" {
+                folder := "mods/"
+                switch strings.ToLower(inst.Loader) {
+                case "paper", "spigot", "bukkit":
+                    folder = "plugins/"
+                }
+                slug, _ := parseModrinthSlug(m.URL)
+                // Candidate names: URL basename then slug-version.jar
+                candidates := []string{}
+                if u, err := urlpkg.Parse(m.DownloadURL); err == nil {
+                    if p := u.Path; p != "" {
+                        if i := strings.LastIndex(p, "/"); i != -1 && i+1 < len(p) {
+                            if name := p[i+1:]; name != "" { candidates = append(candidates, name) }
+                        }
+                    }
+                }
+                base := strings.TrimSpace(slug)
+                if base == "" { base = strings.TrimSpace(m.Name) }
+                if base == "" { base = "mod" }
+                ver := strings.TrimSpace(m.CurrentVersion)
+                if ver == "" { ver = "latest" }
+                candidates = append(candidates, base+"-"+ver+".jar")
+                if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
+                    present := map[string]bool{}
+                    for _, f := range files { present[strings.ToLower(f.Name)] = true }
+                    for _, nm := range candidates {
+                        if present[strings.ToLower(nm)] { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+nm); break }
+                    }
+                } else {
+                    for _, nm := range candidates { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+nm) }
+                }
+            }
+        }
+        if err := dbpkg.DeleteMod(db, id); err != nil {
+            http.Error(w, err.Error(), http.StatusInternalServerError)
+            return
+        }
+        mods, err := dbpkg.ListMods(db, instID)
+        if err != nil {
+            http.Error(w, err.Error(), http.StatusInternalServerError)
+            return
+        }
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		json.NewEncoder(w).Encode(mods)
@@ -1015,21 +1112,73 @@ func deleteModHandler(db *sql.DB) http.HandlerFunc {
 }
 
 func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		idStr := chi.URLParam(r, "id")
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			httpx.Write(w, r, httpx.BadRequest("invalid id"))
-			return
-		}
-		m, err := dbpkg.ApplyUpdate(db, id)
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(m)
-	}
+    return func(w http.ResponseWriter, r *http.Request) {
+        idStr := chi.URLParam(r, "id")
+        id, err := strconv.Atoi(idStr)
+        if err != nil {
+            httpx.Write(w, r, httpx.BadRequest("invalid id"))
+            return
+        }
+        // Load existing for old version/filename
+        prev, err := dbpkg.GetMod(db, id)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        m, err := dbpkg.ApplyUpdate(db, id)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        // Mirror change to PufferPanel if configured
+        if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil && inst.PufferpanelServerID != "" {
+            folder := "mods/"
+            switch strings.ToLower(inst.Loader) {
+            case "paper", "spigot", "bukkit":
+                folder = "plugins/"
+            }
+            deriveName := func(rawURL, slug, defName, version string) string {
+                if u, err := urlpkg.Parse(rawURL); err == nil {
+                    p := u.Path
+                    if i := strings.LastIndex(p, "/"); i != -1 && i+1 < len(p) {
+                        name := p[i+1:]
+                        if name != "" { return name }
+                    }
+                }
+                base := strings.TrimSpace(slug)
+                if base == "" { base = strings.TrimSpace(defName) }
+                if base == "" { base = "mod" }
+                ver := strings.TrimSpace(version)
+                if ver == "" { ver = "latest" }
+                return base + "-" + ver + ".jar"
+            }
+            oldSlug, _ := parseModrinthSlug(prev.URL)
+            newSlug, _ := parseModrinthSlug(m.URL)
+            oldName := deriveName(prev.DownloadURL, oldSlug, prev.Name, prev.CurrentVersion)
+            newName := deriveName(m.DownloadURL, newSlug, m.Name, m.CurrentVersion)
+            if oldName != newName || prev.CurrentVersion != m.CurrentVersion {
+                if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
+                    for _, f := range files {
+                        if !f.IsDir && strings.EqualFold(f.Name, oldName) { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName); break }
+                    }
+                } else { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName) }
+                if m.DownloadURL != "" {
+                    if reqDL, err := http.NewRequestWithContext(r.Context(), http.MethodGet, m.DownloadURL, nil); err == nil {
+                        if resp, err := http.DefaultClient.Do(reqDL); err == nil {
+                            defer resp.Body.Close()
+                            if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+                                if data, err := io.ReadAll(resp.Body); err == nil && len(data) > 0 {
+                                    _ = pppkg.PutFile(r.Context(), inst.PufferpanelServerID, folder+newName, data)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(m)
+    }
 }
 
 type tokenRequest struct {
