@@ -41,6 +41,7 @@ export default function Instances() {
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [addTab, setAddTab] = useState("local"); // 'local' | 'puffer'
   const [name, setName] = useState("");
   const [nameError, setNameError] = useState("");
   const [loader, setLoader] = useState(loaders[0].id);
@@ -166,6 +167,7 @@ export default function Instances() {
     setServers([]);
     setSelectedServer("");
     setServerError("");
+    setAddTab("local");
     setOpen(true);
     if (pufferLoaded && hasPuffer) fetchServers();
   }
@@ -183,19 +185,27 @@ export default function Instances() {
 
   async function handleSave(e) {
     e.preventDefault();
-    if (!selectedServer && !name.trim()) {
+    const localMode = addTab === "local";
+    const pufferMode = addTab === "puffer";
+    if (localMode && !name.trim()) {
       toast.error("Name required");
       return;
     }
-    if (selectedServer) {
+    if (pufferMode) {
+      if (!selectedServer) {
+        toast.error("Select a PufferPanel server");
+        return;
+      }
       try {
         setScanning(true);
         setJobProgress(null);
         // Determine target instance id
         let targetId = editing?.id;
         if (!editing) {
+          const serverName = (servers.find((s) => s.id === selectedServer)?.name) || "";
+          const finalName = name.trim() || serverName;
           const created = await addInstance({
-            name: "",
+            name: finalName,
             loader: "",
             enforce_same_loader: true,
             pufferpanel_server_id: selectedServer,
@@ -292,39 +302,18 @@ export default function Instances() {
     }
   }
 
-  const [delState, setDelState] = useState({
-    open: false,
-    inst: null,
-    deleteMods: false,
-    targetId: null,
-  });
+  const [delState, setDelState] = useState({ open: false, inst: null });
 
-  function openDelete(inst) {
-    const others = instances.filter((i) => i.id !== inst.id);
-    setDelState({
-      open: true,
-      inst,
-      deleteMods: others.length === 0,
-      targetId: others[0]?.id ?? null,
-    });
-  }
+  function openDelete(inst) { setDelState({ open: true, inst }); }
 
   async function handleDelete(e) {
     e.preventDefault();
-    const { inst, deleteMods, targetId } = delState;
+    const { inst } = delState;
     if (!inst) return;
     try {
-      await deleteInstance(
-        inst.id,
-        deleteMods ? undefined : targetId || undefined,
-      );
+      await deleteInstance(inst.id);
       toast.success("Instance deleted");
-      setDelState({
-        open: false,
-        inst: null,
-        deleteMods: false,
-        targetId: null,
-      });
+      setDelState({ open: false, inst: null });
       fetchInstances();
     } catch (err) {
       toast.error(
@@ -526,12 +515,19 @@ export default function Instances() {
                     {inst.name}
                     {suffixMap[inst.id] ? ` (${suffixMap[inst.id]})` : ""}
                   </CardTitle>
-                  <Badge
-                    variant="secondary"
-                    className={`capitalize border ${loaderBadgeClass(inst.loader)}`}
-                  >
-                    {inst.loader || "unknown"}
-                  </Badge>
+                  <div className="flex items-center gap-xs">
+                    {inst.pufferpanel_server_id && (
+                      <Badge variant="secondary" className="border bg-sky-50 text-sky-800 border-sky-200">
+                        PufferPanel
+                      </Badge>
+                    )}
+                    <Badge
+                      variant="secondary"
+                      className={`capitalize border ${loaderBadgeClass(inst.loader)}`}
+                    >
+                      {inst.loader || "unknown"}
+                    </Badge>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="pt-sm text-sm text-muted-foreground flex items-center justify-start">
@@ -569,11 +565,17 @@ export default function Instances() {
 
       <Modal open={open} onClose={() => setOpen(false)}>
         <form className="space-y-md" onSubmit={handleSave}>
-          {hasPuffer && (
+          <div className="flex items-center gap-sm border-b">
+            <button type="button" className={`px-sm py-xs text-sm ${addTab === "local" ? "border-b-2 border-primary text-primary" : "text-muted-foreground"}`} onClick={() => setAddTab("local")}>
+              Local instance
+            </button>
+            <button type="button" className={`px-sm py-xs text-sm ${addTab === "puffer" ? "border-b-2 border-primary text-primary" : "text-muted-foreground"}`} onClick={() => setAddTab("puffer")}>
+              From Pufferpanel instance
+            </button>
+          </div>
+          {addTab === "puffer" && hasPuffer && (
             <div className="space-y-xs">
-              <label htmlFor="server" className="text-sm font-medium">
-                Server
-              </label>
+              <label htmlFor="server" className="text-sm font-medium">Server</label>
               {loadingServers ? (
                 <p className="text-sm">Loading...</p>
               ) : serverError ? (
@@ -596,7 +598,7 @@ export default function Instances() {
                   disabled={loadingServers}
                   aria-busy={loadingServers}
                 >
-                  <option value="">None</option>
+                  <option value="">Select a server</option>
                   {servers.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.name}
@@ -604,6 +606,11 @@ export default function Instances() {
                   ))}
                 </Select>
               )}
+              <div className="space-y-xs">
+                <label htmlFor="name" className="text-sm font-medium">Name (optional)</label>
+                <Input id="name" value={name} onChange={(e) => setName(e.target.value.replace(/[\p{C}]/gu, ""))} />
+                <p className="text-xs text-muted-foreground">If empty, the server name will be used.</p>
+              </div>
               {jobProgress && (
                 <div className="mt-sm space-y-xs">
                   <p className="text-sm">
@@ -659,56 +666,25 @@ export default function Instances() {
               )}
             </div>
           )}
-          {selectedServer ? (
-            scanning && !jobProgress && <p className="text-sm">Starting sync...</p>
-          ) : (
+          {addTab === "puffer" && scanning && !jobProgress && (<p className="text-sm">Starting sync...</p>)}
+          {addTab === "local" && (
             <>
               <div className="space-y-xs">
-                <label htmlFor="name" className="text-sm font-medium">
-                  Name
-                </label>
-                <Input
-                  id="name"
-                  value={name}
-                  onChange={(e) => {
-                    setName(e.target.value.replace(/[\p{C}]/gu, ""));
-                    setNameError("");
-                  }}
-                  onBlur={() => {
-                    if (!name.trim()) setNameError("Name required");
-                  }}
-                />
-                {nameError && (
-                  <p className="text-sm text-destructive">{nameError}</p>
-                )}
+                <label htmlFor="name" className="text-sm font-medium">Name</label>
+                <Input id="name" value={name} onChange={(e) => { setName(e.target.value.replace(/[\p{C}]/gu, "")); setNameError(""); }} onBlur={() => { if (!name.trim()) setNameError("Name required"); }} />
+                {nameError && (<p className="text-sm text-destructive">{nameError}</p>)}
               </div>
               {!editing && (
                 <>
                   <div className="space-y-xs">
-                    <label htmlFor="loader" className="text-sm font-medium">
-                      Loader
-                    </label>
-                    <Select
-                      id="loader"
-                      value={loader}
-                      onChange={(e) => setLoader(e.target.value)}
-                    >
-                      {loaders.map((l) => (
-                        <option key={l.id} value={l.id}>
-                          {l.label}
-                        </option>
-                      ))}
+                    <label htmlFor="loader" className="text-sm font-medium">Loader</label>
+                    <Select id="loader" value={loader} onChange={(e) => setLoader(e.target.value)}>
+                      {loaders.map((l) => (<option key={l.id} value={l.id}>{l.label}</option>))}
                     </Select>
                   </div>
                   <div className="flex items-center gap-sm">
-                    <Checkbox
-                      id="enforce"
-                      checked={enforce}
-                      onChange={(e) => setEnforce(e.target.checked)}
-                    />
-                    <label htmlFor="enforce" className="text-sm">
-                      Enforce same loader for mods
-                    </label>
+                    <Checkbox id="enforce" checked={enforce} onChange={(e) => setEnforce(e.target.checked)} />
+                    <label htmlFor="enforce" className="text-sm">Enforce same loader for mods</label>
                   </div>
                 </>
               )}
@@ -722,101 +698,24 @@ export default function Instances() {
             >
               Cancel
             </Button>
-            <Button
-              type="submit"
-              disabled={
-                scanning || loadingServers || (!selectedServer && !name.trim())
-              }
-              aria-busy={scanning}
-            >
+            <Button type="submit" disabled={scanning || (addTab === "puffer" ? (loadingServers || !selectedServer) : !name.trim())} aria-busy={scanning}>
               {editing ? "Save" : "Add"}
             </Button>
           </div>
         </form>
       </Modal>
 
-      <Modal
-        open={delState.open}
-        onClose={() =>
-          setDelState({
-            open: false,
-            inst: null,
-            deleteMods: false,
-            targetId: null,
-          })
-        }
-      >
+      <Modal open={delState.open} onClose={() => setDelState({ open: false, inst: null })}>
         <form className="space-y-md" onSubmit={handleDelete}>
           <h2 className="text-lg font-medium">Delete instance</h2>
-          {delState.inst && delState.inst.mod_count > 0 && (
-            <p className="text-sm">
-              This instance has {delState.inst.mod_count} mods. Choose what to
-              do with them.
-            </p>
+          {delState.inst && (
+            <p className="text-sm">Are you sure you want to delete "{delState.inst.name}" and all of its mods?</p>
           )}
-          {instances.filter((i) => delState.inst && i.id !== delState.inst.id)
-            .length > 0 && (
-            <div className="flex items-center gap-sm">
-              <Checkbox
-                id="deleteMods"
-                checked={delState.deleteMods}
-                onChange={(e) =>
-                  setDelState((s) => ({ ...s, deleteMods: e.target.checked }))
-                }
-              />
-              <label htmlFor="deleteMods" className="text-sm">
-                Delete contained mods
-              </label>
-            </div>
-          )}
-          {!delState.deleteMods &&
-            instances.filter((i) => delState.inst && i.id !== delState.inst.id)
-              .length > 0 && (
-              <div className="space-y-xs">
-                <label htmlFor="target" className="text-sm font-medium">
-                  Move mods to
-                </label>
-                <Select
-                  id="target"
-                  value={delState.targetId ?? ""}
-                  onChange={(e) =>
-                    setDelState((s) => ({
-                      ...s,
-                      targetId: Number(e.target.value),
-                    }))
-                  }
-                >
-                  {instances
-                    .filter((i) => delState.inst && i.id !== delState.inst.id)
-                    .map((i) => (
-                      <option key={i.id} value={i.id}>
-                        {i.name}
-                      </option>
-                    ))}
-                </Select>
-              </div>
-            )}
           <div className="flex justify-end gap-sm">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() =>
-                setDelState({
-                  open: false,
-                  inst: null,
-                  deleteMods: false,
-                  targetId: null,
-                })
-              }
-            >
+            <Button type="button" variant="secondary" onClick={() => setDelState({ open: false, inst: null })}>
               Cancel
             </Button>
-            <Button
-              type="submit"
-              disabled={!delState.deleteMods && !delState.targetId}
-            >
-              Delete
-            </Button>
+            <Button type="submit">Delete</Button>
           </div>
         </form>
       </Modal>
