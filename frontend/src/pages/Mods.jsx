@@ -51,7 +51,8 @@ import {
   updateModVersion,
   getInstanceLogs,
 } from "@/lib/api.ts";
-import { cn } from "@/lib/utils.js";
+import { cn, summarizeMods } from "@/lib/utils.js";
+import InstanceStatusOverview from "@/components/InstanceStatusOverview.tsx";
 import { toast } from "@/lib/toast.ts";
 import { useConfirm } from "@/hooks/useConfirm.jsx";
 import { useOpenAddMod } from "@/hooks/useOpenAddMod.js";
@@ -621,157 +622,24 @@ export default function Mods() {
               Edit
             </Button>
           </div>
-        </div>
-      )}
-      {/* Sync status / progress card */}
-      {(progress || instance?.last_sync_at) && (
-        <div className="rounded border p-sm space-y-xs w-full max-w-3xl">
-          <div className="flex items-center justify-between gap-sm">
-            <div className="flex items-center gap-sm">
-              <RotateCw
-                className={cn(
-                  "h-4 w-4",
-                  progress?.status === "running" ? "animate-spin" : "opacity-60",
-                )}
-                aria-hidden
-              />
-              <p className="text-sm font-medium">
-                {progress?.status === "running"
-                  ? "Syncing from PufferPanel"
-                  : "Last sync summary"}
-              </p>
+          {/* Instance status overview */}
+          {loading ? (
+            <div className="grid grid-cols-1 gap-sm sm:grid-cols-3">
+              <Skeleton className="h-20 rounded-md shadow-sm" />
+              <Skeleton className="h-20 rounded-md shadow-sm" />
+              <Skeleton className="h-20 rounded-md shadow-sm" />
             </div>
-            {!progress && instance?.last_sync_at && (
-              <span className="text-xs text-muted-foreground">
-                {new Date(instance.last_sync_at).toLocaleString()}
-              </span>
-            )}
-          </div>
-          {/* Progress bar while running */}
-          {progress?.status === "running" && (
-            <>
-              <div
-                className="h-2 bg-muted rounded"
-                role="progressbar"
-                aria-valuemin={0}
-                aria-valuemax={progress.total}
-                aria-valuenow={progress.processed}
-              >
-                <div
-                  className="h-2 bg-primary rounded transition-[width] duration-300"
-                  style={{
-                    width: progress.total
-                      ? `${(progress.processed / progress.total) * 100}%`
-                      : "0%",
-                  }}
+          ) : (
+            (() => {
+              const s = summarizeMods(withVirtuals);
+              return (
+                <InstanceStatusOverview
+                  upToDate={s.mods_up_to_date}
+                  updatesAvailable={s.mods_update_available}
+                  failed={s.mods_failed}
                 />
-              </div>
-              <p className="text-sm">
-                {progress.processed}/{progress.total} processed (
-                {progress.succeeded} succeeded, {progress.failed} failed)
-              </p>
-            </>
-          )}
-          {/* Segmented result bar after done */}
-          {progress && progress.status !== "running" && (
-            <>
-              {(() => {
-                const total = progress.total || 0;
-                const ok = progress.succeeded || 0;
-                const fail = progress.failed || 0;
-                const okPct = total ? (ok / total) * 100 : 0;
-                const failPct = total ? (fail / total) * 100 : 0;
-                return (
-                  <div className="h-2 bg-muted rounded overflow-hidden">
-                    <div
-                      className="h-2 bg-emerald-500 inline-block"
-                      style={{ width: `${okPct}%` }}
-                    />
-                    <div
-                      className="h-2 bg-red-500 inline-block"
-                      style={{ width: `${failPct}%` }}
-                    />
-                  </div>
-                );
-              })()}
-              <div className="flex items-center justify-between">
-                <p className="text-sm">
-                  {progress.succeeded} succeeded, {progress.failed} failed
-                </p>
-                {progress.failed > 0 && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => setCheckOpen((v) => !v)}
-                  >
-                    {checkOpen ? "Hide failures" : "View failures"}
-                  </Button>
-                )}
-              </div>
-            </>
-          )}
-          {/* Last sync summary if no live progress and info available */}
-          {!progress && instance?.last_sync_at && (
-            <>
-              {(() => {
-                const ok = (instance.last_sync_added || 0) + (instance.last_sync_updated || 0);
-                const fail = instance.last_sync_failed || 0;
-                const total = ok + fail;
-                const okPct = total ? (ok / total) * 100 : 0;
-                const failPct = total ? (fail / total) * 100 : 0;
-                return (
-                  <div className="h-2 bg-muted rounded overflow-hidden">
-                    <div
-                      className="h-2 bg-emerald-500 inline-block"
-                      style={{ width: `${okPct}%` }}
-                    />
-                    <div
-                      className="h-2 bg-red-500 inline-block"
-                      style={{ width: `${failPct}%` }}
-                    />
-                  </div>
-                );
-              })()}
-              <div className="flex items-center justify-between">
-                <p className="text-sm text-muted-foreground">
-                  Added {instance.last_sync_added}, changed {instance.last_sync_updated}, failed {instance.last_sync_failed}
-                </p>
-              </div>
-            </>
-          )}
-          {/* Failure details collapsible */}
-          {progress && progress.failures && progress.failures.length > 0 && checkOpen && (
-            <>
-              <Table className="text-sm">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Mod</TableHead>
-                    <TableHead>Error</TableHead>
-                    <TableHead className="text-right"></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {progress.failures.map((f) => (
-                    <TableRow key={f.name}>
-                      <TableCell>{f.name}</TableCell>
-                      <TableCell>{f.error}</TableCell>
-                      <TableCell className="text-right">
-                        <Button size="sm" onClick={handleResync}>
-                          Retry
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              {progress.status !== "running" && (
-                <div className="text-right">
-                  <Button size="sm" onClick={handleRetryFailed} data-testid="retry-failed">
-                    Retry failed
-                  </Button>
-                </div>
-              )}
-            </>
+              );
+            })()
           )}
         </div>
       )}
