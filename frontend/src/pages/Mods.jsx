@@ -13,7 +13,6 @@ import {
   Download,
   Plus,
   Trash2,
-  Plus,
   ExternalLink,
   ArrowLeft,
   Pencil,
