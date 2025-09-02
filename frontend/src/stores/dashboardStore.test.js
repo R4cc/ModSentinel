@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@/lib/api.ts', () => ({
   getDashboard: vi.fn(),
-  updateModVersion: vi.fn(),
+  startModUpdate: vi.fn(),
 }));
 vi.mock('@/lib/refresh.js', () => ({
   emitDashboardRefresh: vi.fn(),
@@ -53,8 +53,8 @@ describe('dashboard store', () => {
         recent_updates: [],
       },
     });
-    const { updateModVersion } = await import('@/lib/api.ts');
-    updateModVersion.mockRejectedValue(new Error('fail'));
+    const { startModUpdate } = await import('@/lib/api.ts');
+    startModUpdate.mockRejectedValue(new Error('fail'));
 
     await expect(useDashboardStore.getState().update(mod)).rejects.toBeDefined();
 

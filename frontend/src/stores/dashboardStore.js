@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getDashboard, updateModVersion } from '@/lib/api.ts';
+import { getDashboard, startModUpdate } from '@/lib/api.ts';
 import { emitDashboardRefresh } from '@/lib/refresh.js';
 
 export const useDashboardStore = create((set, get) => ({
@@ -49,7 +49,8 @@ export const useDashboardStore = create((set, get) => ({
       },
     });
     try {
-      await updateModVersion(mod.id);
+      const key = `${mod.id}:${mod.available_version || ''}:${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
+      await startModUpdate(mod.id, key);
       emitDashboardRefresh({ force: true });
     } catch (err) {
       set({ data: prev });
