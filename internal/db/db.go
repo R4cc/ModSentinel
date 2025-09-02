@@ -147,6 +147,8 @@ func Init(db *sql.DB) error {
 		"available_channel": "TEXT",
 		"download_url":      "TEXT",
 		"instance_id":       "INTEGER",
+		"installed_file":    "TEXT",
+		"installed_version": "TEXT",
 	}
 
 	rows, err = db.Query(`SELECT name FROM pragma_table_info('mods')`)
@@ -381,6 +383,12 @@ func Init(db *sql.DB) error {
 	}
 
 	return nil
+}
+
+// SetInstalledState persists the currently installed file path and version for a mod.
+func SetInstalledState(db *sql.DB, modID int, file, version string) error {
+    _, err := db.Exec(`UPDATE mods SET installed_file=?, installed_version=? WHERE id=?`, file, version, modID)
+    return err
 }
 
 // InsertMod inserts a new mod record.

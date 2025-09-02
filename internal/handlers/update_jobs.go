@@ -29,6 +29,44 @@ func buildPPAbsPath(folder, name string) string {
     return "/home/container/" + f + n
 }
 
+// normalizeVersion lowers and strips leading 'v' and common loader/MC tokens.
+
+// compareVersions tries to compare semver-ish strings; returns 1 if a>b, -1 if a<b, 0 equal.
+func compareVersions(a, b string) int {
+    na := normalizeVersion(a)
+    nb := normalizeVersion(b)
+    // split by non-alphanum boundaries
+    split := func(x string) []string {
+        parts := strings.FieldsFunc(x, func(r rune) bool { return !(r >= '0' && r <= '9' || r == '.') })
+        if len(parts) == 0 { return []string{x} }
+        return parts
+    }
+    ta := split(na)
+    tb := split(nb)
+    // further split by '.' and compare numerically
+    ia, ib := 0, 0
+    for ia < len(ta) || ib < len(tb) {
+        var sa, sb string
+        if ia < len(ta) { sa = ta[ia] }
+        if ib < len(tb) { sb = tb[ib] }
+        // split segment into dot parts
+        pas := strings.Split(sa, ".")
+        pbs := strings.Split(sb, ".")
+        k := 0
+        for k < len(pas) || k < len(pbs) {
+            var va, vb int
+            if k < len(pas) { if n, err := strconv.Atoi(pas[k]); err == nil { va = n } else { va = -1 } } else { va = 0 }
+            if k < len(pbs) { if n, err := strconv.Atoi(pbs[k]); err == nil { vb = n } else { vb = -1 } } else { vb = 0 }
+            if va > vb { return 1 }
+            if va < vb { return -1 }
+            k++
+        }
+        ia++
+        ib++
+    }
+    return 0
+}
+
 // withRetry retries fn on transient errors (HTTP 429/5xx for upstream and PufferPanel) with backoff.
 func withRetry(ctx context.Context, fn func() error) error {
     base := 200 // ms
@@ -398,13 +436,29 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
         oldSlug, _ := parseModrinthSlug(prev.URL)
         oldName := deriveName(prev.DownloadURL, oldSlug, prev.Name, prev.CurrentVersion)
         newName := deriveName(targetURL, slug, prev.Name, prev.AvailableVersion)
-        // Planning: determine the exact old file present, if any
+        // Planning: determine the exact old file present, if any, by scanning server files for slug match
         plannedOld := folder + oldName
+        installedFile := ""
+        installedVersion := ""
         if files, err := ppListPath(ctx, inst.PufferpanelServerID, folder); err == nil {
+            lslug := strings.ToLower(strings.TrimSpace(oldSlug))
             for _, f := range files {
                 if f.IsDir { continue }
-                if strings.EqualFold(f.Name, oldName) { plannedOld = folder + f.Name; break }
+                nameLower := strings.ToLower(f.Name)
+                if lslug != "" && strings.Contains(nameLower, lslug) {
+                    plannedOld = folder + f.Name
+                    installedFile = plannedOld
+                    // parse version from filename using existing helper
+                    meta := parseJarFilename(f.Name)
+                    v := strings.ToLower(strings.TrimPrefix(meta.Version, "v"))
+                    installedVersion = v
+                    break
+                }
             }
+        }
+        // Persist installed state if discovered
+        if installedFile != "" || installedVersion != "" {
+            _ = dbpkg.SetInstalledState(db, prev.ID, installedFile, installedVersion)
         }
         ppOldAbs = buildPPAbsPath("/"+folder, strings.TrimPrefix(plannedOld, folder))
         ppNewAbs = buildPPAbsPath("/"+folder, newName)
@@ -416,7 +470,33 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
             "new_file": folder + newName,
             "pp_path_old": ppOldAbs,
             "pp_path_new": ppNewAbs,
+            "installed_file": installedFile,
+            "installed_version": installedVersion,
         })
+        // Track if filenames are identical (overwrite plan)
+        sameFile := strings.EqualFold(strings.TrimSpace(plannedOld), strings.TrimSpace(folder+newName))
+        telemetry.Event("mod_update_assert", map[string]string{
+            "job_id": strconv.Itoa(uj.id),
+            "mod_id": strconv.Itoa(prev.ID),
+            "assert": "old_new_distinct",
+            "ok":     func() string { if sameFile { return "false" } ; return "true" }(),
+        })
+
+        // If we know installed version, ensure target is strictly newer; else continue
+        if strings.TrimSpace(installedVersion) != "" && strings.TrimSpace(prev.AvailableVersion) != "" {
+            if compareVersions(prev.AvailableVersion, installedVersion) <= 0 {
+                uj.emitState(StateSucceeded, map[string]any{"mod_id": prev.ID, "version": prev.CurrentVersion, "reason": "already_current"})
+                return
+            }
+        }
+
+        // If same filename, capture pre-upload size to detect overwrite vs no-op
+        preSize := -1
+        if sameFile {
+            if b0, err0 := pppkg.FetchFile(ctx, inst.PufferpanelServerID, strings.TrimPrefix(plannedOld, "/")); err0 == nil {
+                preSize = len(b0)
+            }
+        }
 
         // Download artifact
         reqDL, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
@@ -532,6 +612,17 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
             "pp_path_old": ppOldAbs,
             "pp_path_new": ppNewAbs,
         })
+        // If same filename, treat as overwrite: skip delete; verify content changed (by size if we captured preSize)
+        if sameFile {
+            if preSize >= 0 && preSize == len(b) {
+                // nothing changed; already current
+                uj.emitState(StateSucceeded, map[string]any{"mod_id": prev.ID, "version": prev.CurrentVersion, "reason": "already_current"})
+                return
+            }
+            // proceed to DB update (overwrite)
+            goto UPDATE_DB
+        }
+
         // Defer DB update until after old file deletion is verified
 
         // Remove old file; on failure mark partial success and stop
@@ -634,6 +725,7 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
     }
 
     // Update DB now (either no PufferPanel was configured, or PufferPanel path verified removal)
+UPDATE_DB:
     uj.emitState(StateUpdatingDB, map[string]any{"mod_id": prev.ID})
     stepStart := time.Now()
     if _, err := db.Exec(`UPDATE mods SET current_version=?, channel=?, download_url=? WHERE id=?`, prev.AvailableVersion, prev.AvailableChannel, targetURL, prev.ID); err != nil {
