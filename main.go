@@ -139,7 +139,8 @@ func main() {
 	scheduler.Every(1).Hour().Do(func() { handlers.CheckUpdates(ctx, db) })
 	scheduler.StartAsync()
 	pppkg.StartRefresh(ctx)
-	stopJobs := handlers.StartJobQueue(ctx, db)
+    stopJobs := handlers.StartJobQueue(ctx, db)
+    stopUpdates := handlers.StartUpdateQueue(ctx, db)
 
 	r := handlers.New(db, distFS, svc)
 	var shuttingDown atomic.Bool
@@ -157,9 +158,10 @@ func main() {
 		<-ctx.Done()
 		shuttingDown.Store(true)
 		scheduler.Stop()
-		waitCtx, cancelJobs := context.WithTimeout(context.Background(), 5*time.Second)
-		stopJobs(waitCtx)
-		cancelJobs()
+        waitCtx, cancelJobs := context.WithTimeout(context.Background(), 5*time.Second)
+        stopJobs(waitCtx)
+        stopUpdates(waitCtx)
+        cancelJobs()
 		time.Sleep(200 * time.Millisecond)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

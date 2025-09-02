@@ -33,27 +33,12 @@ export const useDashboardStore = create((set, get) => ({
     }
   },
   update: async (mod) => {
-    const { data } = get();
-    if (!data) return;
-    const prev = structuredClone(data);
-    set({
-      data: {
-        ...data,
-        outdated: data.outdated - 1,
-        up_to_date: data.up_to_date + 1,
-        outdated_mods: data.outdated_mods.filter((m) => m.id !== mod.id),
-        recent_updates: [
-          { id: mod.id, name: mod.name || mod.url, version: mod.available_version, updated_at: new Date().toISOString() },
-          ...data.recent_updates,
-        ],
-      },
-    });
     try {
       const key = `${mod.id}:${mod.available_version || ''}:${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
       await startModUpdate(mod.id, key);
+      // Do not update dashboard optimistically; wait for worker to finish and refresh
       emitDashboardRefresh({ force: true });
     } catch (err) {
-      set({ data: prev });
       throw err;
     }
   },

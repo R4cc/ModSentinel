@@ -627,6 +627,54 @@ func MarkModUpdateFinished(db *sql.DB, id int, status, errMsg string) error {
     return err
 }
 
+// ListQueuedModUpdates returns IDs of queued mod update jobs.
+func ListQueuedModUpdates(db *sql.DB) ([]int, error) {
+    rows, err := db.Query(`SELECT id FROM mod_updates WHERE status='Queued' ORDER BY id ASC`)
+    if err != nil { return nil, err }
+    defer rows.Close()
+    out := []int{}
+    for rows.Next() {
+        var id int
+        if err := rows.Scan(&id); err != nil { return nil, err }
+        out = append(out, id)
+    }
+    if err := rows.Err(); err != nil { return nil, err }
+    return out, nil
+}
+
+// ResetRunningModUpdates moves running, unfinished updates back to queued (e.g., after crash).
+func ResetRunningModUpdates(db *sql.DB) error {
+    _, err := db.Exec(`UPDATE mod_updates SET status='Queued' WHERE status='Running' AND ended_at IS NULL`)
+    return err
+}
+
+// LeaseModUpdate attempts to transition a queued job to running; returns true if lease obtained.
+func LeaseModUpdate(db *sql.DB, id int) (bool, error) {
+    res, err := db.Exec(`UPDATE mod_updates SET status='Running', started_at=COALESCE(started_at, CURRENT_TIMESTAMP) WHERE id=? AND status='Queued'`, id)
+    if err != nil { return false, err }
+    n, _ := res.RowsAffected()
+    return n > 0, nil
+}
+
+// GetModUpdate returns mod_id and status for a mod update row.
+type ModUpdateRow struct {
+    ID int
+    ModID int
+    FromVersion string
+    ToVersion string
+    Status string
+    StartedAt string
+    EndedAt string
+}
+
+func GetModUpdate(db *sql.DB, id int) (*ModUpdateRow, error) {
+    var mu ModUpdateRow
+    err := db.QueryRow(`SELECT id, mod_id, IFNULL(from_version,''), IFNULL(to_version,''), IFNULL(status,''), IFNULL(started_at,''), IFNULL(ended_at,'') FROM mod_updates WHERE id=?`, id).
+        Scan(&mu.ID, &mu.ModID, &mu.FromVersion, &mu.ToVersion, &mu.Status, &mu.StartedAt, &mu.EndedAt)
+    if err != nil { return nil, err }
+    return &mu, nil
+}
+
 // InsertEvent stores a mod activity log entry.
 func InsertEvent(db *sql.DB, ev *ModEvent) error {
     var modID any

@@ -166,6 +166,9 @@ func (j *updateJob) emitState(state UpdateJobState, details map[string]any) {
         switch state {
         case StateRunning:
             _ = dbpkg.MarkModUpdateStarted(j.db, j.updID)
+            telemetry.Event("mod_update_started", map[string]string{
+                "job_id": strconv.Itoa(j.id),
+            })
         case StateSucceeded:
             _ = dbpkg.MarkModUpdateFinished(j.db, j.updID, string(state), "")
         case StateFailed:
@@ -190,12 +193,13 @@ func (j *updateJob) emitState(state UpdateJobState, details map[string]any) {
 }
 
 var (
-    updateJobs   sync.Map // map[int]*updateJob
+    updateJobs   sync.Map // map[int]*updateJob keyed by mod_updates.id
     updateJobSeq atomic.Int64
     updInstMu    sync.Mutex
     updSems      map[int]chan struct{}
     jobIDByUpdID sync.Map      // map[int]jobID
     jobIDByKey   sync.Map      // map[string]jobID
+    updatesCh    chan int
 )
 
 func init() {
@@ -235,62 +239,85 @@ func getUpdateJob(id int) *updateJob {
 }
 
 func enqueueUpdateJob(ctx context.Context, db *sql.DB, modID int) (int, error) {
-    id := int(updateJobSeq.Add(1))
     // Prepare idempotency info (best-effort)
     prev, _ := dbpkg.GetMod(db, modID)
     key := fmt.Sprintf("%d:%s", modID, strings.TrimSpace(prev.AvailableVersion))
     fromV := prev.CurrentVersion
     toV := prev.AvailableVersion
-    updID, existed, err := dbpkg.InsertModUpdateQueued(db, modID, fromV, toV, key)
+    updID, _, err := dbpkg.InsertModUpdateQueued(db, modID, fromV, toV, key)
     if err != nil {
         return 0, err
     }
-    if existed {
-        if v, ok := jobIDByKey.Load(key); ok {
-            return v.(int), nil
-        }
-        if v, ok := jobIDByUpdID.Load(updID); ok {
-            return v.(int), nil
-        }
-        // fall through to create a new in-memory job wrapper if prior mapping unavailable
+    // Ensure an in-memory job object exists for SSE
+    if _, ok := updateJobs.Load(updID); !ok {
+        uj := &updateJob{id: updID, events: make([]sseMsg, 0, 16), db: db, updID: updID}
+        updateJobs.Store(updID, uj)
+        uj.emitState(StateQueued, nil)
     }
-    uj := &updateJob{id: id, events: make([]sseMsg, 0, 16), db: db, updID: updID}
-    updateJobs.Store(id, uj)
-    jobIDByUpdID.Store(updID, id)
-    jobIDByKey.Store(key, id)
-    uj.emitState(StateQueued, nil)
-    go runUpdateJob(ctx, db, uj, modID)
-    return id, nil
+    // Notify worker
+    if updatesCh != nil {
+        select { case updatesCh <- updID: default: }
+    }
+    return updID, nil
 }
 
 // enqueueUpdateJobWithKey enqueues using a client-supplied idempotency key.
 func enqueueUpdateJobWithKey(ctx context.Context, db *sql.DB, modID int, key string) (int, error) {
-    id := int(updateJobSeq.Add(1))
     prev, _ := dbpkg.GetMod(db, modID)
     fromV := prev.CurrentVersion
     toV := prev.AvailableVersion
-    updID, existed, err := dbpkg.InsertModUpdateQueued(db, modID, fromV, toV, key)
+    updID, _, err := dbpkg.InsertModUpdateQueued(db, modID, fromV, toV, key)
     if err != nil {
         return 0, err
     }
-    if existed {
-        if v, ok := jobIDByKey.Load(key); ok {
-            return v.(int), nil
-        }
-        if v, ok := jobIDByUpdID.Load(updID); ok {
-            return v.(int), nil
-        }
-        // If job mapping not found, return an error indicating duplicate without active job
-        // so client can poll update status by other means if needed.
-        return 0, fmt.Errorf("duplicate idempotency_key")
+    if _, ok := updateJobs.Load(updID); !ok {
+        uj := &updateJob{id: updID, events: make([]sseMsg, 0, 16), db: db, updID: updID}
+        updateJobs.Store(updID, uj)
+        uj.emitState(StateQueued, nil)
     }
-    uj := &updateJob{id: id, events: make([]sseMsg, 0, 16), db: db, updID: updID}
-    updateJobs.Store(id, uj)
-    jobIDByUpdID.Store(updID, id)
-    jobIDByKey.Store(key, id)
-    uj.emitState(StateQueued, nil)
-    go runUpdateJob(ctx, db, uj, modID)
-    return id, nil
+    if updatesCh != nil {
+        select { case updatesCh <- updID: default: }
+    }
+    return updID, nil
+}
+
+// StartUpdateQueue launches background worker to process queued mod updates.
+func StartUpdateQueue(ctx context.Context, db *sql.DB) func(context.Context) {
+    updatesCh = make(chan int, 32)
+    // Requeue running tasks on startup
+    _ = dbpkg.ResetRunningModUpdates(db)
+    // Seed queued jobs
+    if ids, err := dbpkg.ListQueuedModUpdates(db); err == nil {
+        go func() {
+            for _, id := range ids { updatesCh <- id }
+        }()
+    }
+    stopCtx, cancel := context.WithCancel(ctx)
+    go func() {
+        for {
+            select {
+            case <-stopCtx.Done():
+                return
+            case id := <-updatesCh:
+                if id == 0 { continue }
+                // Lease the job; skip if already running/picked up
+                if ok, _ := dbpkg.LeaseModUpdate(db, id); !ok {
+                    continue
+                }
+                // Load job row to get mod id
+                mu, err := dbpkg.GetModUpdate(db, id)
+                if err != nil { continue }
+                p, _ := updateJobs.LoadOrStore(id, &updateJob{id: id, events: make([]sseMsg, 0, 16), db: db, updID: id})
+                uj := p.(*updateJob)
+                uj.emitState(StateRunning, nil)
+                go runUpdateJob(stopCtx, db, uj, mu.ModID)
+            }
+        }
+    }()
+    return func(waitCtx context.Context) {
+        cancel()
+        close(updatesCh)
+    }
 }
 
 func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
@@ -335,7 +362,6 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
         return
     }
 
-    updatedDB := false
 
     // Upload to PufferPanel first, if configured
     if inst, err2 := dbpkg.GetInstance(db, prev.InstanceID); err2 == nil && strings.TrimSpace(inst.PufferpanelServerID) != "" {
@@ -501,30 +527,7 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
             "pp_path": folder + newName,
             "sha256_match": func() string { if verifyHash { return "true" }; return "" }(),
         })
-        // Update DB now that the new file is present
-        uj.emitState(StateUpdatingDB, map[string]any{"mod_id": prev.ID})
-        stepStart = time.Now()
-        if _, err := db.Exec(`UPDATE mods SET current_version=?, channel=?, download_url=? WHERE id=?`, prev.AvailableVersion, prev.AvailableChannel, targetURL, prev.ID); err != nil {
-            // Rollback: attempt to remove the newly uploaded file to keep old files
-            _ = withRetry(ctx, func() error { return pppkg.DeleteFile(ctx, inst.PufferpanelServerID, folder+newName) })
-            uj.emitState(StateFailed, map[string]any{"error": err.Error(), "hint": "DB update failed after upload; new file removed. Please retry later."})
-            telemetry.Event("mod_update_failed", map[string]string{
-                "job_id": strconv.Itoa(uj.id),
-                "mod_id": strconv.Itoa(prev.ID),
-                "error":  err.Error(),
-            })
-            return
-        }
-        updatedDB = true
-        telemetry.Event("mod_update_step", map[string]string{
-            "job_id":  strconv.Itoa(uj.id),
-            "mod_id":  strconv.Itoa(prev.ID),
-            "step":    "UpdatingDB",
-            "ms":      strconv.FormatInt(time.Since(stepStart).Milliseconds(), 10),
-            "attempt": "1",
-            "pp_path": "",
-            "sha256_match": "",
-        })
+        // Defer DB update until after old file deletion is verified
 
         // Remove old file; on failure mark partial success and stop
         uj.emitState(StateRemovingOld, map[string]any{"file": oldName})
@@ -606,14 +609,27 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
         }
     }
 
-    // If DB not updated in PufferPanel path (no server configured), update it now
-    if !updatedDB {
-        uj.emitState(StateUpdatingDB, map[string]any{"mod_id": prev.ID})
-        if _, err := db.Exec(`UPDATE mods SET current_version=?, channel=?, download_url=? WHERE id=?`, prev.AvailableVersion, prev.AvailableChannel, targetURL, prev.ID); err != nil {
-            uj.emitState(StateFailed, map[string]any{"error": err.Error(), "hint": "DB update failed."})
-            return
-        }
+    // Update DB now (either no PufferPanel was configured, or PufferPanel path verified removal)
+    uj.emitState(StateUpdatingDB, map[string]any{"mod_id": prev.ID})
+    stepStart := time.Now()
+    if _, err := db.Exec(`UPDATE mods SET current_version=?, channel=?, download_url=? WHERE id=?`, prev.AvailableVersion, prev.AvailableChannel, targetURL, prev.ID); err != nil {
+        uj.emitState(StateFailed, map[string]any{"error": err.Error(), "hint": "DB update failed."})
+        telemetry.Event("mod_update_failed", map[string]string{
+            "job_id": strconv.Itoa(uj.id),
+            "mod_id": strconv.Itoa(prev.ID),
+            "error":  err.Error(),
+        })
+        return
     }
+    telemetry.Event("mod_update_step", map[string]string{
+        "job_id":  strconv.Itoa(uj.id),
+        "mod_id":  strconv.Itoa(prev.ID),
+        "step":    "UpdatingDB",
+        "ms":      strconv.FormatInt(time.Since(stepStart).Milliseconds(), 10),
+        "attempt": "1",
+        "pp_path": "",
+        "sha256_match": "",
+    })
     _ = dbpkg.InsertUpdateIfNew(db, prev.ID, prev.AvailableVersion)
     m, err := dbpkg.GetMod(db, prev.ID)
     if err != nil {

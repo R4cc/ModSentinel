@@ -480,9 +480,8 @@ export default function Mods() {
     };
     es.addEventListener("state", onState);
     es.onerror = () => {
-      try { es.close(); } catch {}
-      setSource(null);
-      // Fallback to polling when SSE disconnects
+      // Do not close; allow EventSource to auto-reconnect.
+      // Also start polling as a fallback to keep UI updated until reconnection.
       pollUpdateJob(jobId, modId);
     };
   }
