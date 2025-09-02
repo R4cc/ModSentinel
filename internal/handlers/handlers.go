@@ -449,7 +449,7 @@ func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 	r.Get("/api/mods/{id}/check", checkModHandler(db))
 	r.Put("/api/mods/{id}", updateModHandler(db))
 	r.Delete("/api/mods/{id}", deleteModHandler(db))
-	r.Post("/api/mods/{id}/update", applyUpdateHandler(db))
+	r.Post("/api/mods/{id}/update", enqueueModUpdateHandler(db))
 
 	r.With(requireAdmin()).Post("/api/pufferpanel/test", testPufferHandler())
 
@@ -1284,6 +1284,36 @@ func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
     }
 }
 
+// enqueueModUpdateHandler enqueues an async update job for a mod and returns { job_id }.
+func enqueueModUpdateHandler(db *sql.DB) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        idStr := chi.URLParam(r, "id")
+        id, err := strconv.Atoi(idStr)
+        if err != nil {
+            httpx.Write(w, r, httpx.BadRequest("invalid id"))
+            return
+        }
+        var payload struct{
+            IdempotencyKey string `json:"idempotency_key"`
+        }
+        if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+            httpx.Write(w, r, httpx.BadRequest("invalid json"))
+            return
+        }
+        if strings.TrimSpace(payload.IdempotencyKey) == "" {
+            httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(map[string]string{"idempotency_key": "required"}))
+            return
+        }
+        jobID, err := enqueueUpdateJobWithKey(r.Context(), db, id, payload.IdempotencyKey)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(struct{ JobID int `json:"job_id"` }{jobID})
+    }
+}
+
 func listInstanceLogsHandler(db *sql.DB) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         idStr := chi.URLParam(r, "id")
@@ -1579,18 +1609,33 @@ func syncHandler(db *sql.DB) http.HandlerFunc {
 }
 
 func jobProgressHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		idStr := chi.URLParam(r, "id")
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		job, err := dbpkg.GetSyncJob(db, id)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
+    return func(w http.ResponseWriter, r *http.Request) {
+        idStr := chi.URLParam(r, "id")
+        id, err := strconv.Atoi(idStr)
+        if err != nil {
+            http.NotFound(w, r)
+            return
+        }
+        job, err := dbpkg.GetSyncJob(db, id)
+        if err != nil {
+            // Fallback: in-memory update job
+            if uj := getUpdateJob(id); uj != nil {
+                evs := uj.snapshotEvents()
+                var last any
+                if len(evs) > 0 {
+                    last = evs[len(evs)-1].Data
+                }
+                w.Header().Set("Content-Type", "application/json")
+                json.NewEncoder(w).Encode(struct {
+                    ID      int         `json:"id"`
+                    State   string      `json:"state"`
+                    Details interface{} `json:"details,omitempty"`
+                }{id, string(uj.state), last})
+                return
+            }
+            http.NotFound(w, r)
+            return
+        }
 		var total, processed, succeeded, failed int
 		var fails []jobFailure
 		if jp, ok := progress.Load(id); ok {
@@ -1612,17 +1657,63 @@ func jobProgressHandler(db *sql.DB) http.HandlerFunc {
 }
 
 func jobEventsHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		idStr := chi.URLParam(r, "id")
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		if _, err := dbpkg.GetSyncJob(db, id); err != nil {
-			http.NotFound(w, r)
-			return
-		}
+    return func(w http.ResponseWriter, r *http.Request) {
+        idStr := chi.URLParam(r, "id")
+        id, err := strconv.Atoi(idStr)
+        if err != nil {
+            http.NotFound(w, r)
+            return
+        }
+        if _, err := dbpkg.GetSyncJob(db, id); err != nil {
+            // If not a sync job, try in-memory update job stream
+            if uj := getUpdateJob(id); uj != nil {
+                flusher, ok := w.(http.Flusher)
+                if !ok {
+                    http.Error(w, "stream unsupported", http.StatusInternalServerError)
+                    return
+                }
+                w.Header().Set("Content-Type", "text/event-stream")
+                w.Header().Set("Cache-Control", "no-cache")
+                w.Header().Set("Connection", "keep-alive")
+                ch := uj.subscribe()
+                defer uj.unsubscribe(ch)
+                // replay existing events
+                for _, ev := range uj.snapshotEvents() {
+                    if ev.Event != "" {
+                        fmt.Fprintf(w, "event: %s\n", ev.Event)
+                    }
+                    if ev.Data != nil {
+                        b, _ := json.Marshal(ev.Data)
+                        fmt.Fprintf(w, "data: %s\n\n", b)
+                    } else {
+                        fmt.Fprintf(w, "data: {}\n\n")
+                    }
+                }
+                flusher.Flush()
+                for {
+                    select {
+                    case <-r.Context().Done():
+                        return
+                    case ev := <-ch:
+                        if ev.Event != "" {
+                            fmt.Fprintf(w, "event: %s\n", ev.Event)
+                        }
+                        if ev.Data != nil {
+                            b, _ := json.Marshal(ev.Data)
+                            fmt.Fprintf(w, "data: %s\n\n", b)
+                        } else {
+                            fmt.Fprintf(w, "data: {}\n\n")
+                        }
+                        flusher.Flush()
+                        if ev.Event == "succeeded" || ev.Event == "failed" {
+                            return
+                        }
+                    }
+                }
+            }
+            http.NotFound(w, r)
+            return
+        }
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			http.Error(w, "stream unsupported", http.StatusInternalServerError)

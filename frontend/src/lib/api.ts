@@ -248,8 +248,17 @@ export async function checkMod(id: number): Promise<Mod> {
   return parseJSON(res);
 }
 
-export async function updateModVersion(id: number): Promise<Mod> {
-  const res = await apiFetch(`/api/mods/${id}/update`, { method: "POST" });
+export interface UpdateJobAck { job_id: number }
+
+export async function startModUpdate(
+  id: number,
+  idempotencyKey: string,
+): Promise<UpdateJobAck> {
+  const res = await apiFetch(`/api/mods/${id}/update`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ idempotency_key: idempotencyKey }),
+  });
   if (!res.ok) throw await parseError(res);
   return parseJSON(res);
 }

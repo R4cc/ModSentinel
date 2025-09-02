@@ -186,6 +186,23 @@ func Init(db *sql.DB) error {
 		return err
 	}
 
+    // Track update jobs with status and timing to support idempotency and auditing
+    _, err = db.Exec(`CREATE TABLE IF NOT EXISTS mod_updates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mod_id INTEGER NOT NULL,
+        from_version TEXT,
+        to_version TEXT,
+        status TEXT,
+        idempotency_key TEXT NOT NULL,
+        started_at DATETIME,
+        ended_at DATETIME,
+        error TEXT,
+        UNIQUE(idempotency_key)
+    )`)
+    if err != nil {
+        return err
+    }
+
     _, err = db.Exec(`CREATE TABLE IF NOT EXISTS secrets (
        name TEXT PRIMARY KEY,
        value BLOB NOT NULL DEFAULT X'' ,
@@ -566,6 +583,48 @@ func InsertUpdateIfNew(db *sql.DB, modID int, version string) error {
 	_, err := db.Exec(`INSERT INTO updates(mod_id, version)
                SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM updates WHERE mod_id=? AND version=?)`, modID, version, modID, version)
 	return err
+}
+
+// InsertModUpdateQueued inserts or returns an existing mod update job by idempotency key.
+// Returns (id, existed, error).
+func InsertModUpdateQueued(db *sql.DB, modID int, fromVersion, toVersion, key string) (int, bool, error) {
+    if key == "" {
+        // fall back to non-unique insert when key is missing
+        res, err := db.Exec(`INSERT INTO mod_updates(mod_id, from_version, to_version, status, idempotency_key) VALUES(?,?,?,?,?)`, modID, fromVersion, toVersion, "Queued", fmt.Sprintf("%d:%s", modID, toVersion))
+        if err != nil {
+            return 0, false, err
+        }
+        id64, _ := res.LastInsertId()
+        return int(id64), false, nil
+    }
+    var existingID int
+    if err := db.QueryRow(`SELECT id FROM mod_updates WHERE idempotency_key=?`, key).Scan(&existingID); err == nil {
+        return existingID, true, nil
+    }
+    res, err := db.Exec(`INSERT INTO mod_updates(mod_id, from_version, to_version, status, idempotency_key) VALUES(?,?,?,?,?)`, modID, fromVersion, toVersion, "Queued", key)
+    if err != nil {
+        return 0, false, err
+    }
+    id64, _ := res.LastInsertId()
+    return int(id64), false, nil
+}
+
+// MarkModUpdateStarted marks an update job as running and records the start time if not set.
+func MarkModUpdateStarted(db *sql.DB, id int) error {
+    _, err := db.Exec(`UPDATE mod_updates SET status='Running', started_at=COALESCE(started_at, CURRENT_TIMESTAMP), error=NULL WHERE id=?`, id)
+    return err
+}
+
+// UpdateModUpdateStatus sets a transient status for an update job.
+func UpdateModUpdateStatus(db *sql.DB, id int, status string) error {
+    _, err := db.Exec(`UPDATE mod_updates SET status=? WHERE id=?`, status, id)
+    return err
+}
+
+// MarkModUpdateFinished finalizes an update job with a terminal status and end time.
+func MarkModUpdateFinished(db *sql.DB, id int, status, errMsg string) error {
+    _, err := db.Exec(`UPDATE mod_updates SET status=?, ended_at=CURRENT_TIMESTAMP, error=? WHERE id=?`, status, errMsg, id)
+    return err
 }
 
 // InsertEvent stores a mod activity log entry.

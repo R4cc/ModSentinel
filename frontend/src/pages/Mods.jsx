@@ -48,7 +48,7 @@ import {
   jobs,
   getSecretStatus,
   checkMod,
-  updateModVersion,
+  startModUpdate,
   getInstanceLogs,
 } from "@/lib/api.ts";
 import { cn, summarizeMods } from "@/lib/utils.js";
@@ -93,6 +93,8 @@ export default function Mods() {
     errors: 0,
   });
   const [updatingId, setUpdatingId] = useState(null);
+  // Track live update job state per modId
+  const [updateStatus, setUpdateStatus] = useState({}); // { [modId]: { jobId, state, details } }
   const [logsOpen, setLogsOpen] = useState(false);
   const [logs, setLogs] = useState([]);
   const [logsLoading, setLogsLoading] = useState(false);
@@ -436,15 +438,115 @@ export default function Mods() {
   async function handleApplyUpdate(m) {
     try {
       setUpdatingId(m.id);
-      const updated = await updateModVersion(m.id);
-      // Update row in-place
-      setMods((prev) => prev.map((x) => (x.id === m.id ? updated : x)));
-      toast.success(`Updated ${updated.name || "mod"} to ${updated.current_version}`);
+      const key = `${m.id}:${m.available_version || ""}:${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
+      const ack = await startModUpdate(m.id, key);
+      trackUpdateJob(ack.job_id, m.id);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to apply update");
-    } finally {
       setUpdatingId(null);
+      toast.error(err instanceof Error ? err.message : "Failed to start update");
     }
+  }
+
+  function trackUpdateJob(jobId, modId) {
+    const es = new EventSource(`/api/jobs/${jobId}/events`);
+    setSource(es);
+    const onState = (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        const st = (payload?.state || "").toLowerCase();
+        setUpdateStatus((prev) => ({ ...prev, [modId]: { jobId, state: st, details: payload?.details || {} } }));
+        if (["succeeded", "failed", "partialsuccess"].includes(st)) {
+          es.close();
+          setSource(null);
+          setUpdatingId(null);
+          setUpdateStatus((prev) => { const next = { ...prev }; delete next[modId]; return next; });
+          fetchMods();
+          fetchInstance();
+          if (st === "succeeded") {
+            const ver = payload?.details?.version;
+            toast.success(ver ? `Updated to v${ver}` : "Update applied");
+          } else if (st === "partialsuccess") {
+            toast.warning(payload?.details?.hint || "Update partially applied; manual cleanup may be required.");
+          } else {
+            const msg = payload?.details?.hint || payload?.details?.error || "Update failed";
+            toast.error(`${msg} — see Logs for details`);
+            // Open logs modal to help user inspect recent actions
+            openLogs();
+          }
+        }
+      } catch {
+        // ignore bad events
+      }
+    };
+    es.addEventListener("state", onState);
+    es.onerror = () => {
+      try { es.close(); } catch {}
+      setSource(null);
+      // Fallback to polling when SSE disconnects
+      pollUpdateJob(jobId, modId);
+    };
+  }
+
+  async function pollUpdateJob(jobId, modId) {
+    let stopped = false;
+    while (!stopped) {
+      try {
+        const data = await getJob(jobId);
+        // Handle both update-job shape {state} and sync-job shape {status}
+        const st = (data?.state || data?.status || "").toString().toLowerCase();
+        if (st) {
+          setUpdateStatus((prev) => ({ ...prev, [modId]: { jobId, state: st, details: data?.details || {} } }));
+        }
+        if (["succeeded", "failed", "partialsuccess", "canceled"].includes(st)) {
+          setUpdatingId(null);
+          setUpdateStatus((prev) => { const next = { ...prev }; delete next[modId]; return next; });
+          fetchMods();
+          fetchInstance();
+          if (st === "succeeded") {
+            const ver = data?.details?.version;
+            toast.success(ver ? `Updated to v${ver}` : "Update applied");
+          } else if (st === "partialsuccess") {
+            toast.warning(data?.details?.hint || "Update partially applied; manual cleanup may be required.");
+          } else {
+            const msg = data?.details?.hint || data?.details?.error || "Update failed";
+            toast.error(`${msg} — see Logs for details`);
+            openLogs();
+          }
+          stopped = true;
+          break;
+        }
+      } catch (err) {
+        // ignore transient errors; continue polling
+      }
+      await new Promise((res) => setTimeout(res, 1500));
+    }
+  }
+
+  function UpdateStepper({ modId }) {
+    const st = updateStatus[modId]?.state || "";
+    const order = [
+      { key: "uploadingnew", label: "Uploading" },
+      { key: "verifyingnew", label: "Verifying" },
+      { key: "updatingdb", label: "Updating DB" },
+      { key: "removingold", label: "Removing old" },
+      { key: "verifyingremoval", label: "Verifying removal" },
+    ];
+    if (!st) return null;
+    const idx = order.findIndex((s) => s.key === st);
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        {order.map((s, i) => (
+          <div key={s.key} className="flex items-center gap-1">
+            <span className={cn(
+              "inline-block h-2.5 w-2.5 rounded-full",
+              i < idx ? "bg-emerald-500" : i === idx ? "bg-emerald-400 animate-pulse" : "bg-muted"
+            )} />
+            <span className={cn(i === idx ? "text-foreground" : i < idx ? "text-emerald-700" : "")}>{s.label}</span>
+            {i < order.length - 1 && <span className="mx-1 opacity-50">›</span>}
+          </div>
+        ))}
+      </div>
+    );
   }
 
   async function saveSettings(e) {
@@ -822,17 +924,22 @@ export default function Mods() {
                                 onClick={() => handleApplyUpdate(m)}
                                 aria-label="Apply update"
                                 className="h-8 px-sm border-emerald-300 text-emerald-700 hover:bg-emerald-100"
-                                disabled={updatingId === m.id}
+                                disabled={updatingId === m.id || !!updateStatus[m.id]}
                               >
                                 <Download
                                   className={cn(
                                     "h-4 w-4",
-                                    updatingId === m.id && "animate-bounce"
+                                    (updatingId === m.id || updateStatus[m.id]) && "animate-bounce"
                                   )}
                                   aria-hidden="true"
                                 />
                               </Button>
                             </Tooltip>
+                          )}
+                          {!!updateStatus[m.id] && (
+                            <div className="ml-2">
+                              <UpdateStepper modId={m.id} />
+                            </div>
                           )}
                           <Tooltip
                             text={
