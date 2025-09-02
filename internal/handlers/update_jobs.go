@@ -11,9 +11,6 @@ import (
     "strings"
     "sync"
     "sync/atomic"
-    "crypto/sha256"
-    "encoding/hex"
-    "os"
     "errors"
     "time"
     "strconv"
@@ -22,6 +19,15 @@ import (
     pppkg "modsentinel/internal/pufferpanel"
     "modsentinel/internal/telemetry"
 )
+
+// buildPPAbsPath returns a normalized absolute PufferPanel path rooted at
+// /home/container/, ensuring there is exactly one slash between folder and name.
+func buildPPAbsPath(folder, name string) string {
+    f := strings.TrimPrefix(folder, "/")
+    if f != "" && !strings.HasSuffix(f, "/") { f += "/" }
+    n := strings.TrimPrefix(name, "/")
+    return "/home/container/" + f + n
+}
 
 // withRetry retries fn on transient errors (HTTP 429/5xx for upstream and PufferPanel) with backoff.
 func withRetry(ctx context.Context, fn func() error) error {
@@ -364,6 +370,7 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
 
 
     // Upload to PufferPanel first, if configured
+    var ppOldAbs, ppNewAbs string
     if inst, err2 := dbpkg.GetInstance(db, prev.InstanceID); err2 == nil && strings.TrimSpace(inst.PufferpanelServerID) != "" {
         // Per-instance mutex: prevent concurrent updates on the same server/instance
         acquireUpdate(inst.ID)
@@ -391,6 +398,25 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
         oldSlug, _ := parseModrinthSlug(prev.URL)
         oldName := deriveName(prev.DownloadURL, oldSlug, prev.Name, prev.CurrentVersion)
         newName := deriveName(targetURL, slug, prev.Name, prev.AvailableVersion)
+        // Planning: determine the exact old file present, if any
+        plannedOld := folder + oldName
+        if files, err := ppListPath(ctx, inst.PufferpanelServerID, folder); err == nil {
+            for _, f := range files {
+                if f.IsDir { continue }
+                if strings.EqualFold(f.Name, oldName) { plannedOld = folder + f.Name; break }
+            }
+        }
+        ppOldAbs = buildPPAbsPath("/"+folder, strings.TrimPrefix(plannedOld, folder))
+        ppNewAbs = buildPPAbsPath("/"+folder, newName)
+        telemetry.Event("mod_update_step", map[string]string{
+            "job_id": strconv.Itoa(uj.id),
+            "mod_id": strconv.Itoa(prev.ID),
+            "step":   "Planning",
+            "old_file": plannedOld,
+            "new_file": folder + newName,
+            "pp_path_old": ppOldAbs,
+            "pp_path_new": ppNewAbs,
+        })
 
         // Download artifact
         reqDL, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
@@ -433,15 +459,12 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
             "step":     "Download",
             "ms":       strconv.FormatInt(time.Since(stepStart).Milliseconds(), 10),
             "attempt":  strconv.Itoa(attempts),
-            "pp_path":  "",
-            "sha256_match": "",
+            "pp_path_old": ppOldAbs,
+            "pp_path_new": ppNewAbs,
         })
         // compute expected attributes
         expSize := len(data)
-        sum := sha256.Sum256(data)
-        expSHA := hex.EncodeToString(sum[:])
-
-        uj.emitState(StateUploadingNew, map[string]any{"file": newName, "size": expSize, "sha256": expSHA})
+        uj.emitState(StateUploadingNew, map[string]any{"file": newName, "size": expSize})
         stepStart = time.Now()
         attempts, err = withRetryCount(ctx, func() error { return pppkg.PutFile(ctx, inst.PufferpanelServerID, folder+newName, data) })
         if err != nil {
@@ -454,8 +477,8 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
             "step":    "UploadingNew",
             "ms":      strconv.FormatInt(time.Since(stepStart).Milliseconds(), 10),
             "attempt": strconv.Itoa(attempts),
-            "pp_path": folder + newName,
-            "sha256_match": "",
+            "pp_path_old": ppOldAbs,
+            "pp_path_new": ppNewAbs,
         })
         uj.emitState(StateVerifyingNew, map[string]any{"file": newName, "size": expSize})
         var files []pppkg.FileEntry
@@ -484,11 +507,10 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
             "step":    "VerifyingNewList",
             "ms":      strconv.FormatInt(time.Since(stepStart).Milliseconds(), 10),
             "attempt": strconv.Itoa(attempts),
-            "pp_path": folder,
-            "sha256_match": "",
+            "pp_path_old": ppOldAbs,
+            "pp_path_new": ppNewAbs,
         })
-        // verify by fetching uploaded file and comparing size and optionally sha256
-        verifyHash := strings.EqualFold(os.Getenv("UPDATE_VERIFY_SHA256"), "1") || strings.EqualFold(os.Getenv("UPDATE_VERIFY_SHA256"), "true")
+        // verify by fetching uploaded file and comparing size
         stepStart = time.Now()
         var b []byte
         attempts, err = withRetryCount(ctx, func() error { var er error; b, er = pppkg.FetchFile(ctx, inst.PufferpanelServerID, folder+newName); return er })
@@ -496,23 +518,6 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
             if len(b) != expSize {
                 uj.emitState(StateFailed, map[string]any{"error": fmt.Sprintf("size mismatch: expected %d got %d", expSize, len(b))})
                 return
-            }
-            if verifyHash {
-                sum2 := sha256.Sum256(b)
-                got := hex.EncodeToString(sum2[:])
-                if !strings.EqualFold(got, expSHA) {
-                    uj.emitState(StateFailed, map[string]any{"error": "sha256 mismatch", "expected": expSHA, "got": got})
-                    telemetry.Event("mod_update_step", map[string]string{
-                        "job_id":  strconv.Itoa(uj.id),
-                        "mod_id":  strconv.Itoa(prev.ID),
-                        "step":    "VerifyingNewFetch",
-                        "ms":      strconv.FormatInt(time.Since(stepStart).Milliseconds(), 10),
-                        "attempt": strconv.Itoa(attempts),
-                        "pp_path": folder + newName,
-                        "sha256_match": "false",
-                    })
-                    return
-                }
             }
         } else {
             uj.emitState(StateFailed, map[string]any{"error": err.Error()})
@@ -524,8 +529,8 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
             "step":    "VerifyingNewFetch",
             "ms":      strconv.FormatInt(time.Since(stepStart).Milliseconds(), 10),
             "attempt": strconv.Itoa(attempts),
-            "pp_path": folder + newName,
-            "sha256_match": func() string { if verifyHash { return "true" }; return "" }(),
+            "pp_path_old": ppOldAbs,
+            "pp_path_new": ppNewAbs,
         })
         // Defer DB update until after old file deletion is verified
 
@@ -548,7 +553,24 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
         } else {
             _, delErr = withRetryCount(ctx, func() error { return pppkg.DeleteFile(ctx, inst.PufferpanelServerID, folder+oldName) })
         }
+        // Treat 404 (not found) as success: nothing to remove
         if delErr != nil {
+            if errors.Is(delErr, pppkg.ErrNotFound) {
+                delErr = nil
+            } else {
+                var pe *pppkg.Error
+                if errors.As(delErr, &pe) && pe.Status == http.StatusNotFound {
+                    delErr = nil
+                }
+            }
+        }
+        if delErr != nil {
+            // capture delete status if available
+            statusStr := ""
+            var pe2 *pppkg.Error
+            if errors.As(delErr, &pe2) {
+                statusStr = strconv.Itoa(pe2.Status)
+            }
             uj.emitState(StatePartialSuccess, map[string]any{"file": oldName, "hint": "Old file could not be removed; please delete it manually from the server."})
             telemetry.Event("mod_update_step", map[string]string{
                 "job_id":  strconv.Itoa(uj.id),
@@ -556,13 +578,15 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
                 "step":    "RemovingOld",
                 "ms":      strconv.FormatInt(time.Since(stepStart).Milliseconds(), 10),
                 "attempt": strconv.Itoa(attempts),
-                "pp_path": folder + oldName,
+                "pp_path_old": ppOldAbs,
+                "pp_path_new": ppNewAbs,
                 "sha256_match": "",
             })
             telemetry.Event("mod_update_failed", map[string]string{
                 "job_id": strconv.Itoa(uj.id),
                 "mod_id": strconv.Itoa(prev.ID),
                 "error":  "delete_old_failed",
+                "pp_delete_status": statusStr,
             })
             return
         }
@@ -572,8 +596,8 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
             "step":    "RemovingOld",
             "ms":      strconv.FormatInt(time.Since(stepStart).Milliseconds(), 10),
             "attempt": strconv.Itoa(attempts),
-            "pp_path": folder + oldName,
-            "sha256_match": "",
+            "pp_path_old": ppOldAbs,
+            "pp_path_new": ppNewAbs,
         })
         // Verify removal; if still present, partial success
         removed := true
@@ -595,8 +619,8 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
             "step":    "VerifyingRemoval",
             "ms":      strconv.FormatInt(time.Since(stepStart).Milliseconds(), 10),
             "attempt": strconv.Itoa(attempts),
-            "pp_path": folder,
-            "sha256_match": "",
+            "pp_path_old": ppOldAbs,
+            "pp_path_new": ppNewAbs,
         })
         if !removed {
             uj.emitState(StatePartialSuccess, map[string]any{"file": oldName, "hint": "Old file still present; please delete it manually from the server."})
@@ -627,8 +651,8 @@ func runUpdateJob(ctx context.Context, db *sql.DB, uj *updateJob, modID int) {
         "step":    "UpdatingDB",
         "ms":      strconv.FormatInt(time.Since(stepStart).Milliseconds(), 10),
         "attempt": "1",
-        "pp_path": "",
-        "sha256_match": "",
+        "pp_path_old": ppOldAbs,
+        "pp_path_new": ppNewAbs,
     })
     _ = dbpkg.InsertUpdateIfNew(db, prev.ID, prev.AvailableVersion)
     m, err := dbpkg.GetMod(db, prev.ID)

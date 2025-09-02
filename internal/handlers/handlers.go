@@ -1613,7 +1613,7 @@ func jobProgressHandler(db *sql.DB) http.HandlerFunc {
         idStr := chi.URLParam(r, "id")
         id, err := strconv.Atoi(idStr)
         if err != nil {
-            http.NotFound(w, r)
+            httpx.Write(w, r, httpx.NotFound("job not found"))
             return
         }
         job, err := dbpkg.GetSyncJob(db, id)
@@ -1633,7 +1633,7 @@ func jobProgressHandler(db *sql.DB) http.HandlerFunc {
                 }{id, string(uj.state), last})
                 return
             }
-            http.NotFound(w, r)
+            httpx.Write(w, r, httpx.NotFound("job not found"))
             return
         }
 		var total, processed, succeeded, failed int
@@ -1661,7 +1661,7 @@ func jobEventsHandler(db *sql.DB) http.HandlerFunc {
         idStr := chi.URLParam(r, "id")
         id, err := strconv.Atoi(idStr)
         if err != nil {
-            http.NotFound(w, r)
+            httpx.Write(w, r, httpx.NotFound("job not found"))
             return
         }
         if _, err := dbpkg.GetSyncJob(db, id); err != nil {
@@ -1711,7 +1711,7 @@ func jobEventsHandler(db *sql.DB) http.HandlerFunc {
                     }
                 }
             }
-            http.NotFound(w, r)
+            httpx.Write(w, r, httpx.NotFound("job not found"))
             return
         }
 		flusher, ok := w.(http.Flusher)
