@@ -54,6 +54,9 @@ var (
     ppGetServer = pppkg.GetServer
     ppListPath  = pppkg.ListPath
     ppFetchFile = pppkg.FetchFile
+    // fetch template definition and data
+    ppGetServerDefinition = pppkg.GetServerDefinition
+    ppGetServerData       = pppkg.GetServerData
 )
 
 var lastSync atomic.Int64
@@ -519,21 +522,26 @@ func serveFavicon(dist fs.FS) http.HandlerFunc {
 }
 
 func listInstancesHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		instances, err := dbpkg.ListInstances(db)
-		if err != nil {
-			httpx.Write(w, r, httpx.Internal(err))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		// Avoid stale list after add/sync flows
-		w.Header().Set("Cache-Control", "no-store")
-		json.NewEncoder(w).Encode(instances)
-	}
+    return func(w http.ResponseWriter, r *http.Request) {
+        instances, err := dbpkg.ListInstances(db)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        w.Header().Set("Content-Type", "application/json")
+        // Avoid stale list after add/sync flows
+        w.Header().Set("Cache-Control", "no-store")
+        // Project to include camelCase fields for gameVersion and gameVersionKey
+        outs := make([]instanceOut, 0, len(instances))
+        for _, in := range instances {
+            outs = append(outs, projectInstance(in))
+        }
+        json.NewEncoder(w).Encode(outs)
+    }
 }
 
 func getInstanceHandler(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+    return func(w http.ResponseWriter, r *http.Request) {
 		idStr := chi.URLParam(r, "id")
 		id, err := strconv.Atoi(idStr)
 		if err != nil {
@@ -545,11 +553,34 @@ func getInstanceHandler(db *sql.DB) http.HandlerFunc {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		// Avoid stale instance stats during/after sync
-		w.Header().Set("Cache-Control", "no-store")
-		json.NewEncoder(w).Encode(inst)
-	}
+        w.Header().Set("Content-Type", "application/json")
+        // Avoid stale instance stats during/after sync
+        w.Header().Set("Cache-Control", "no-store")
+        json.NewEncoder(w).Encode(projectInstance(*inst))
+    }
+}
+
+// instanceOut augments the DB Instance with camelCase fields for API consumers.
+type instanceOut struct {
+    dbpkg.Instance
+    GameVersion       string `json:"gameVersion,omitempty"`
+    GameVersionKey    string `json:"gameVersionKey,omitempty"`
+    GameVersionSource string `json:"gameVersionSource,omitempty"`
+}
+
+func projectInstance(in dbpkg.Instance) instanceOut {
+    out := instanceOut{Instance: in}
+    // Mirror values to camelCase fields
+    out.GameVersion = strings.TrimSpace(in.GameVersion)
+    out.GameVersionKey = strings.TrimSpace(in.PufferVersionKey)
+    if out.GameVersion != "" {
+        if out.GameVersionKey != "" {
+            out.GameVersionSource = "pufferpanel"
+        } else {
+            out.GameVersionSource = "manual"
+        }
+    }
+    return out
 }
 
 func validateInstanceHandler() http.HandlerFunc {
@@ -1848,25 +1879,50 @@ func retryFailedHandler(db *sql.DB) http.HandlerFunc {
 }
 
 func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db *sql.DB, inst *dbpkg.Instance, serverID string, prog *jobProgress, only []string) {
-	srv, err := ppGetServer(ctx, serverID)
-	if err != nil {
-		writePPError(w, r, err)
-		return
-	}
-	inst.Loader = strings.ToLower(srv.Environment.Type)
-	inst.PufferpanelServerID = serverID
-	inst.EnforceSameLoader = true
-	if inst.Loader == "" {
-		inst.Loader = "fabric"
-	}
-	if err := validatePayload(inst); err != nil {
-		httpx.Write(w, r, err)
-		return
-	}
-	if _, err := db.Exec(`UPDATE instances SET loader=?, enforce_same_loader=?, pufferpanel_server_id=? WHERE id=?`, inst.Loader, inst.EnforceSameLoader, inst.PufferpanelServerID, inst.ID); err != nil {
-		httpx.Write(w, r, httpx.Internal(err))
-		return
-	}
+    srv, err := ppGetServer(ctx, serverID)
+    if err != nil {
+        writePPError(w, r, err)
+        return
+    }
+    inst.Loader = strings.ToLower(srv.Environment.Type)
+    inst.PufferpanelServerID = serverID
+    inst.EnforceSameLoader = true
+    if inst.Loader == "" {
+        inst.Loader = "fabric"
+    }
+    if err := validatePayload(inst); err != nil {
+        httpx.Write(w, r, err)
+        return
+    }
+    // Try to detect game version from PufferPanel server definition/data; best-effort.
+    var detectedKey, detectedVal string
+    if def, err1 := ppGetServerDefinition(ctx, serverID); err1 == nil {
+        if data, err2 := ppGetServerData(ctx, serverID); err2 == nil {
+            if k, v, ok := detectGameVersion(def, data); ok {
+                detectedKey, detectedVal = k, v
+            }
+        }
+    }
+    // Update version based on rules:
+    // - If the detected key matches previously stored key, update value.
+    // - If there was no previously detected key AND no stored version, set key and value.
+    // - Do not overwrite a manual version (version set but no key).
+    var keyParam any = nil
+    var valParam any = nil
+    if detectedKey != "" && detectedVal != "" {
+        if inst.PufferVersionKey == detectedKey {
+            // Same key, value may have changed; update only value
+            valParam = detectedVal
+        } else if inst.PufferVersionKey == "" && strings.TrimSpace(inst.GameVersion) == "" {
+            // Previously unknown; set both key and value
+            keyParam = detectedKey
+            valParam = detectedVal
+        }
+    }
+    if _, err := db.Exec(`UPDATE instances SET loader=?, enforce_same_loader=?, pufferpanel_server_id=?, puffer_version_key=COALESCE(?, puffer_version_key), game_version=COALESCE(?, game_version) WHERE id=?`, inst.Loader, inst.EnforceSameLoader, inst.PufferpanelServerID, keyParam, valParam, inst.ID); err != nil {
+        httpx.Write(w, r, httpx.Internal(err))
+        return
+    }
     folder := "mods/"
 	switch inst.Loader {
 	case "paper", "spigot":
@@ -2373,6 +2429,80 @@ type modMetadata struct {
     Loaders      []string   `json:"loaders"`
     Channels     []string   `json:"channels"`
     Versions     []uiVersion `json:"versions"`
+}
+
+// detectGameVersion attempts to find a version variable and validate its current value.
+func detectGameVersion(def *pppkg.ServerDefinition, data *pppkg.ServerData) (key, val string, ok bool) {
+    if def == nil || data == nil || len(def.Data) == 0 || len(data.Data) == 0 {
+        return "", "", false
+    }
+    // Regex rules
+    reKey := regexp.MustCompile(`(?i)(^|_)(mc|minecraft)?_?version($|_)`)
+    reVal := regexp.MustCompile(`^\d+\.\d+(?:\.\d+)?(?:[-+][A-Za-z0-9._-]+)?$`)
+
+    type candidate struct {
+        key     string
+        score   int
+        options int
+        val     string
+    }
+    best := candidate{score: -1}
+    for k, meta := range def.Data {
+        disp := strings.ToLower(meta.Display)
+        desc := strings.ToLower(meta.Desc)
+        matchesText := strings.Contains(disp, "version") || strings.Contains(desc, "version")
+        matchesKey := reKey.MatchString(strings.ToLower(k))
+        if !(matchesText || matchesKey) {
+            continue
+        }
+        // Validate value existence
+        vw, okd := data.Data[k]
+        if !okd || vw.Value == nil {
+            continue
+        }
+        s := 0
+        if matchesKey { s += 2 } else if matchesText { s += 1 }
+        // Options heuristic
+        optCount := 0
+        if len(meta.Options) > 0 {
+            for _, o := range meta.Options {
+                if reVal.MatchString(strings.TrimSpace(o)) {
+                    optCount++
+                }
+            }
+            if optCount > 0 { s += 2 }
+        }
+        // Extract string value
+        var vStr string
+        switch x := vw.Value.(type) {
+        case string:
+            vStr = strings.TrimSpace(x)
+        default:
+            // try to marshal then convert
+            b, _ := json.Marshal(x)
+            vStr = strings.Trim(string(b), `"`)
+        }
+        if !reVal.MatchString(vStr) {
+            continue
+        }
+        // prefer when exact match exists in options
+        if optCount > 0 {
+            for _, o := range meta.Options {
+                if strings.TrimSpace(o) == vStr {
+                    s += 1
+                    break
+                }
+            }
+        }
+        c := candidate{key: k, score: s, options: optCount, val: vStr}
+        if c.score > best.score || (c.score == best.score && c.options > best.options) {
+            best = c
+        }
+    }
+    if best.score >= 0 {
+        return best.key, best.val, true
+    }
+    return "", "", false
 }
 
 // uiVersion mirrors mr.Version JSON while adding UI helper flags.

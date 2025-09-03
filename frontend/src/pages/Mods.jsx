@@ -18,6 +18,7 @@ import {
   Pencil,
   Key,
   AlertTriangle,
+  HelpCircle,
 } from "lucide-react";
 import { Input } from "@/components/ui/Input.jsx";
 import { Select } from "@/components/ui/Select.jsx";
@@ -674,12 +675,47 @@ export default function Mods() {
         <div className="space-y-sm">
           <div className="flex items-center gap-sm">
             <h1 className="text-2xl font-bold truncate">{instance.name}{nameSuffix ? ` (${nameSuffix})` : ""}</h1>
-            <Badge
-              variant="secondary"
-              className={`capitalize border ${loaderBadgeClass(instance.loader)}`}
-            >
-              {instance.loader || "unknown"}
-            </Badge>
+            <div className="flex items-stretch gap-sm">
+              <Badge
+                variant="secondary"
+                className={`capitalize border ${loaderBadgeClass(instance.loader)}`}
+              >
+                {instance.loader || "unknown"}
+              </Badge>
+              {/* Server info card */}
+              <div className="rounded-md border p-sm shadow-sm">
+                <div className="text-xs font-medium text-muted-foreground mb-1">Server info</div>
+                <div className="flex items-center gap-md">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted-foreground">Loader:</span>
+                    <Badge
+                      variant="secondary"
+                      className={`capitalize border ${loaderBadgeClass(instance.loader)}`}
+                    >
+                      {instance.loader || "unknown"}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-xs">
+                    <span className="text-sm text-muted-foreground">Game version:</span>
+                    <span className="text-sm font-medium">
+                      {instance.gameVersion?.trim() || "Unknown"}
+                    </span>
+                    {instance.gameVersionKey ? (
+                      <Tooltip text={`PufferPanel variable: ${instance.gameVersionKey}`}>
+                        <button type="button" className="text-muted-foreground" aria-label="Show version key">
+                          <HelpCircle className="h-4 w-4" aria-hidden />
+                        </button>
+                      </Tooltip>
+                    ) : null}
+                  </div>
+                  {!instance.gameVersion && (
+                    <Button size="sm" variant="outline" onClick={handleResync} disabled={resyncing}>
+                      {resyncing ? "Detecting..." : "Detect again"}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-sm">
             <Button

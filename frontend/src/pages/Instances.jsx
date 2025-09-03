@@ -22,7 +22,6 @@ import {
   updateInstance,
   deleteInstance,
   getSecretStatus,
-  syncInstances,
   getPufferServers,
 } from "@/lib/api.ts";
 import { toast } from "@/lib/toast.ts";
@@ -49,7 +48,7 @@ export default function Instances() {
   const [hasToken, setHasToken] = useState(true);
   const [hasPuffer, setHasPuffer] = useState(false);
   const [pufferLoaded, setPufferLoaded] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+  // removed page-level sync button/state
   const [servers, setServers] = useState([]);
   const [selectedServer, setSelectedServer] = useState("");
   const [loadingServers, setLoadingServers] = useState(false);
@@ -141,7 +140,8 @@ export default function Instances() {
     setSuffixMap(map);
   }
 
-  async function handleSync() {
+  // deprecated: list-level sync removed
+  async function removedHandleSync() {
     setSyncing(true);
     try {
       await Promise.all(
@@ -457,16 +457,6 @@ export default function Instances() {
       </div>
       <div className="flex justify-end md:justify-between gap-sm">
         <Button onClick={openAdd}>Add instance</Button>
-        {pufferLoaded && hasPuffer && (
-          <Button
-            variant="secondary"
-            onClick={handleSync}
-            disabled={syncing}
-            aria-busy={syncing}
-          >
-            {syncing ? "Syncing..." : "Sync"}
-          </Button>
-        )}
       </div>
       {loading && (
         <div className="grid grid-cols-1 gap-md sm:grid-cols-2 lg:grid-cols-3">

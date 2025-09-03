@@ -19,6 +19,10 @@ export interface Instance {
   last_sync_added?: number;
   last_sync_updated?: number;
   last_sync_failed?: number;
+  // Optional enriched fields from backend projection
+  gameVersion?: string;
+  gameVersionKey?: string;
+  gameVersionSource?: "pufferpanel" | "manual";
 }
 
 export interface Mod {

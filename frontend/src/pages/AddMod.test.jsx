@@ -372,4 +372,69 @@ describe("AddMod page", () => {
     const critical = results.violations.filter((v) => v.impact === "critical");
     expect(critical).toHaveLength(0);
   });
+
+  it("defaults to server version and can toggle to manual", async () => {
+    getInstance.mockResolvedValueOnce({
+      id: 1,
+      name: "Inst",
+      loader: "fabric",
+      enforce_same_loader: true,
+      created_at: "",
+      mod_count: 0,
+      gameVersion: "1.20.1",
+    });
+    render(
+      <MemoryRouter initialEntries={["/instances/1/add"]}>
+        <Routes>
+          <Route path="/instances/:id/add" element={<AddMod />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    // Navigate to Minecraft Version step
+    const nextBtns1 = await screen.findAllByRole("button", { name: "Next" });
+    fireEvent.click(nextBtns1[nextBtns1.length - 1]); // to Loader
+    const nextBtns2 = await screen.findAllByRole("button", { name: "Next" });
+    fireEvent.click(nextBtns2[nextBtns2.length - 1]); // to MC Version
+
+    // Banner shows detected version, input not rendered yet
+    expect(await screen.findByText(/Using server's version/i)).toBeInTheDocument();
+    expect(screen.getByText("1.20.1")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Minecraft version")).not.toBeInTheDocument();
+
+    // Switch to manual reveals input
+    fireEvent.click(screen.getByRole("button", { name: /Switch to manual/i }));
+    const input = await screen.findByLabelText("Minecraft version");
+    expect(input).toBeEnabled();
+
+    // Using the detected again hides input
+    fireEvent.click(screen.getByRole("button", { name: /Use this/i }));
+    expect(await screen.findByText(/Using server's version/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Minecraft version")).not.toBeInTheDocument();
+  });
+
+  it("defaults to manual when no detected version", async () => {
+    getInstance.mockResolvedValueOnce({
+      id: 1,
+      name: "Inst",
+      loader: "fabric",
+      enforce_same_loader: true,
+      created_at: "",
+      mod_count: 0,
+    });
+    render(
+      <MemoryRouter initialEntries={["/instances/1/add"]}>
+        <Routes>
+          <Route path="/instances/:id/add" element={<AddMod />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    const nextBtns1 = await screen.findAllByRole("button", { name: "Next" });
+    fireEvent.click(nextBtns1[nextBtns1.length - 1]);
+    const nextBtns2 = await screen.findAllByRole("button", { name: "Next" });
+    fireEvent.click(nextBtns2[nextBtns2.length - 1]);
+    const input = await screen.findByLabelText("Minecraft version");
+    expect(input).toBeInTheDocument();
+    expect(input).toBeEnabled();
+    expect(screen.queryByText(/Using server's version/i)).not.toBeInTheDocument();
+  });
 });

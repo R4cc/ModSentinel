@@ -81,11 +81,19 @@ export default function AddMod() {
   }, []);
 
   const [instance, setInstance] = useState(null);
+  const [useServerVersion, setUseServerVersion] = useState(false);
   useEffect(() => {
     getInstance(instanceId)
       .then((data) => {
         setInstance(data);
         setLoader(data.loader);
+        if (data.gameVersion) {
+          setUseServerVersion(true);
+          // initialize mcVersion to server-detected value if empty
+          setMcVersion((v) => v || data.gameVersion || "");
+        } else {
+          setUseServerVersion(false);
+        }
       })
       .catch((err) =>
         toast.error(
@@ -424,14 +432,50 @@ export default function AddMod() {
                   <Skeleton className="h-10 w-full" />
                 ) : (
                   <>
-                    <Input
-                      list="mc-versions"
-                      id="mc-version"
-                      ref={refs[2]}
-                      value={mcVersion}
-                      onChange={(e) => setMcVersion(e.target.value)}
-                      placeholder="Search versions"
-                    />
+                    {instance?.gameVersion && useServerVersion ? (
+                      <div className="flex items-center justify-between gap-sm rounded-md border p-sm">
+                        <div className="text-sm">
+                          <div className="text-muted-foreground">Using server's version (from PufferPanel)</div>
+                          <div className="font-medium">{instance.gameVersion}</div>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setUseServerVersion(false)}
+                        >
+                          Switch to manual
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="space-y-xs">
+                        {instance?.gameVersion && (
+                          <div className="flex items-center justify-between gap-sm rounded-md border p-xs text-sm">
+                            <span>
+                              Use server's version: <span className="font-medium">{instance.gameVersion}</span>
+                            </span>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => {
+                                setUseServerVersion(true);
+                                setMcVersion(instance.gameVersion || "");
+                              }}
+                            >
+                              Use this
+                            </Button>
+                          </div>
+                        )}
+                        <Input
+                          list="mc-versions"
+                          id="mc-version"
+                          ref={refs[2]}
+                          value={mcVersion}
+                          onChange={(e) => setMcVersion(e.target.value)}
+                          placeholder="Search versions"
+                          disabled={!!(instance?.gameVersion && useServerVersion)}
+                        />
+                      </div>
+                    )}
                     <datalist id="mc-versions">
                       {safeVersions.map((v) => (
                         <option key={v} value={v} />
