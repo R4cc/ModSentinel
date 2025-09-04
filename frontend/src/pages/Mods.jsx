@@ -608,6 +608,10 @@ export default function Mods() {
       toast.error("Name required");
       return;
     }
+    if (!editLoader.trim()) {
+      toast.error("Loader required");
+      return;
+    }
     try {
       const payload = { name };
       const v = mcVersion.trim();
@@ -670,6 +674,14 @@ export default function Mods() {
   return (
     <div className="grid gap-xl">
       {ConfirmModal}
+      {instance?.requires_loader && (
+        <div className="rounded-md border border-red-300 bg-red-50 p-sm text-red-800 flex items-center justify-between">
+          <div className="text-sm">This instance requires a loader to be set before actions are available.</div>
+          <Button size="sm" variant="outline" onClick={() => { setName(instance.name); setEditLoader(instance.loader || ''); setEditOpen(true); }}>
+            Set loader
+          </Button>
+        </div>
+      )}
       <Modal open={checkOpen} onClose={() => setCheckOpen(false)}>
         <h2 className="mb-sm text-lg font-medium">Check for Updates</h2>
         <p className="text-sm mb-sm">
@@ -855,8 +867,9 @@ export default function Mods() {
               size="sm"
               variant="outline"
               onClick={handleCheckAll}
-              disabled={checkingAll || !hasToken || mods.length === 0}
+              disabled={instance?.requires_loader || checkingAll || !hasToken || mods.length === 0}
               className="gap-xs disabled:opacity-50 disabled:pointer-events-none"
+              title={instance?.requires_loader ? "Set loader first" : undefined}
             >
               <RefreshCw className="h-4 w-4" aria-hidden />
               Check Updates
@@ -876,8 +889,9 @@ export default function Mods() {
                 size="sm"
                 variant="outline"
                 onClick={handleResync}
-                disabled={resyncing}
+                disabled={instance?.requires_loader || resyncing}
                 className="gap-xs disabled:opacity-50 disabled:pointer-events-none"
+                title={instance?.requires_loader ? "Set loader first" : undefined}
               >
                 <RotateCw className="h-4 w-4" aria-hidden />
                 {resyncing ? "Resyncing" : "Resync"}

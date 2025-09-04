@@ -717,7 +717,7 @@ function openEdit(inst) {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={editing ? (!name.trim() || !loader) : (scanning || (addTab === "puffer" ? (loadingServers || !selectedServer) : (!name.trim() || !loadersLoaded || !loader)))} aria-busy={scanning}>
+            <Button type="submit" disabled={editing ? !name.trim() : (scanning || (addTab === "puffer" ? (loadingServers || !selectedServer) : (!name.trim() || !loadersLoaded || !loader)))} aria-busy={scanning}>
               {editing ? "Save" : "Add"}
             </Button>
           </div>
@@ -741,4 +741,5 @@ function openEdit(inst) {
     </div>
   );
 }
+
 

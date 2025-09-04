@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button.jsx';
 import { cn } from '@/lib/utils.js';
 
-export default function LoaderSelect({ loaders, value, onChange, disabled, placeholder = 'Select loader' }) {
+export default function LoaderSelect({ loaders, value, onChange, disabled, placeholder = 'Select loader', id, autoFocus }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const sel = loaders.find((l) => l.id === value);
@@ -20,7 +20,7 @@ export default function LoaderSelect({ loaders, value, onChange, disabled, place
 
   return (
     <div className="relative" ref={ref}>
-      <Button type="button" variant="outline" className="w-full justify-between" onClick={() => !disabled && setOpen((v) => !v)} disabled={disabled} aria-haspopup="listbox" aria-expanded={open}>
+      <Button id={id} type="button" variant="outline" className="w-full justify-between" onClick={() => !disabled && setOpen((v) => !v)} disabled={disabled} aria-haspopup="listbox" aria-expanded={open} autoFocus={autoFocus}>
         <span className="flex items-center gap-xs truncate">
           {sel?.icon ? (
             <span className="h-4 w-4" aria-hidden dangerouslySetInnerHTML={{ __html: sel.icon }} />
@@ -49,4 +49,3 @@ export default function LoaderSelect({ loaders, value, onChange, disabled, place
     </div>
   );
 }
-

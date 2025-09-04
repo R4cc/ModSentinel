@@ -544,6 +544,18 @@ func listInstancesHandler(db *sql.DB) http.HandlerFunc {
     }
 }
 
+// emitRequiresMetric logs a gauge for instances that still require a loader selection.
+func emitRequiresMetric(db *sql.DB) {
+    if db == nil { return }
+    var n int
+    if err := db.QueryRow(`SELECT COUNT(1) FROM instances WHERE IFNULL(requires_loader,0)=1`).Scan(&n); err == nil {
+        telemetry.Event("metric", map[string]string{
+            "name":  "instances_requires_loader",
+            "value": strconv.Itoa(n),
+        })
+    }
+}
+
 // ensureModrinthLoaders makes sure the in-memory loader cache is populated and fresh.
 func ensureModrinthLoaders(ctx context.Context) error {
     now := time.Now()
@@ -859,6 +871,7 @@ func updateInstanceHandler(db *sql.DB) http.HandlerFunc {
 		}
     if req.Loader != nil && strings.TrimSpace(*req.Loader) != "" {
         inst.Loader = strings.ToLower(strings.TrimSpace(*req.Loader))
+        inst.RequiresLoader = false
     }
     if req.GameVersion != nil {
         gv := strings.TrimSpace(*req.GameVersion)
@@ -967,6 +980,10 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
         inst, err := dbpkg.GetInstance(db, m.InstanceID)
         if err != nil {
             httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        if inst.RequiresLoader {
+            httpx.Write(w, r, httpx.LoaderRequired())
             return
         }
         warning := ""
@@ -1162,6 +1179,12 @@ func updateModHandler(db *sql.DB) http.HandlerFunc {
 		if err := validatePayload(&m); err != nil {
 			httpx.Write(w, r, err)
 			return
+		}
+		if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil {
+			if inst.RequiresLoader {
+				httpx.Write(w, r, httpx.LoaderRequired())
+				return
+			}
 		}
 		slug, err := parseModrinthSlug(m.URL)
 		if err != nil {
@@ -1495,6 +1518,13 @@ func enqueueModUpdateHandler(db *sql.DB) http.HandlerFunc {
         if strings.TrimSpace(payload.IdempotencyKey) == "" {
             httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(map[string]string{"idempotency_key": "required"}))
             return
+        }
+        // Ensure instance does not require loader before enqueuing
+        if mu, err0 := dbpkg.GetMod(db, id); err0 == nil {
+            if inst, err1 := dbpkg.GetInstance(db, mu.InstanceID); err1 == nil && inst.RequiresLoader {
+                httpx.Write(w, r, httpx.LoaderRequired())
+                return
+            }
         }
         jobID, err := enqueueUpdateJobWithKey(r.Context(), db, id, payload.IdempotencyKey)
         if err != nil {
@@ -2045,14 +2075,57 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
         writePPError(w, r, err)
         return
     }
-    inst.Loader = strings.ToLower(srv.Environment.Type)
     inst.PufferpanelServerID = serverID
-    if inst.Loader == "" {
-        inst.Loader = "fabric"
-    }
     if err := validatePayload(inst); err != nil {
         httpx.Write(w, r, err)
         return
+    }
+    // Derive loader from definition/environment
+    _ = ensureModrinthLoaders(ctx)
+    norm := func(s string) string {
+        s = strings.ToLower(strings.TrimSpace(s))
+        s = strings.ReplaceAll(s, " ", "")
+        s = strings.ReplaceAll(s, "-", "")
+        s = strings.ReplaceAll(s, "_", "")
+        return s
+    }
+    pType := norm(srv.Environment.Type)
+    if def, err1 := ppGetServerDefinition(ctx, serverID); err1 == nil && def != nil {
+        if b, err2 := json.Marshal(def); err2 == nil {
+            var m map[string]any
+            if json.Unmarshal(b, &m) == nil {
+                if v, ok := m["type"].(string); ok && strings.TrimSpace(v) != "" {
+                    pType = norm(v)
+                } else if env, ok := m["environment"].(map[string]any); ok {
+                    if v, ok2 := env["type"].(string); ok2 { pType = norm(v) }
+                }
+            }
+        }
+    }
+    mapped := ""
+    switch pType {
+    case "fabric": mapped = "fabric"
+    case "forge": mapped = "forge"
+    case "quilt": mapped = "quilt"
+    case "neoforge", "neo": mapped = "neoforge"
+    case "babric": mapped = "babric"
+    case "vanilla": mapped = ""
+    }
+    valid := func(id string) bool {
+        if id == "" { return true }
+        modrinthLoadersMu.RLock(); defer modrinthLoadersMu.RUnlock()
+        for _, t := range modrinthLoadersCache { if strings.EqualFold(t.ID, id) { return true } }
+        return false
+    }
+    requiresLoader := false
+    if mapped == "" {
+        if pType != "vanilla" { requiresLoader = true }
+        inst.Loader = ""
+    } else if valid(mapped) {
+        inst.Loader = mapped
+    } else {
+        inst.Loader = ""
+        requiresLoader = true
     }
     // Try to detect game version from PufferPanel server definition/data; best-effort.
     var detectedKey, detectedVal string
@@ -2079,7 +2152,7 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
             valParam = detectedVal
         }
     }
-    if _, err := db.Exec(`UPDATE instances SET loader=?, pufferpanel_server_id=?, puffer_version_key=COALESCE(?, puffer_version_key), game_version=COALESCE(?, game_version) WHERE id=?`, inst.Loader, inst.PufferpanelServerID, keyParam, valParam, inst.ID); err != nil {
+    if _, err := db.Exec(`UPDATE instances SET loader=?, requires_loader=?, pufferpanel_server_id=?, puffer_version_key=COALESCE(?, puffer_version_key), game_version=COALESCE(?, game_version) WHERE id=?`, inst.Loader, requiresLoader, inst.PufferpanelServerID, keyParam, valParam, inst.ID); err != nil {
         httpx.Write(w, r, httpx.Internal(err))
         return
     }

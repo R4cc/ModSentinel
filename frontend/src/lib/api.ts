@@ -11,6 +11,7 @@ export interface Instance {
   id: number;
   name: string;
   loader: string;
+  requires_loader?: boolean;
   pufferpanel_server_id?: string;
   enforce_same_loader: boolean;
   created_at: string;

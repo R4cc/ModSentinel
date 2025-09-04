@@ -68,16 +68,21 @@ func TooManyRequests(msg string) *HTTPError {
 
 // Unavailable returns a 503 HTTPError.
 func Unavailable(msg string) *HTTPError {
-	return &HTTPError{status: http.StatusServiceUnavailable, code: "service_unavailable", message: msg}
+    return &HTTPError{status: http.StatusServiceUnavailable, code: "service_unavailable", message: msg}
 }
 
 // Internal returns a 500 HTTPError.
 func Internal(err error) *HTTPError {
-	msg := "internal server error"
-	if err != nil {
-		msg = err.Error()
-	}
-	return &HTTPError{status: http.StatusInternalServerError, code: "internal_error", message: msg}
+    msg := "internal server error"
+    if err != nil {
+        msg = err.Error()
+    }
+    return &HTTPError{status: http.StatusInternalServerError, code: "internal_error", message: msg}
+}
+
+// LoaderRequired returns a 409 HTTPError to indicate the instance requires a loader selection.
+func LoaderRequired() *HTTPError {
+    return &HTTPError{status: http.StatusConflict, code: "LOADER_REQUIRED", message: "loader required"}
 }
 
 // Write writes the error to the response writer in JSON format.

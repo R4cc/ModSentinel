@@ -15,6 +15,7 @@ type Instance struct {
     Name                string `json:"name" validate:"max=128"`
     Loader              string `json:"loader"`
     PufferpanelServerID string `json:"pufferpanel_server_id"`
+    RequiresLoader      bool   `json:"requires_loader"`
     // GameVersion stores the detected game (Minecraft) version for this instance.
     GameVersion         string `json:"game_version"`
     // PufferVersionKey records the template variable key used to derive the version.
@@ -87,6 +88,7 @@ func Init(db *sql.DB) error {
         "name":                  fmt.Sprintf("TEXT NOT NULL CHECK(length(name) <= %d AND length(trim(name)) > 0)", InstanceNameMaxLen),
         "loader":                "TEXT",
         "pufferpanel_server_id": "TEXT",
+        "requires_loader":       "INTEGER DEFAULT 0",
         "game_version":          "TEXT",
         "puffer_version_key":    "TEXT",
         "created_at":            "DATETIME DEFAULT CURRENT_TIMESTAMP",
@@ -439,10 +441,12 @@ func InsertInstance(db *sql.DB, i *Instance) error {
 
 // UpdateInstance updates an existing instance.
 func UpdateInstance(db *sql.DB, i *Instance) error {
-    // Update core editable fields including loader. Also persist optional game_version and puffer_version_key
-    _, err := db.Exec(`UPDATE instances SET name=?, loader=?, game_version=?, puffer_version_key=? WHERE id=?`, i.Name, i.Loader, i.GameVersion, i.PufferVersionKey, i.ID)
+    // Update core editable fields including loader and requires_loader. Also persist optional game_version and puffer_version_key
+    _, err := db.Exec(`UPDATE instances SET name=?, loader=?, requires_loader=?, game_version=?, puffer_version_key=? WHERE id=?`, i.Name, i.Loader, boolToInt(i.RequiresLoader), i.GameVersion, i.PufferVersionKey, i.ID)
     return err
 }
+
+func boolToInt(b bool) int { if b { return 1 }; return 0 }
 
 // UpdateInstanceSync records sync stats for an instance.
 func UpdateInstanceSync(db *sql.DB, id, added, updated, failed int) error {
@@ -469,9 +473,9 @@ func DeleteInstance(db *sql.DB, id int, targetID *int) error {
 // GetInstance returns an instance by ID.
 func GetInstance(db *sql.DB, id int) (*Instance, error) {
     var inst Instance
-    err := db.QueryRow(`SELECT i.id, IFNULL(i.name, ''), IFNULL(i.loader, ''), IFNULL(i.pufferpanel_server_id, ''), IFNULL(i.game_version, ''), IFNULL(i.puffer_version_key, ''), IFNULL(i.created_at, ''), IFNULL(i.last_sync_at, ''), IFNULL(i.last_sync_added, 0), IFNULL(i.last_sync_updated, 0), IFNULL(i.last_sync_failed, 0),
+    err := db.QueryRow(`SELECT i.id, IFNULL(i.name, ''), IFNULL(i.loader, ''), IFNULL(i.pufferpanel_server_id, ''), IFNULL(i.requires_loader, 0), IFNULL(i.game_version, ''), IFNULL(i.puffer_version_key, ''), IFNULL(i.created_at, ''), IFNULL(i.last_sync_at, ''), IFNULL(i.last_sync_added, 0), IFNULL(i.last_sync_updated, 0), IFNULL(i.last_sync_failed, 0),
              (SELECT COUNT(*) FROM mods m WHERE m.instance_id = i.id)
-             FROM instances i WHERE i.id=?`, id).Scan(&inst.ID, &inst.Name, &inst.Loader, &inst.PufferpanelServerID, &inst.GameVersion, &inst.PufferVersionKey, &inst.CreatedAt, &inst.LastSyncAt, &inst.LastSyncAdded, &inst.LastSyncUpdated, &inst.LastSyncFailed, &inst.ModCount)
+             FROM instances i WHERE i.id=?`, id).Scan(&inst.ID, &inst.Name, &inst.Loader, &inst.PufferpanelServerID, &inst.RequiresLoader, &inst.GameVersion, &inst.PufferVersionKey, &inst.CreatedAt, &inst.LastSyncAt, &inst.LastSyncAdded, &inst.LastSyncUpdated, &inst.LastSyncFailed, &inst.ModCount)
     if err != nil {
         return nil, err
     }
@@ -480,7 +484,7 @@ func GetInstance(db *sql.DB, id int) (*Instance, error) {
 
 // ListInstances returns all instances sorted by ID descending.
 func ListInstances(db *sql.DB) ([]Instance, error) {
-    rows, err := db.Query(`SELECT i.id, IFNULL(i.name, ''), IFNULL(i.loader, ''), IFNULL(i.pufferpanel_server_id, ''), IFNULL(i.game_version, ''), IFNULL(i.puffer_version_key, ''), IFNULL(i.created_at, ''), IFNULL(i.last_sync_at, ''), IFNULL(i.last_sync_added, 0), IFNULL(i.last_sync_updated, 0), IFNULL(i.last_sync_failed, 0), COUNT(m.id)
+    rows, err := db.Query(`SELECT i.id, IFNULL(i.name, ''), IFNULL(i.loader, ''), IFNULL(i.pufferpanel_server_id, ''), IFNULL(i.requires_loader, 0), IFNULL(i.game_version, ''), IFNULL(i.puffer_version_key, ''), IFNULL(i.created_at, ''), IFNULL(i.last_sync_at, ''), IFNULL(i.last_sync_added, 0), IFNULL(i.last_sync_updated, 0), IFNULL(i.last_sync_failed, 0), COUNT(m.id)
               FROM instances i LEFT JOIN mods m ON m.instance_id = i.id GROUP BY i.id ORDER BY i.id DESC`)
     if err != nil {
         return nil, err
@@ -489,7 +493,7 @@ func ListInstances(db *sql.DB) ([]Instance, error) {
     out := []Instance{}
     for rows.Next() {
         var inst Instance
-        if err := rows.Scan(&inst.ID, &inst.Name, &inst.Loader, &inst.PufferpanelServerID, &inst.GameVersion, &inst.PufferVersionKey, &inst.CreatedAt, &inst.LastSyncAt, &inst.LastSyncAdded, &inst.LastSyncUpdated, &inst.LastSyncFailed, &inst.ModCount); err != nil {
+        if err := rows.Scan(&inst.ID, &inst.Name, &inst.Loader, &inst.PufferpanelServerID, &inst.RequiresLoader, &inst.GameVersion, &inst.PufferVersionKey, &inst.CreatedAt, &inst.LastSyncAt, &inst.LastSyncAdded, &inst.LastSyncUpdated, &inst.LastSyncFailed, &inst.ModCount); err != nil {
             return nil, err
         }
         out = append(out, inst)
