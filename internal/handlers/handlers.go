@@ -1317,12 +1317,12 @@ func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
             } else { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName) }
         }
         // Now commit DB update to reflect PufferPanel (only after upload verified)
-        if _, err := db.Exec(`UPDATE mods SET current_version=?, channel=?, download_url=? WHERE id=?`, m.AvailableVersion, m.AvailableChannel, targetURL, prev.ID); err != nil {
+        if _, err := db.Exec(`UPDATE mods SET current_version=?, channel=?, download_url=? WHERE id=?`, prev.AvailableVersion, prev.AvailableChannel, targetURL, prev.ID); err != nil {
             httpx.Write(w, r, httpx.Internal(err))
             return
         }
         // Record update in updates table and fetch updated row
-        _ = dbpkg.InsertUpdateIfNew(db, prev.ID, m.AvailableVersion)
+        _ = dbpkg.InsertUpdateIfNew(db, prev.ID, prev.AvailableVersion)
         m, err := dbpkg.GetMod(db, prev.ID)
         if err != nil {
             httpx.Write(w, r, httpx.Internal(err))
