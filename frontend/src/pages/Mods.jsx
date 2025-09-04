@@ -687,8 +687,8 @@ export default function Mods() {
           </Link>
           {instance && (
             <>
-              <div className="flex items-center gap-sm">
-                <h1 className="text-3xl md:text-4xl font-bold tracking-tight truncate flex-1 min-w-0">
+              <div className="flex items-center gap-sm min-w-0">
+                <h1 className="text-3xl md:text-4xl font-bold tracking-tight truncate max-w-full">
                   {instance.name}
                   {nameSuffix ? ` (${nameSuffix})` : ""}
                 </h1>
@@ -703,7 +703,7 @@ export default function Mods() {
                     setEditOpen(true);
                   }}
                 >
-                  <Pencil className="h-4 w-4" aria-hidden />
+                  <Pencil className="h-4 w-4 text-foreground" aria-hidden />
                 </Button>
               </div>
               <div className="mt-xs flex flex-wrap items-center gap-md">
