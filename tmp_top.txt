@@ -96,17 +96,6 @@ class APIError extends Error {
 
 const API_ORIGIN = window.location.origin;
 
-function adminAuth(): HeadersInit {
-  try {
-    const m = document.cookie.match(/(?:^|; )admin_token=([^;]+)/);
-    if (m && m[1]) {
-      const tok = decodeURIComponent(m[1]);
-      if (tok) return { Authorization: `Bearer ${tok}` };
-    }
-  } catch {}
-  return {};
-}
-
 function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   return fetch(`${API_ORIGIN}${path}`, init);
 }
@@ -295,7 +284,6 @@ export async function deleteMod(
 export async function getInstanceLogs(id: number, limit = 200): Promise<ModEvent[]> {
   const res = await apiFetch(`/api/instances/${id}/logs?limit=${limit}`, {
     cache: "no-store",
-    headers: { ...adminAuth() },
   });
   if (!res.ok) throw await parseError(res);
   return parseJSON(res);
@@ -360,7 +348,7 @@ export const jobs = {
 export async function getPufferServers(): Promise<PufferServer[]> {
   const res = await apiFetch("/api/instances/sync", {
     method: "POST",
-    headers: { ...adminAuth() },
+    headers: { Authorization: "Bearer admintok" },
     credentials: "same-origin",
   });
   if (!res.ok) throw await parseError(res);
@@ -375,7 +363,7 @@ export async function syncInstances(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...adminAuth(),
+      Authorization: "Bearer admintok",
     },
     credentials: "same-origin",
     body: JSON.stringify({ serverId }),
@@ -393,7 +381,7 @@ export interface SecretStatus {
 export async function getSecretStatus(type: string): Promise<SecretStatus> {
   const res = await apiFetch(`/api/settings/secret/${type}/status`, {
     cache: "no-store",
-    headers: { ...adminAuth() },
+    headers: { Authorization: "Bearer admintok" },
     credentials: "same-origin",
   });
   if (!res.ok) throw await parseError(res);
@@ -405,7 +393,7 @@ export async function saveSecret(type: string, payload: any): Promise<void> {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...adminAuth(),
+      Authorization: "Bearer admintok",
       "X-CSRF-Token": document.cookie.match(/csrf_token=([^;]+)/)?.[1] ?? "",
     },
     credentials: "same-origin",
@@ -419,7 +407,7 @@ export async function clearSecret(type: string): Promise<void> {
   const res = await apiFetch(`/api/settings/secret/${type}`, {
     method: "DELETE",
     headers: {
-      ...adminAuth(),
+      Authorization: "Bearer admintok",
       "X-CSRF-Token": document.cookie.match(/csrf_token=([^;]+)/)?.[1] ?? "",
     },
     credentials: "same-origin",
@@ -432,7 +420,7 @@ export async function testPuffer(): Promise<void> {
   const res = await apiFetch("/api/pufferpanel/test", {
     method: "POST",
     headers: {
-      ...adminAuth(),
+      Authorization: "Bearer admintok",
     },
     credentials: "same-origin",
   });

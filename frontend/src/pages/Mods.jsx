@@ -58,6 +58,7 @@ import {
   checkMod,
   startModUpdate,
   getInstanceLogs,
+  getJob,
 } from "@/lib/api.ts";
 import { cn, summarizeMods } from "@/lib/utils.js";
 import { toast } from "@/lib/toast.ts";
@@ -107,6 +108,23 @@ export default function Mods() {
   const [logs, setLogs] = useState([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [actionsOpenId, setActionsOpenId] = useState(null);
+  // Close mobile actions when clicking outside or pressing Escape
+  useEffect(() => {
+    function onDocClick(e) {
+      const t = e.target;
+      if (t.closest?.('[data-actions-menu]') || t.closest?.('[data-actions-trigger]')) return;
+      setActionsOpenId(null);
+    }
+    function onKey(e) { if (e.key === 'Escape') setActionsOpenId(null); }
+    if (actionsOpenId != null) {
+      document.addEventListener('mousedown', onDocClick);
+      document.addEventListener('keydown', onKey);
+      return () => {
+        document.removeEventListener('mousedown', onDocClick);
+        document.removeEventListener('keydown', onKey);
+      };
+    }
+  }, [actionsOpenId]);
 
   // helper for colored loader badge
   function loaderBadgeClass(loader) {
@@ -1303,11 +1321,12 @@ export default function Mods() {
                               aria-haspopup="menu"
                               aria-expanded={open}
                               aria-label="Actions"
+                              data-actions-trigger
                             >
                               <MoreVertical className="h-4 w-4" aria-hidden />
                             </Button>
                             {open && (
-                              <div className="absolute right-0 z-10 mt-1 w-44 rounded-md border bg-background p-xs shadow-md" role="menu">
+                              <div className="absolute right-0 z-10 mt-1 w-44 rounded-md border bg-background p-xs shadow-md" role="menu" data-actions-menu>
                                 {m.virtual ? (
                                   <Button
                                     variant="outline"

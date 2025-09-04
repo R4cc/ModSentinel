@@ -16,6 +16,8 @@ const Button = React.forwardRef(
     const variants = {
       default: 'bg-primary text-primary-foreground hover:bg-primary/90',
       outline: 'border border-border bg-transparent hover:bg-muted',
+      // Secondary: subtle filled button matching cards/inputs
+      secondary: 'bg-muted text-foreground hover:bg-muted/80 border border-border',
     };
     const Comp = as;
     return (

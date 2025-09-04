@@ -425,7 +425,7 @@ func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 	r.Get("/favicon.ico", serveFavicon(dist))
 	r.Get("/api/instances", listInstancesHandler(db))
 	r.Get("/api/instances/{id}", getInstanceHandler(db))
-    r.Get("/api/instances/{id:\\d+}/logs", listInstanceLogsHandler(db))
+    r.With(requireAuth()).Get("/api/instances/{id:\\d+}/logs", listInstanceLogsHandler(db))
 	r.Post("/api/instances/validate", validateInstanceHandler())
 	r.Post("/api/instances", createInstanceHandler(db))
 	r.Put("/api/instances/{id}", updateInstanceHandler(db))
@@ -1276,9 +1276,19 @@ func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
                 httpx.Write(w, r, httpx.BadRequest("failed to download update file"))
                 return
             }
-            data, err := io.ReadAll(resp.Body)
+            // Prevent excessive memory usage for unexpectedly large artifacts
+            const maxArtifactSize = 128 << 20 // 128 MiB
+            if resp.ContentLength > maxArtifactSize {
+                httpx.Write(w, r, httpx.BadRequest("update file too large"))
+                return
+            }
+            data, err := io.ReadAll(io.LimitReader(resp.Body, maxArtifactSize+1))
             if err != nil || len(data) == 0 {
                 httpx.Write(w, r, httpx.Internal(fmt.Errorf("invalid file content")))
+                return
+            }
+            if len(data) > maxArtifactSize {
+                httpx.Write(w, r, httpx.BadRequest("update file too large"))
                 return
             }
             if err := pppkg.PutFile(r.Context(), inst.PufferpanelServerID, folder+newName, data); err != nil {
@@ -1307,12 +1317,12 @@ func applyUpdateHandler(db *sql.DB) http.HandlerFunc {
             } else { _ = pppkg.DeleteFile(r.Context(), inst.PufferpanelServerID, folder+oldName) }
         }
         // Now commit DB update to reflect PufferPanel (only after upload verified)
-        if _, err := db.Exec(`UPDATE mods SET current_version=?, channel=?, download_url=? WHERE id=?`, prev.AvailableVersion, prev.AvailableChannel, targetURL, prev.ID); err != nil {
+        if _, err := db.Exec(`UPDATE mods SET current_version=?, channel=?, download_url=? WHERE id=?`, m.AvailableVersion, m.AvailableChannel, targetURL, prev.ID); err != nil {
             httpx.Write(w, r, httpx.Internal(err))
             return
         }
         // Record update in updates table and fetch updated row
-        _ = dbpkg.InsertUpdateIfNew(db, prev.ID, prev.AvailableVersion)
+        _ = dbpkg.InsertUpdateIfNew(db, prev.ID, m.AvailableVersion)
         m, err := dbpkg.GetMod(db, prev.ID)
         if err != nil {
             httpx.Write(w, r, httpx.Internal(err))
