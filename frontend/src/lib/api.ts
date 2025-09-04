@@ -197,13 +197,12 @@ export interface NewMod {
 export interface NewInstance {
   name: string;
   loader: string;
-  enforce_same_loader: boolean;
   pufferpanel_server_id?: string;
 }
 
 export interface UpdateInstance {
   name?: string;
-  enforce_same_loader?: boolean;
+  loader?: string;
   // Optional manual override for Minecraft version
   gameVersion?: string;
 }

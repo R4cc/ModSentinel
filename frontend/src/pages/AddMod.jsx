@@ -20,14 +20,10 @@ import { useNavigate, useParams, useLocation, Link } from "react-router-dom";
 import { ArrowLeft, X } from "lucide-react";
 import ModIcon from "@/components/ModIcon.jsx";
 import { useAddModStore, initialState } from "@/stores/addModStore.js";
+import { useMetaStore } from "@/stores/metaStore.js";
 import { parseJarFilename } from "@/lib/jar.ts";
 
 const steps = ["Select Mod", "Loader", "Minecraft Version", "Mod Version"];
-const loaders = [
-  { id: "fabric", label: "Fabric" },
-  { id: "forge", label: "Forge" },
-  { id: "quilt", label: "Quilt" },
-];
 
 export default function AddMod() {
   const {
@@ -171,12 +167,10 @@ export default function AddMod() {
     }
   }, [safeModVersions.length, step]);
 
+  // Removed enforce-same-loader auto-skip; loader step is always available
   useEffect(() => {
-    if (step === 1 && instance?.enforce_same_loader && !didAutoSkipLoader.current) {
-      didAutoSkipLoader.current = true;
-      nextStep();
-    }
-  }, [step, instance, nextStep]);
+    /* no-op */
+  }, [step]);
 
   // Reset auto-skip guard when instance changes
   useEffect(() => {
@@ -394,22 +388,21 @@ export default function AddMod() {
                 className="space-y-sm"
               >
                 <div className="space-y-xs">
-                  <label htmlFor="loader" className="text-sm font-medium">
-                    Loader
-                  </label>
-                  <Select
+                  <label htmlFor="loader" className="text-sm font-medium">Loader</label>
+                  <Input
                     id="loader"
                     ref={refs[1]}
+                    list="loader-list"
+                    placeholder={metaLoaded ? "Search loaders..." : "Loading..."}
                     value={loader}
                     onChange={(e) => setLoader(e.target.value)}
-                    disabled={instance?.enforce_same_loader}
-                  >
-                    {loaders.map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {l.label}
-                      </option>
+                    required
+                  />
+                  <datalist id="loader-list">
+                    {metaLoaders.map((l) => (
+                      <option key={l.id} value={l.id} label={l.name || l.id} />
                     ))}
-                  </Select>
+                  </datalist>
                 </div>
               </motion.div>
             )}
@@ -555,3 +548,7 @@ export default function AddMod() {
     </div>
   );
 }
+  const metaLoaders = useMetaStore((s) => s.loaders);
+  const metaLoaded = useMetaStore((s) => s.loaded);
+  const loadMeta = useMetaStore((s) => s.load);
+  useEffect(() => { if (!metaLoaded) loadMeta(); }, [metaLoaded, loadMeta]);

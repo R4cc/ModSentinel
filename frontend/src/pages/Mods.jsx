@@ -64,6 +64,7 @@ import { cn, summarizeMods } from "@/lib/utils.js";
 import { toast } from "@/lib/toast.ts";
 import { useConfirm } from "@/hooks/useConfirm.jsx";
 import { useOpenAddMod } from "@/hooks/useOpenAddMod.js";
+import { useMetaStore } from "@/stores/metaStore.js";
 
 export default function Mods() {
   const { id } = useParams();
@@ -86,7 +87,7 @@ export default function Mods() {
   const [nameSuffix, setNameSuffix] = useState(0);
   const [editOpen, setEditOpen] = useState(false);
   const [name, setName] = useState("");
-  const [enforce, setEnforce] = useState(true);
+  const [editLoader, setEditLoader] = useState("");
   const [mcVersion, setMcVersion] = useState("");
   const [unmatched, setUnmatched] = useState([]);
   const [resyncing, setResyncing] = useState(false);
@@ -107,6 +108,9 @@ export default function Mods() {
   const [logsOpen, setLogsOpen] = useState(false);
   const [logs, setLogs] = useState([]);
   const [logsLoading, setLogsLoading] = useState(false);
+  const metaLoaders = useMetaStore((s) => s.loaders);
+  const metaLoaded = useMetaStore((s) => s.loaded);
+  const loadMeta = useMetaStore((s) => s.load);
   const [actionsOpenId, setActionsOpenId] = useState(null);
   // Close mobile actions when clicking outside or pressing Escape
   useEffect(() => {
@@ -216,6 +220,13 @@ export default function Mods() {
       if (source) source.close();
     };
   }, [source]);
+
+  // Ensure loaders metadata is available when edit modal opens
+  useEffect(() => {
+    if (editOpen && !metaLoaded) {
+      loadMeta?.();
+    }
+  }, [editOpen, metaLoaded, loadMeta]);
 
   async function fetchMods() {
     setLoading(true);
@@ -597,9 +608,11 @@ export default function Mods() {
       return;
     }
     try {
-      const payload = { name, enforce_same_loader: enforce };
+      const payload = { name };
       const v = mcVersion.trim();
       if (v !== "") Object.assign(payload, { gameVersion: v });
+      const ld = editLoader.trim();
+      if (ld !== "") Object.assign(payload, { loader: ld });
       const updated = await updateInstance(instance.id, payload);
       setInstance(updated);
       toast.success("Instance updated");
@@ -721,8 +734,8 @@ export default function Mods() {
                   title="Edit instance"
                   onClick={() => {
                     setName(instance.name);
-                    setEnforce(instance.enforce_same_loader);
                     setMcVersion(instance.gameVersionSource === 'manual' ? (instance.gameVersion || '') : '');
+                    setEditLoader(instance.loader || '');
                     setEditOpen(true);
                   }}
                 >
@@ -1006,266 +1019,9 @@ export default function Mods() {
           />
         )}
 
-        {!loading && !error && current.length > 0 && (
-          <>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Game</TableHead>
-                  <TableHead>Loader</TableHead>
-                  <TableHead>Current</TableHead>
-                  <TableHead>Available</TableHead>
-                  <TableHead>Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {current.map((m) => {
-                  const projectUrl = getProjectUrl(m);
-                  const isModrinth = !!projectUrl;
-                  const outdated =
-                    (m.available_version || "") !== "" && m.available_version !== m.current_version;
-                  return (
-                    <TableRow key={m.id} className={cn(outdated && "bg-emerald-50/60")}> 
-                      <TableCell className="flex items-center gap-sm font-medium">
-                        <ModIcon
-                          url={m.icon_url}
-                          cacheKey={
-                            m.available_version ||
-                            m.current_version ||
-                            String(m.id)
-                          }
-                        />
-                        <span className="flex items-center gap-xs">
-                          {m.name || m.url}
-                          {m.virtual && (
-                            <span className="inline-flex items-center gap-1 text-xs text-red-600" role="status">
-                              <AlertTriangle className="h-4 w-4" aria-hidden />
-                              Could not be matched
-                            </span>
-                          )}
-                        </span>
-                      </TableCell>
-                      <TableCell>{m.game_version}</TableCell>
-                      <TableCell>{m.loader}</TableCell>
-                      <TableCell>{m.current_version}</TableCell>
-                      <TableCell>{m.available_version}</TableCell>
-                      <TableCell className="flex gap-xs">
-                        {m.virtual ? (
-                          <Button
-                            variant="outline"
-                            onClick={() => openAddMod(m.file || m.name)}
-                            aria-label="Match mod"
-                            className="h-8 px-sm"
-                          >
-                            Match mod
-                          </Button>
-                        ) : (
-                          <>
-                            {outdated && (
-                              <Tooltip text="Apply update">
-                                <Button
-                                  variant="outline"
-                                  onClick={() => handleApplyUpdate(m)}
-                                  aria-label="Apply update"
-                                  className="h-8 px-sm border-emerald-300 text-emerald-700 hover:bg-emerald-100"
-                                  disabled={updatingId === m.id || !!updateStatus[m.id]}
-                                >
-                                  <Download
-                                    className={cn(
-                                      "h-4 w-4",
-                                      (updatingId === m.id || updateStatus[m.id]) && "animate-bounce"
-                                    )}
-                                    aria-hidden="true"
-                                  />
-                                </Button>
-                              </Tooltip>
-                            )}
-                            {!!updateStatus[m.id] && (
-                              <div className="ml-2">
-                                <UpdateStepper modId={m.id} />
-                              </div>
-                            )}
-                            <Tooltip
-                              text={
-                                isModrinth
-                                  ? "Open project page"
-                                  : "Project page available only for Modrinth mods"
-                              }
-                            >
-                              <Button
-                                variant="outline"
-                                as={projectUrl ? "a" : "button"}
-                                href={projectUrl || undefined}
-                                target={projectUrl ? "_blank" : undefined}
-                                rel={projectUrl ? "noopener" : undefined}
-                                aria-label="Open project page"
-                                className="h-8 px-sm"
-                                disabled={!isModrinth}
-                              >
-                                <ExternalLink
-                                  className="h-4 w-4"
-                                  aria-hidden="true"
-                                />
-                              </Button>
-                            </Tooltip>
-                            <Tooltip text="Delete mod">
-                              <Button
-                                variant="outline"
-                                onClick={() => handleDelete(m.id)}
-                                aria-label="Delete mod"
-                                className="h-8 px-sm"
-                              >
-                                <Trash2 className="h-4 w-4" aria-hidden="true" />
-                              </Button>
-                            </Tooltip>
-                          </>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-
-            <div className="flex items-center justify-between pt-sm">
-              <Button
-                variant="outline"
-                onClick={() => setPage((p) => p - 1)}
-                disabled={page === 1}
-              >
-                Previous
-              </Button>
-              <span className="text-sm text-muted-foreground">
-                Page {page} of {totalPages}
-              </span>
-              <Button
-                variant="outline"
-                onClick={() => setPage((p) => p + 1)}
-                disabled={page >= totalPages}
-              >
-                Next
-              </Button>
-            </div>
-          </>
-        )}
+        {/* Primary data view rendered below (responsive list/table). Removed legacy duplicate table. */}
       </section>
-      {unmatched.length > 0 && (
-        <div>
-          <h2 className="text-lg font-medium">Unmatched files</h2>
-          <ul className="space-y-xs" data-testid="unmatched-files">
-            {unmatched.map((f) => (
-              <li
-                key={f}
-                className="flex items-center justify-between rounded border border-yellow-200 bg-yellow-50 px-sm py-xs text-sm text-yellow-800"
-              >
-                <span className="truncate" title={f}>
-                  {f}
-                </span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => openAddMod(f)}
-                >
-                  Resolve
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <div className="flex flex-col gap-sm sm:flex-row sm:items-center">
-        <div className="flex flex-col">
-          <label htmlFor="filter" className="sr-only">
-            Filter mods
-          </label>
-          <Input
-            id="filter"
-            placeholder="Filter mods..."
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            className="sm:max-w-xs"
-          />
-        </div>
-        <div className="flex flex-col">
-          <label htmlFor="sort" className="sr-only">
-            Sort mods
-          </label>
-          <Select
-            id="sort"
-            value={sort}
-            onChange={(e) => setSort(e.target.value)}
-            className="sm:w-40"
-          >
-            <option value="name-asc">Name A–Z</option>
-            <option value="name-desc">Name Z–A</option>
-          </Select>
-        </div>
-        <Button
-          onClick={openAddMod}
-          className={cn(
-            "w-full gap-xs sm:ml-auto sm:w-auto",
-            !hasToken && "pointer-events-none opacity-50",
-          )}
-          disabled={!hasToken}
-          title="Add Mod"
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          Add Mod
-        </Button>
-      </div>
-
-      {loading && (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Game Version</TableHead>
-              <TableHead>Loader</TableHead>
-              <TableHead>Current</TableHead>
-              <TableHead>Available</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {Array.from({ length: 5 }).map((_, i) => (
-              <TableRow key={i}>
-                <TableCell>
-                  <Skeleton className="h-4 w-32" />
-                </TableCell>
-                <TableCell>
-                  <Skeleton className="h-4 w-20" />
-                </TableCell>
-                <TableCell>
-                  <Skeleton className="h-4 w-16" />
-                </TableCell>
-                <TableCell>
-                  <Skeleton className="h-4 w-20" />
-                </TableCell>
-                <TableCell>
-                  <Skeleton className="h-4 w-20" />
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-
-      {!loading && error && (
-        <div className="flex flex-col items-center gap-sm">
-          <p className="text-sm text-muted-foreground">{error}</p>
-          <Button onClick={fetchMods}>Retry</Button>
-        </div>
-      )}
-
-      {!loading && !error && current.length === 0 && (
-        <EmptyState
-          icon={Package}
-          title="No mods"
-          message="You haven't added any mods yet."
-        />
-      )}
-
+        {/* Removed duplicated unmatched/controls/skeleton/empty blocks to prevent double rendering */}
         {!loading && !error && current.length > 0 && (
           <>
             {/* Small screens: card list */}
@@ -1561,26 +1317,22 @@ export default function Mods() {
             </p>
           </div>
           <div className="space-y-xs">
-            <span className="text-sm font-medium">Loader</span>
-            <div>
-              <Badge
-                variant="secondary"
-                className={`capitalize border ${loaderBadgeClass(instance?.loader)}`}
-              >
-                {instance?.loader || "unknown"}
-              </Badge>
-            </div>
-          </div>
-          <div className="flex items-center gap-sm">
-            <Checkbox
-              id="enforce"
-              checked={enforce}
-              onChange={(e) => setEnforce(e.target.checked)}
+            <label htmlFor="inst_loader" className="text-sm font-medium">Loader</label>
+            <Input
+              id="inst_loader"
+              list="loader-list"
+              placeholder={instance?.loader || "e.g. fabric"}
+              value={editLoader}
+              onChange={(e) => setEditLoader(e.target.value)}
             />
-            <label htmlFor="enforce" className="text-sm">
-              Enforce same loader for mods
-            </label>
+            <datalist id="loader-list">
+              {metaLoaders.map((l) => (
+                <option key={l.id} value={l.id} label={l.name || l.id} />
+              ))}
+            </datalist>
+            <p className="text-xs text-muted-foreground">Shows display name; saves loader id.</p>
           </div>
+          
           <div className="flex justify-end gap-sm">
             <Button
               type="button"

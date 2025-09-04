@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Server, Trash2, Key, Plug, Package } from "lucide-react";
+import { Server, Trash2, Key, Plug, Package, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/Badge.jsx";
 import { Button } from "@/components/ui/Button.jsx";
 import { Modal } from "@/components/ui/Modal.jsx";
@@ -27,13 +27,10 @@ import {
 import { toast } from "@/lib/toast.ts";
 import { jobs } from "@/lib/api.ts";
 
-const loaders = [
-  { id: "fabric", label: "Fabric" },
-  { id: "forge", label: "Forge" },
-  { id: "quilt", label: "Quilt" },
-];
+import { useMetaStore } from "@/stores/metaStore.js";
 
 export default function Instances() {
+  const { loaders, loaded: loadersLoaded, error: loadersError, load: loadLoaders } = useMetaStore();
   const [instances, setInstances] = useState([]);
   const [suffixMap, setSuffixMap] = useState({}); // id -> index
   const [loading, setLoading] = useState(true);
@@ -43,8 +40,10 @@ export default function Instances() {
   const [addTab, setAddTab] = useState("local"); // 'local' | 'puffer'
   const [name, setName] = useState("");
   const [nameError, setNameError] = useState("");
-  const [loader, setLoader] = useState(loaders[0].id);
-  const [enforce, setEnforce] = useState(true);
+  const [loader, setLoader] = useState("")
+  useEffect(() => { if (!loadersLoaded) loadLoaders(); }, [loadersLoaded, loadLoaders]);
+  useEffect(() => { if (loadersLoaded && loaders.length > 0 && !loader) setLoader(loaders[0].id); }, [loadersLoaded, loaders, loader]);
+  
   const [mcVersion, setMcVersion] = useState("");
   const [hasToken, setHasToken] = useState(true);
   const [hasPuffer, setHasPuffer] = useState(false);
@@ -163,8 +162,7 @@ export default function Instances() {
     setEditing(null);
     setName("");
     setNameError("");
-    setLoader(loaders[0].id);
-    setEnforce(true);
+    setLoader("");
     setServers([]);
     setSelectedServer("");
     setServerError("");
@@ -177,7 +175,7 @@ export default function Instances() {
     setEditing(inst);
     setName(inst.name);
     setNameError("");
-    setEnforce(inst.enforce_same_loader);
+    
     setMcVersion(inst.gameVersionSource === 'manual' ? (inst.gameVersion || '') : '');
     setSelectedServer(inst.pufferpanel_server_id || "");
     setServerError("");
@@ -208,7 +206,6 @@ export default function Instances() {
           const created = await addInstance({
             name: finalName,
             loader: "",
-            enforce_same_loader: true,
             pufferpanel_server_id: selectedServer,
           });
           targetId = created.id;
@@ -260,7 +257,7 @@ export default function Instances() {
 
     if (editing) {
       try {
-        const payload = { name, enforce_same_loader: enforce };
+        const payload = { name };
         const v = mcVersion.trim();
         if (v !== "") Object.assign(payload, { gameVersion: v });
         const updated = await updateInstance(editing.id, payload);
@@ -282,7 +279,6 @@ export default function Instances() {
       id: tempId,
       name,
       loader,
-      enforce_same_loader: enforce,
       mod_count: 0,
     };
     setInstances((prev) => [...prev, optimistic]);
@@ -291,7 +287,6 @@ export default function Instances() {
       const created = await addInstance({
         name,
         loader,
-        enforce_same_loader: enforce,
       });
       setInstances((prev) =>
         prev.map((i) => (i.id === tempId ? { ...created, mod_count: 0 } : i)),
@@ -445,6 +440,17 @@ export default function Instances() {
             </div>
           </Card>
         )}
+        {loadersError && (
+          <Card className="p-sm bg-yellow-50 border-yellow-200 text-yellow-800">
+            <div className="flex items-center gap-sm">
+              <RefreshCw className="h-4 w-4" aria-hidden />
+              <div className="flex items-center gap-sm">
+                <p className="text-sm">Failed to load loaders metadata.</p>
+                <Button size="sm" variant="secondary" onClick={loadLoaders}>Retry</Button>
+              </div>
+            </div>
+          </Card>
+        )}
         {pufferLoaded && !hasPuffer && (
           <Card className="p-sm bg-yellow-50 border-yellow-200 text-yellow-800">
             <div className="flex items-center gap-sm">
@@ -460,7 +466,7 @@ export default function Instances() {
         )}
       </div>
       <div className="flex justify-end md:justify-between gap-sm">
-        <Button onClick={openAdd}>Add instance</Button>
+        <Button onClick={openAdd} disabled={!loadersLoaded} title={!loadersLoaded ? "Loading loaders..." : undefined}>Add instance</Button>
       </div>
       {loading && (
         <div className="grid grid-cols-1 gap-md sm:grid-cols-2 lg:grid-cols-3">
@@ -683,10 +689,6 @@ export default function Instances() {
                   </Badge>
                 </div>
               </div>
-              <div className="flex items-center gap-sm">
-                <Checkbox id="enforce" checked={enforce} onChange={(e) => setEnforce(e.target.checked)} />
-                <label htmlFor="enforce" className="text-sm">Enforce same loader for mods</label>
-              </div>
             </>
           )}
           {!editing && addTab === "local" && (
@@ -700,14 +702,22 @@ export default function Instances() {
                 <>
                   <div className="space-y-xs">
                     <label htmlFor="loader" className="text-sm font-medium">Loader</label>
-                    <Select id="loader" value={loader} onChange={(e) => setLoader(e.target.value)}>
-                      {loaders.map((l) => (<option key={l.id} value={l.id}>{l.label}</option>))}
-                    </Select>
+                    <Input
+                      id="loader"
+                      list="loader-list"
+                      placeholder={loadersLoaded ? "Search loaders..." : "Loading..."}
+                      value={loader}
+                      onChange={(e) => setLoader(e.target.value)}
+                      required
+                      disabled={!loadersLoaded || loaders.length === 0}
+                    />
+                    <datalist id="loader-list">
+                      {loadersLoaded && loaders.map((l) => (
+                        <option key={l.id} value={l.id} label={l.name || l.id} />
+                      ))}
+                    </datalist>
                   </div>
-                  <div className="flex items-center gap-sm">
-                    <Checkbox id="enforce" checked={enforce} onChange={(e) => setEnforce(e.target.checked)} />
-                    <label htmlFor="enforce" className="text-sm">Enforce same loader for mods</label>
-                  </div>
+                  
                 </>
               )}
             </>
@@ -720,7 +730,7 @@ export default function Instances() {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={editing ? !name.trim() : (scanning || (addTab === "puffer" ? (loadingServers || !selectedServer) : !name.trim()))} aria-busy={scanning}>
+            <Button type="submit" disabled={editing ? !name.trim() : (scanning || (addTab === "puffer" ? (loadingServers || !selectedServer) : (!name.trim() || !loadersLoaded || !loader)))} aria-busy={scanning}>
               {editing ? "Save" : "Add"}
             </Button>
           </div>
@@ -744,3 +754,4 @@ export default function Instances() {
     </div>
   );
 }
+

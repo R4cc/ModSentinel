@@ -83,6 +83,14 @@ var (
 	listServersCache sync.Map // map[baseURL]listServersEntry
 )
 
+// Cache for Modrinth loader tags
+var (
+    modrinthLoadersTTL    = 24 * time.Hour
+    modrinthLoadersMu     sync.RWMutex
+    modrinthLoadersCache  []metaLoaderOut
+    modrinthLoadersExpiry time.Time
+)
+
 type listServersEntry struct {
 	servers []pppkg.Server
 	exp     time.Time
@@ -203,7 +211,6 @@ type instanceReq struct {
     // Accept both camelCase and snake_case for server id from clients
     ServerID            string `json:"serverId"`
     PufferpanelServerID string `json:"pufferpanel_server_id"`
-    EnforceSameLoader   *bool  `json:"enforce_same_loader"`
 }
 
 func sanitizeName(s string) string {
@@ -243,13 +250,9 @@ func validateInstanceReq(ctx context.Context, req *instanceReq) map[string]strin
         details["name"] = "max"
     }
 
-    // Validate loader if provided; allow empty for server-based creation
-    if req.Loader != "" {
-        switch strings.ToLower(req.Loader) {
-        case "fabric", "forge", "paper", "spigot", "bukkit", "quilt":
-        default:
-            details["loader"] = "invalid"
-        }
+    // Validate loader against Modrinth tag cache if provided; allow empty
+    if strings.TrimSpace(req.Loader) != "" && !isValidLoader(ctx, req.Loader) {
+        details["loader"] = "invalid"
     }
 
     if len(details) > 0 {
@@ -423,6 +426,7 @@ func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 	r.Use(requestIDMiddleware)
 
 	r.Get("/favicon.ico", serveFavicon(dist))
+	r.Get("/api/meta/modrinth/loaders", modrinthLoadersHandler())
 	r.Get("/api/instances", listInstancesHandler(db))
 	r.Get("/api/instances/{id}", getInstanceHandler(db))
     r.With(requireAuth()).Get("/api/instances/{id:\\d+}/logs", listInstanceLogsHandler(db))
@@ -540,6 +544,127 @@ func listInstancesHandler(db *sql.DB) http.HandlerFunc {
     }
 }
 
+// ensureModrinthLoaders makes sure the in-memory loader cache is populated and fresh.
+func ensureModrinthLoaders(ctx context.Context) error {
+    now := time.Now()
+    modrinthLoadersMu.RLock()
+    fresh := len(modrinthLoadersCache) > 0 && now.Before(modrinthLoadersExpiry)
+    modrinthLoadersMu.RUnlock()
+    if fresh {
+        return nil
+    }
+    tags, err := fetchModrinthLoaders(ctx)
+    if err != nil {
+        return err
+    }
+    modrinthLoadersMu.Lock()
+    modrinthLoadersCache = tags
+    modrinthLoadersExpiry = time.Now().Add(modrinthLoadersTTL)
+    modrinthLoadersMu.Unlock()
+    return nil
+}
+
+func isValidLoader(ctx context.Context, id string) bool {
+    id = strings.ToLower(strings.TrimSpace(id))
+    if id == "" {
+        return true
+    }
+    // Try ensure cache; if it fails, fall back to current cache (may be empty)
+    _ = ensureModrinthLoaders(ctx)
+    modrinthLoadersMu.RLock()
+    defer modrinthLoadersMu.RUnlock()
+    for _, t := range modrinthLoadersCache {
+        if strings.EqualFold(t.ID, id) {
+            return true
+        }
+    }
+    return false
+}
+
+// metaLoaderOut is the outbound shape for loader tags returned by our API.
+type metaLoaderOut struct {
+    ID   string `json:"id"`
+    Name string `json:"name"`
+}
+
+// fetchModrinthLoaders fetches loader tags from Modrinth and projects them.
+func fetchModrinthLoaders(ctx context.Context) ([]metaLoaderOut, error) {
+    req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.modrinth.com/v2/tag/loader", nil)
+    if err != nil { return nil, err }
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil { return nil, err }
+    defer resp.Body.Close()
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+        return nil, fmt.Errorf("modrinth loaders: %s", resp.Status)
+    }
+    var tags []struct {
+        Value string   `json:"value"`
+        Name  string   `json:"name"`
+        Types []string `json:"supported_project_types"`
+    }
+    if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
+        return nil, err
+    }
+    out := make([]metaLoaderOut, 0, len(tags))
+    for _, t := range tags {
+        if strings.TrimSpace(t.Value) == "" { continue }
+        out = append(out, metaLoaderOut{ID: t.Value, Name: t.Name})
+    }
+    return out, nil
+}
+
+// modrinthLoadersHandler returns cached Modrinth loader tags, fetching on cold start or expiry.
+func modrinthLoadersHandler() http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        now := time.Now()
+        modrinthLoadersMu.RLock()
+        cached := modrinthLoadersCache
+        exp := modrinthLoadersExpiry
+        modrinthLoadersMu.RUnlock()
+        if len(cached) > 0 && now.Before(exp) {
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(cached)
+            return
+        }
+        ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+        defer cancel()
+        tags, err := fetchModrinthLoaders(ctx)
+        if err != nil {
+            // Fallback to last good cache, even if stale
+            modrinthLoadersMu.RLock()
+            stale := modrinthLoadersCache
+            modrinthLoadersMu.RUnlock()
+            if len(stale) > 0 {
+                w.Header().Set("Content-Type", "application/json")
+                json.NewEncoder(w).Encode(stale)
+                return
+            }
+            httpx.Write(w, r, httpx.BadGateway("modrinth unavailable"))
+            return
+        }
+        modrinthLoadersMu.Lock()
+        modrinthLoadersCache = tags
+        modrinthLoadersExpiry = time.Now().Add(modrinthLoadersTTL)
+        modrinthLoadersMu.Unlock()
+        // Telemetry + log: record refresh
+        telemetry.Event("metric", map[string]string{
+            "name":  "modrinth_loaders_last_fetch_epoch",
+            "value": strconv.FormatInt(time.Now().Unix(), 10),
+        })
+        telemetry.Event("metric", map[string]string{
+            "name":  "modrinth_loaders_count",
+            "value": strconv.Itoa(len(tags)),
+        })
+        log.Info().
+            Str("event", "modrinth_loaders_refresh").
+            Int("count", len(tags)).
+            Int("ttl_sec", int(modrinthLoadersTTL.Seconds())).
+            Msg("telemetry")
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(tags)
+    }
+}
+
 func getInstanceHandler(db *sql.DB) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
 		idStr := chi.URLParam(r, "id")
@@ -619,10 +744,6 @@ func createInstanceHandler(db *sql.DB) http.HandlerFunc {
         if serverID == "" {
             serverID = serverIDSnake
         }
-        enforce := true
-        if req.EnforceSameLoader != nil {
-            enforce = *req.EnforceSameLoader
-        }
         name := req.Name
         // Only auto-derive name when snake_case field is provided by the frontend flow
         if name == "" && serverIDSnake != "" {
@@ -646,13 +767,13 @@ func createInstanceHandler(db *sql.DB) http.HandlerFunc {
             }
             name = base
         }
-        inst := dbpkg.Instance{ID: 0, Name: name, Loader: strings.ToLower(req.Loader), PufferpanelServerID: serverID, EnforceSameLoader: enforce}
+        inst := dbpkg.Instance{ID: 0, Name: name, Loader: strings.ToLower(req.Loader), PufferpanelServerID: serverID}
         tx, err := db.BeginTx(r.Context(), nil)
         if err != nil {
             httpx.Write(w, r, httpx.Internal(err))
             return
         }
-		res, err := tx.Exec(`INSERT INTO instances(name, loader, enforce_same_loader, pufferpanel_server_id) VALUES(?,?,?,?)`, inst.Name, inst.Loader, inst.EnforceSameLoader, inst.PufferpanelServerID)
+        res, err := tx.Exec(`INSERT INTO instances(name, loader, pufferpanel_server_id) VALUES(?,?,?)`, inst.Name, inst.Loader, inst.PufferpanelServerID)
 		if err != nil {
 			tx.Rollback()
 			httpx.Write(w, r, httpx.Internal(err))
@@ -685,21 +806,20 @@ func updateInstanceHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
     var req struct {
-        Name              *string `json:"name"`
-        Loader            *string `json:"loader"`
-        EnforceSameLoader *bool   `json:"enforce_same_loader"`
+        Name        *string `json:"name"`
+        Loader      *string `json:"loader"`
         // Optional manual override for Minecraft version. When provided,
         // we treat the value as a manual setting and clear any PufferPanel key.
-        GameVersion       *string `json:"gameVersion"`
+        GameVersion *string `json:"gameVersion"`
     }
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpx.Write(w, r, httpx.BadRequest("invalid json"))
 			return
 		}
-		if req.Loader != nil && !strings.EqualFold(*req.Loader, inst.Loader) {
-			httpx.Write(w, r, httpx.BadRequest("loader immutable"))
-			return
-		}
+    if req.Loader != nil && strings.TrimSpace(*req.Loader) != "" && !isValidLoader(r.Context(), *req.Loader) {
+        httpx.Write(w, r, httpx.BadRequest("invalid loader"))
+        return
+    }
 		if req.Name != nil {
 			n := sanitizeName(*req.Name)
 			if n == "" {
@@ -712,8 +832,8 @@ func updateInstanceHandler(db *sql.DB) http.HandlerFunc {
 			}
 			inst.Name = n
 		}
-    if req.EnforceSameLoader != nil {
-        inst.EnforceSameLoader = *req.EnforceSameLoader
+    if req.Loader != nil && strings.TrimSpace(*req.Loader) != "" {
+        inst.Loader = strings.ToLower(strings.TrimSpace(*req.Loader))
     }
     if req.GameVersion != nil {
         gv := strings.TrimSpace(*req.GameVersion)
@@ -826,10 +946,7 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
         }
         warning := ""
         if !strings.EqualFold(inst.Loader, m.Loader) {
-            if inst.EnforceSameLoader {
-                httpx.Write(w, r, httpx.BadRequest("loader mismatch"))
-                return
-            }
+            // No enforcement; surface as a warning for clients that care
             warning = "loader mismatch"
         }
         slug, err := parseModrinthSlug(m.URL)
@@ -1905,7 +2022,6 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
     }
     inst.Loader = strings.ToLower(srv.Environment.Type)
     inst.PufferpanelServerID = serverID
-    inst.EnforceSameLoader = true
     if inst.Loader == "" {
         inst.Loader = "fabric"
     }
@@ -1938,7 +2054,7 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
             valParam = detectedVal
         }
     }
-    if _, err := db.Exec(`UPDATE instances SET loader=?, enforce_same_loader=?, pufferpanel_server_id=?, puffer_version_key=COALESCE(?, puffer_version_key), game_version=COALESCE(?, game_version) WHERE id=?`, inst.Loader, inst.EnforceSameLoader, inst.PufferpanelServerID, keyParam, valParam, inst.ID); err != nil {
+    if _, err := db.Exec(`UPDATE instances SET loader=?, pufferpanel_server_id=?, puffer_version_key=COALESCE(?, puffer_version_key), game_version=COALESCE(?, game_version) WHERE id=?`, inst.Loader, inst.PufferpanelServerID, keyParam, valParam, inst.ID); err != nil {
         httpx.Write(w, r, httpx.Internal(err))
         return
     }
