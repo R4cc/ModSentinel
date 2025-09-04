@@ -193,6 +193,8 @@ export interface NewInstance {
 export interface UpdateInstance {
   name?: string;
   enforce_same_loader?: boolean;
+  // Optional manual override for Minecraft version
+  gameVersion?: string;
 }
 
 export interface AddModResponse {

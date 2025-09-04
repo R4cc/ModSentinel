@@ -45,6 +45,7 @@ export default function Instances() {
   const [nameError, setNameError] = useState("");
   const [loader, setLoader] = useState(loaders[0].id);
   const [enforce, setEnforce] = useState(true);
+  const [mcVersion, setMcVersion] = useState("");
   const [hasToken, setHasToken] = useState(true);
   const [hasPuffer, setHasPuffer] = useState(false);
   const [pufferLoaded, setPufferLoaded] = useState(false);
@@ -177,6 +178,7 @@ export default function Instances() {
     setName(inst.name);
     setNameError("");
     setEnforce(inst.enforce_same_loader);
+    setMcVersion(inst.gameVersionSource === 'manual' ? (inst.gameVersion || '') : '');
     setSelectedServer(inst.pufferpanel_server_id || "");
     setServerError("");
     setOpen(true);
@@ -258,7 +260,10 @@ export default function Instances() {
 
     if (editing) {
       try {
-        const updated = await updateInstance(editing.id, { name, enforce_same_loader: enforce });
+        const payload = { name, enforce_same_loader: enforce };
+        const v = mcVersion.trim();
+        if (v !== "") Object.assign(payload, { gameVersion: v });
+        const updated = await updateInstance(editing.id, payload);
         setInstances((prev) =>
           prev.map((i) => (i.id === updated.id ? { ...i, ...updated } : i)),
         );
@@ -664,6 +669,11 @@ export default function Instances() {
                 <label htmlFor="name" className="text-sm font-medium">Name</label>
                 <Input id="name" value={name} onChange={(e) => { setName(e.target.value.replace(/[\p{C}]/gu, "")); setNameError(""); }} onBlur={() => { if (!name.trim()) setNameError("Name required"); }} />
                 {nameError && (<p className="text-sm text-destructive">{nameError}</p>)}
+              </div>
+              <div className="space-y-xs">
+                <label htmlFor="mc_version" className="text-sm font-medium">Minecraft version</label>
+                <Input id="mc_version" value={mcVersion} onChange={(e) => setMcVersion(e.target.value)} placeholder={editing?.gameVersion?.trim() || 'e.g. 1.21.1'} />
+                <p className="text-xs text-muted-foreground">Setting a value stores a manual version. Leave empty to keep current.</p>
               </div>
               <div className="space-y-xs">
                 <span className="text-sm font-medium">Loader</span>

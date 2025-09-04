@@ -86,6 +86,7 @@ export default function Mods() {
   const [editOpen, setEditOpen] = useState(false);
   const [name, setName] = useState("");
   const [enforce, setEnforce] = useState(true);
+  const [mcVersion, setMcVersion] = useState("");
   const [unmatched, setUnmatched] = useState([]);
   const [resyncing, setResyncing] = useState(false);
   const [progress, setProgress] = useState(null);
@@ -578,7 +579,10 @@ export default function Mods() {
       return;
     }
     try {
-      const updated = await updateInstance(instance.id, { name, enforce_same_loader: enforce });
+      const payload = { name, enforce_same_loader: enforce };
+      const v = mcVersion.trim();
+      if (v !== "") Object.assign(payload, { gameVersion: v });
+      const updated = await updateInstance(instance.id, payload);
       setInstance(updated);
       toast.success("Instance updated");
       setEditOpen(false);
@@ -700,6 +704,7 @@ export default function Mods() {
                   onClick={() => {
                     setName(instance.name);
                     setEnforce(instance.enforce_same_loader);
+                    setMcVersion(instance.gameVersionSource === 'manual' ? (instance.gameVersion || '') : '');
                     setEditOpen(true);
                   }}
                 >
@@ -721,6 +726,11 @@ export default function Mods() {
                   <span className="text-sm font-medium">
                     {instance.gameVersion?.trim() || "Unknown"}
                   </span>
+                  {instance.gameVersionSource === 'pufferpanel' ? (
+                    <Badge variant="secondary" className="border bg-sky-50 text-sky-800 border-sky-200">Synced</Badge>
+                  ) : instance.gameVersionSource === 'manual' ? (
+                    <Badge variant="secondary" className="border bg-emerald-50 text-emerald-800 border-emerald-200">Manual</Badge>
+                  ) : null}
                   {instance.gameVersionKey ? (
                     <Tooltip text={`PufferPanel variable: ${instance.gameVersionKey}`}>
                       <button type="button" className="text-muted-foreground" aria-label="Show version key">
@@ -1509,15 +1519,27 @@ export default function Mods() {
         )}
       <Modal open={editOpen} onClose={() => setEditOpen(false)}>
         <form className="space-y-md" onSubmit={saveSettings}>
+              <div className="space-y-xs">
+                <label htmlFor="inst_name" className="text-sm font-medium">
+                  Name
+                </label>
+                <Input
+                  id="inst_name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </div>
           <div className="space-y-xs">
-            <label htmlFor="inst_name" className="text-sm font-medium">
-              Name
-            </label>
+            <label htmlFor="mc_version" className="text-sm font-medium">Minecraft version</label>
             <Input
-              id="inst_name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+              id="mc_version"
+              placeholder={instance?.gameVersion?.trim() || "e.g. 1.21.1"}
+              value={mcVersion}
+              onChange={(e) => setMcVersion(e.target.value)}
             />
+            <p className="text-xs text-muted-foreground">
+              Setting a value stores a manual version for this instance. Leave empty to keep the current value.
+            </p>
           </div>
           <div className="space-y-xs">
             <span className="text-sm font-medium">Loader</span>

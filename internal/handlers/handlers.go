@@ -684,11 +684,14 @@ func updateInstanceHandler(db *sql.DB) http.HandlerFunc {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
-		var req struct {
-			Name              *string `json:"name"`
-			Loader            *string `json:"loader"`
-			EnforceSameLoader *bool   `json:"enforce_same_loader"`
-		}
+    var req struct {
+        Name              *string `json:"name"`
+        Loader            *string `json:"loader"`
+        EnforceSameLoader *bool   `json:"enforce_same_loader"`
+        // Optional manual override for Minecraft version. When provided,
+        // we treat the value as a manual setting and clear any PufferPanel key.
+        GameVersion       *string `json:"gameVersion"`
+    }
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpx.Write(w, r, httpx.BadRequest("invalid json"))
 			return
@@ -709,9 +712,15 @@ func updateInstanceHandler(db *sql.DB) http.HandlerFunc {
 			}
 			inst.Name = n
 		}
-		if req.EnforceSameLoader != nil {
-			inst.EnforceSameLoader = *req.EnforceSameLoader
-		}
+    if req.EnforceSameLoader != nil {
+        inst.EnforceSameLoader = *req.EnforceSameLoader
+    }
+    if req.GameVersion != nil {
+        gv := strings.TrimSpace(*req.GameVersion)
+        inst.GameVersion = gv
+        // Clear puffer key to mark the value as manual
+        inst.PufferVersionKey = ""
+    }
 		if err := validatePayload(inst); err != nil {
 			httpx.Write(w, r, err)
 			return

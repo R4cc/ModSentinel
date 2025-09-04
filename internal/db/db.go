@@ -441,8 +441,9 @@ func InsertInstance(db *sql.DB, i *Instance) error {
 
 // UpdateInstance updates an existing instance.
 func UpdateInstance(db *sql.DB, i *Instance) error {
-	_, err := db.Exec(`UPDATE instances SET name=?, enforce_same_loader=? WHERE id=?`, i.Name, i.EnforceSameLoader, i.ID)
-	return err
+    // Update core editable fields. Also persist optional game_version and puffer_version_key
+    _, err := db.Exec(`UPDATE instances SET name=?, enforce_same_loader=?, game_version=?, puffer_version_key=? WHERE id=?`, i.Name, i.EnforceSameLoader, i.GameVersion, i.PufferVersionKey, i.ID)
+    return err
 }
 
 // UpdateInstanceSync records sync stats for an instance.
