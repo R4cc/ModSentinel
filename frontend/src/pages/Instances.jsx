@@ -180,7 +180,6 @@ export default function Instances() {
     setSelectedServer(inst.pufferpanel_server_id || "");
     setServerError("");
     setOpen(true);
-    if (pufferLoaded && hasPuffer) fetchServers();
   }
 
   async function handleSave(e) {
@@ -259,7 +258,7 @@ export default function Instances() {
 
     if (editing) {
       try {
-        const updated = await updateInstance(editing.id, { name });
+        const updated = await updateInstance(editing.id, { name, enforce_same_loader: enforce });
         setInstances((prev) =>
           prev.map((i) => (i.id === updated.id ? { ...i, ...updated } : i)),
         );
@@ -555,15 +554,17 @@ export default function Instances() {
 
       <Modal open={open} onClose={() => setOpen(false)}>
         <form className="space-y-md" onSubmit={handleSave}>
-          <div className="flex items-center gap-sm border-b">
-            <button type="button" className={`px-sm py-xs text-sm ${addTab === "local" ? "border-b-2 border-primary text-primary" : "text-muted-foreground"}`} onClick={() => setAddTab("local")}>
-              Local instance
-            </button>
-            <button type="button" className={`px-sm py-xs text-sm ${addTab === "puffer" ? "border-b-2 border-primary text-primary" : "text-muted-foreground"}`} onClick={() => setAddTab("puffer")}>
-              From Pufferpanel instance
-            </button>
-          </div>
-          {addTab === "puffer" && hasPuffer && (
+          {!editing && (
+            <div className="flex items-center gap-sm border-b">
+              <button type="button" className={`px-sm py-xs text-sm ${addTab === "local" ? "border-b-2 border-primary text-primary" : "text-muted-foreground"}`} onClick={() => setAddTab("local")}>
+                Local instance
+              </button>
+              <button type="button" className={`px-sm py-xs text-sm ${addTab === "puffer" ? "border-b-2 border-primary text-primary" : "text-muted-foreground"}`} onClick={() => setAddTab("puffer")}>
+                From Pufferpanel instance
+              </button>
+            </div>
+          )}
+          {(!editing && addTab === "puffer" && hasPuffer) && (
             <div className="space-y-xs">
               <label htmlFor="server" className="text-sm font-medium">Server</label>
               {loadingServers ? (
@@ -656,8 +657,29 @@ export default function Instances() {
               )}
             </div>
           )}
-          {addTab === "puffer" && scanning && !jobProgress && (<p className="text-sm">Starting sync...</p>)}
-          {addTab === "local" && (
+          {!editing && addTab === "puffer" && scanning && !jobProgress && (<p className="text-sm">Starting sync...</p>)}
+          {editing && (
+            <>
+              <div className="space-y-xs">
+                <label htmlFor="name" className="text-sm font-medium">Name</label>
+                <Input id="name" value={name} onChange={(e) => { setName(e.target.value.replace(/[\p{C}]/gu, "")); setNameError(""); }} onBlur={() => { if (!name.trim()) setNameError("Name required"); }} />
+                {nameError && (<p className="text-sm text-destructive">{nameError}</p>)}
+              </div>
+              <div className="space-y-xs">
+                <span className="text-sm font-medium">Loader</span>
+                <div>
+                  <Badge variant="secondary" className={`capitalize border ${loaderBadgeClass(editing?.loader)}`}>
+                    {editing?.loader || "unknown"}
+                  </Badge>
+                </div>
+              </div>
+              <div className="flex items-center gap-sm">
+                <Checkbox id="enforce" checked={enforce} onChange={(e) => setEnforce(e.target.checked)} />
+                <label htmlFor="enforce" className="text-sm">Enforce same loader for mods</label>
+              </div>
+            </>
+          )}
+          {!editing && addTab === "local" && (
             <>
               <div className="space-y-xs">
                 <label htmlFor="name" className="text-sm font-medium">Name</label>
@@ -688,7 +710,7 @@ export default function Instances() {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={scanning || (addTab === "puffer" ? (loadingServers || !selectedServer) : !name.trim())} aria-busy={scanning}>
+            <Button type="submit" disabled={editing ? !name.trim() : (scanning || (addTab === "puffer" ? (loadingServers || !selectedServer) : !name.trim()))} aria-busy={scanning}>
               {editing ? "Save" : "Add"}
             </Button>
           </div>

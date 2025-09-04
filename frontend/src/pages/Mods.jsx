@@ -688,7 +688,7 @@ export default function Mods() {
           {instance && (
             <>
               <div className="flex items-center gap-sm">
-                <h1 className="text-3xl md:text-4xl font-bold tracking-tight truncate flex-1">
+                <h1 className="text-3xl md:text-4xl font-bold tracking-tight truncate flex-1 min-w-0">
                   {instance.name}
                   {nameSuffix ? ` (${nameSuffix})` : ""}
                 </h1>
@@ -736,7 +736,7 @@ export default function Mods() {
       </section>
 
       {/* Middle: Status overview + actions */}
-      <section className="grid gap-lg lg:grid-cols-3 items-start">
+      <section className="grid gap-lg lg:grid-cols-3 items-stretch">
         <div className="lg:col-span-2">
           {instance && (
             <>
@@ -807,7 +807,7 @@ export default function Mods() {
             </>
           )}
         </div>
-        <div className="rounded-lg border bg-muted/20 p-md shadow-sm w-full lg:w-fit lg:justify-self-start" aria-label="Actions">
+        <div className="rounded-lg border bg-muted/20 p-md shadow-sm w-full lg:w-fit lg:justify-self-end h-full flex flex-col" aria-label="Actions">
           <div className="flex flex-wrap items-center gap-sm">
             <Button
               size="sm"
