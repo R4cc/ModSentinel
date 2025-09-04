@@ -56,6 +56,7 @@ var (
     ppFetchFile = pppkg.FetchFile
     // fetch template definition and data
     ppGetServerDefinition = pppkg.GetServerDefinition
+    ppGetServerDefinitionRaw = pppkg.GetServerDefinitionRaw
     ppGetServerData       = pppkg.GetServerData
 )
 
@@ -2070,7 +2071,7 @@ func retryFailedHandler(db *sql.DB) http.HandlerFunc {
 }
 
 func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db *sql.DB, inst *dbpkg.Instance, serverID string, prog *jobProgress, only []string) {
-    srv, err := ppGetServer(ctx, serverID)
+    _, err := ppGetServer(ctx, serverID)
     if err != nil {
         writePPError(w, r, err)
         return
@@ -2080,52 +2081,142 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
         httpx.Write(w, r, err)
         return
     }
-    // Derive loader from definition/environment
+    // Derive loader from template definition and environment
+    // Priority:
+    // 1) Any display strings containing a known loader token (normalized)
+    // 2) install[] hints for Fabric
+    // 3) run.command content
+    // 4) Fallback: requires_loader=true
     _ = ensureModrinthLoaders(ctx)
-    norm := func(s string) string {
+    normalize := func(s string) string {
         s = strings.ToLower(strings.TrimSpace(s))
         s = strings.ReplaceAll(s, " ", "")
         s = strings.ReplaceAll(s, "-", "")
         s = strings.ReplaceAll(s, "_", "")
         return s
     }
-    pType := norm(srv.Environment.Type)
-    if def, err1 := ppGetServerDefinition(ctx, serverID); err1 == nil && def != nil {
-        if b, err2 := json.Marshal(def); err2 == nil {
-            var m map[string]any
-            if json.Unmarshal(b, &m) == nil {
-                if v, ok := m["type"].(string); ok && strings.TrimSpace(v) != "" {
-                    pType = norm(v)
-                } else if env, ok := m["environment"].(map[string]any); ok {
-                    if v, ok2 := env["type"].(string); ok2 { pType = norm(v) }
+    // Build token->id map from Modrinth loader cache
+    tokens := map[string]string{}
+    modrinthLoadersMu.RLock()
+    for _, t := range modrinthLoadersCache {
+        if strings.TrimSpace(t.ID) == "" { continue }
+        id := strings.ToLower(t.ID)
+        tokens[normalize(id)] = id
+        if strings.TrimSpace(t.Name) != "" {
+            tokens[normalize(t.Name)] = id
+        }
+    }
+    modrinthLoadersMu.RUnlock()
+    findInText := func(s string) string {
+        ns := normalize(s)
+        if ns == "" { return "" }
+        for tok, id := range tokens {
+            if tok == "" { continue }
+            if strings.Contains(ns, tok) { return id }
+        }
+        return ""
+    }
+    requiresLoader := false
+    detected := ""
+    source := ""
+    envDisplay := ""
+    // Load definition (raw) and structured (for variables)
+    var def *pppkg.ServerDefinition
+    def, _ = ppGetServerDefinition(ctx, serverID)
+    defRaw, _ := ppGetServerDefinitionRaw(ctx, serverID)
+    // 1) Primary: display fields
+    // - environment.display (if present)
+    if envRaw, ok := defRaw["environment"].(map[string]any); ok {
+        if disp, ok2 := envRaw["display"].(string); ok2 {
+            envDisplay = disp
+            if id := findInText(disp); id != "" { detected = id; source = "display" }
+        }
+    }
+    // - variable displays from definition data
+    if detected == "" && def != nil && def.Data != nil {
+        for _, v := range def.Data {
+            d := strings.TrimSpace(v.Display)
+            if d == "" { continue }
+            if id := findInText(d); id != "" { detected = id; source = "display" }
+            if detected != "" { break }
+        }
+    }
+    // 2) Secondary: install[] hints (Fabric)
+    if detected == "" {
+        if instArr, ok := defRaw["install"].([]any); ok {
+            for _, it := range instArr {
+                step, _ := it.(map[string]any)
+                if step == nil { continue }
+                if typ, _ := step["type"].(string); strings.EqualFold(strings.TrimSpace(typ), "fabricdl") {
+                    if id, ok := tokens[normalize("fabric")]; ok { detected = id; source = "install.type"; break }
+                }
+                // commands can be string or array
+                if detected == "" {
+                    if cmdStr, ok2 := step["commands"].(string); ok2 {
+                        s := strings.ToLower(cmdStr)
+                        if strings.Contains(s, "fabric-installer.jar") || strings.Contains(s, "-noprofile") {
+                            if id, ok := tokens[normalize("fabric")]; ok { detected = id; source = "install.command"; break }
+                        }
+                    } else if cmdArr, ok2 := step["commands"].([]any); ok2 {
+                        for _, c := range cmdArr {
+                            cs, _ := c.(string)
+                            s := strings.ToLower(cs)
+                            if strings.Contains(s, "fabric-installer.jar") || strings.Contains(s, "-noprofile") { if id, ok := tokens[normalize("fabric")]; ok { detected = id; source = "install.command"; break } }
+                        }
+                        if detected != "" { break }
+                    }
+                }
+                // moves array with target/to fields
+                if detected == "" {
+                    if mvArr, ok2 := step["moves"].([]any); ok2 {
+                        for _, m := range mvArr {
+                            mm, _ := m.(map[string]any)
+                            if mm == nil { continue }
+                            tgt := ""
+                            if v, ok3 := mm["target"].(string); ok3 { tgt = v }
+                            if tgt == "" { if v, ok3 := mm["to"].(string); ok3 { tgt = v } }
+                            s := strings.ToLower(tgt)
+                            if strings.Contains(s, "fabric-server.jar") || strings.Contains(s, "fabric-server-launch.jar") { if id, ok := tokens[normalize("fabric")]; ok { detected = id; source = "install.move"; break } }
+                        }
+                        if detected != "" { break }
+                    }
                 }
             }
         }
     }
-    mapped := ""
-    switch pType {
-    case "fabric": mapped = "fabric"
-    case "forge": mapped = "forge"
-    case "quilt": mapped = "quilt"
-    case "neoforge", "neo": mapped = "neoforge"
-    case "babric": mapped = "babric"
-    case "vanilla": mapped = ""
+    // 3) Tertiary: scan run.command content
+    if detected == "" {
+        if data, errRC := ppFetchFile(ctx, serverID, "run.command"); errRC == nil {
+            s := strings.ToLower(string(data))
+            if strings.Contains(s, "fabric") || strings.Contains(s, "fabric-server") {
+                if id, ok := tokens[normalize("fabric")]; ok { detected = id; source = "run.command" }
+            }
+        }
     }
-    valid := func(id string) bool {
-        if id == "" { return true }
-        modrinthLoadersMu.RLock(); defer modrinthLoadersMu.RUnlock()
-        for _, t := range modrinthLoadersCache { if strings.EqualFold(t.ID, id) { return true } }
-        return false
-    }
-    requiresLoader := false
-    if mapped == "" {
-        if pType != "vanilla" { requiresLoader = true }
-        inst.Loader = ""
-    } else if valid(mapped) {
-        inst.Loader = mapped
+    // Telemetry: record autoset or unmatched
+    if detected != "" {
+        telemetry.Event("loader_autoset", map[string]string{
+            "instance_id": strconv.Itoa(inst.ID),
+            "server_id":   serverID,
+            "source":      source,
+            "loader":      detected,
+        })
     } else {
-        inst.Loader = ""
+        disp := strings.TrimSpace(envDisplay)
+        if len(disp) > 120 { disp = disp[:120] }
+        telemetry.Event("loader_unmatched", map[string]string{
+            "instance_id": strconv.Itoa(inst.ID),
+            "server_id":   serverID,
+            "display":     disp,
+        })
+    }
+    // 4) Decide final loader flags
+    if detected == "" {
         requiresLoader = true
+        inst.Loader = ""
+    } else {
+        inst.Loader = detected
+        requiresLoader = false
     }
     // Try to detect game version from PufferPanel server definition/data; best-effort.
     var detectedKey, detectedVal string
@@ -2133,6 +2224,28 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
         if data, err2 := ppGetServerData(ctx, serverID); err2 == nil {
             if k, v, ok := detectGameVersion(def, data); ok {
                 detectedKey, detectedVal = k, v
+            }
+            // Adjacent version capture: if data["game-version"].value exists, store it
+            if vw, ok := data.Data["game-version"]; ok && vw.Value != nil {
+                var vStr string
+                switch x := vw.Value.(type) {
+                case string:
+                    vStr = strings.TrimSpace(x)
+                default:
+                    b, _ := json.Marshal(x)
+                    vStr = strings.Trim(string(b), `"`)
+                }
+                vStr = strings.TrimSpace(vStr)
+                if vStr != "" {
+                    // Only apply if detectGameVersion didn't already pick something, preserving manual version rules
+                    if detectedKey == "" || detectedVal == "" {
+                        if inst.PufferVersionKey == "game-version" {
+                            detectedKey, detectedVal = "game-version", vStr
+                        } else if inst.PufferVersionKey == "" && strings.TrimSpace(inst.GameVersion) == "" {
+                            detectedKey, detectedVal = "game-version", vStr
+                        }
+                    }
+                }
             }
         }
     }
@@ -2154,6 +2267,11 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
     }
     if _, err := db.Exec(`UPDATE instances SET loader=?, requires_loader=?, pufferpanel_server_id=?, puffer_version_key=COALESCE(?, puffer_version_key), game_version=COALESCE(?, game_version) WHERE id=?`, inst.Loader, requiresLoader, inst.PufferpanelServerID, keyParam, valParam, inst.ID); err != nil {
         httpx.Write(w, r, httpx.Internal(err))
+        return
+    }
+    // Gate further actions if loader could not be determined
+    if requiresLoader {
+        httpx.Write(w, r, httpx.LoaderRequired())
         return
     }
     folder := "mods/"

@@ -41,3 +41,23 @@ func GetServerDefinition(ctx context.Context, id string) (*ServerDefinition, err
     return &def, nil
 }
 
+// GetServerDefinitionRaw fetches the full template definition JSON as a generic map.
+func GetServerDefinitionRaw(ctx context.Context, id string) (map[string]any, error) {
+    creds, err := getCreds()
+    if err != nil { return nil, err }
+    u, err := url.Parse(creds.BaseURL)
+    if err != nil { return nil, err }
+    u.Path = strings.TrimSuffix(u.Path, "/") + "/api/servers/" + id + "/definition"
+    req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+    if err != nil { return nil, err }
+    client := newClient(u)
+    status, body, err := doAuthRequest(ctx, client, req)
+    if err != nil { return nil, err }
+    if status < 200 || status >= 300 {
+        return nil, parseError(status, body)
+    }
+    var raw map[string]any
+    if err := json.Unmarshal(body, &raw); err != nil { return nil, err }
+    if raw == nil { raw = map[string]any{} }
+    return raw, nil
+}
