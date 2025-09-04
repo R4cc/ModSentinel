@@ -677,27 +677,22 @@ export default function Mods() {
       )}
       {/* Top: Instance header + server info card */}
       <section className="rounded-lg border bg-muted/40 p-md">
-        <div className="grid gap-lg lg:grid-cols-3 items-start">
-          <div className="lg:col-span-2 space-y-sm min-w-0">
-            <Link
-              to="/instances"
-              className="inline-flex items-center gap-xs text-sm text-muted-foreground hover:underline"
-            >
-              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-              Back to Instances
-            </Link>
-            {instance && (
+        <div className="space-y-sm min-w-0">
+          <Link
+            to="/instances"
+            className="inline-flex items-center gap-xs text-sm text-muted-foreground hover:underline"
+          >
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            Back to Instances
+          </Link>
+          {instance && (
+            <>
               <h1 className="text-3xl md:text-4xl font-bold tracking-tight truncate">
                 {instance.name}
                 {nameSuffix ? ` (${nameSuffix})` : ""}
               </h1>
-            )}
-          </div>
-          {instance && (
-            <div className="rounded-md border bg-background p-md shadow-sm">
-              <div className="text-xs font-medium text-muted-foreground mb-1">Server info</div>
-              <div className="flex flex-col gap-sm">
-                <div className="flex items-center gap-2">
+              <div className="mt-xs flex flex-wrap items-center gap-md">
+                <div className="inline-flex items-center gap-2">
                   <span className="text-sm text-muted-foreground">Loader:</span>
                   <Badge
                     variant="secondary"
@@ -706,7 +701,7 @@ export default function Mods() {
                     {instance.loader || "unknown"}
                   </Badge>
                 </div>
-                <div className="flex items-center gap-xs">
+                <div className="inline-flex items-center gap-xs">
                   <span className="text-sm text-muted-foreground">Game version:</span>
                   <span className="text-sm font-medium">
                     {instance.gameVersion?.trim() || "Unknown"}
@@ -719,13 +714,8 @@ export default function Mods() {
                     </Tooltip>
                   ) : null}
                 </div>
-                {!instance.gameVersion && (
-                  <Button size="sm" variant="outline" onClick={handleResync} disabled={resyncing}>
-                    {resyncing ? "Detecting..." : "Detect again"}
-                  </Button>
-                )}
               </div>
-            </div>
+            </>
           )}
         </div>
       </section>
@@ -803,7 +793,7 @@ export default function Mods() {
           )}
         </div>
         <div className="rounded-lg border bg-muted/20 p-md shadow-sm" aria-label="Actions">
-          <div className="flex items-center gap-sm overflow-x-auto">
+          <div className="flex flex-wrap items-center gap-sm">
             <Button
               size="sm"
               variant="outline"
