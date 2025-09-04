@@ -3,6 +3,7 @@ package db
 import (
         "database/sql"
         "fmt"
+        "strings"
         "time"
 )
 
@@ -662,6 +663,41 @@ func ListQueuedModUpdates(db *sql.DB) ([]int, error) {
 func ResetRunningModUpdates(db *sql.DB) error {
     _, err := db.Exec(`UPDATE mod_updates SET status='Queued' WHERE status='Running' AND ended_at IS NULL`)
     return err
+}
+
+// LoaderTag stores Modrinth loader metadata.
+type LoaderTag struct {
+    ID    string
+    Name  string
+    Icon  string
+    Types []string
+}
+
+// UpsertModrinthLoaders saves loader tags to the database.
+func UpsertModrinthLoaders(db *sql.DB, tags []LoaderTag) error {
+    if len(tags) == 0 { return nil }
+    // Ensure table exists (in case migration hasn't run yet)
+    if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS modrinth_loaders (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        icon TEXT,
+        types TEXT
+    )`); err != nil { return err }
+    tx, err := db.Begin()
+    if err != nil { return err }
+    defer tx.Rollback()
+    stmt, err := tx.Prepare(`INSERT INTO modrinth_loaders(id, name, icon, types)
+VALUES(?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET name=excluded.name, icon=excluded.icon, types=excluded.types`)
+    if err != nil { return err }
+    defer stmt.Close()
+    for _, t := range tags {
+        id := strings.ToLower(strings.TrimSpace(t.ID))
+        if id == "" { continue }
+        types := strings.Join(t.Types, ",")
+        if _, err := stmt.Exec(id, t.Name, t.Icon, types); err != nil { return err }
+    }
+    return tx.Commit()
 }
 
 // LeaseModUpdate attempts to transition a queued job to running; returns true if lease obtained.

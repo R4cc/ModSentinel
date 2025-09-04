@@ -426,7 +426,7 @@ func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 	r.Use(requestIDMiddleware)
 
 	r.Get("/favicon.ico", serveFavicon(dist))
-	r.Get("/api/meta/modrinth/loaders", modrinthLoadersHandler())
+	r.Get("/api/meta/modrinth/loaders", modrinthLoadersHandler(db))
 	r.Get("/api/instances", listInstancesHandler(db))
 	r.Get("/api/instances/{id}", getInstanceHandler(db))
     r.With(requireAuth()).Get("/api/instances/{id:\\d+}/logs", listInstanceLogsHandler(db))
