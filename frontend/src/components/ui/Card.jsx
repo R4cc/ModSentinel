@@ -5,7 +5,7 @@ const Card = React.forwardRef(({ className, ...props }, ref) => (
   <div
     ref={ref}
     className={cn(
-      'rounded-md border border-border bg-background text-foreground shadow-md',
+      'rounded-md border border-border bg-background text-foreground shadow-sm',
       // subtle gradient background overlay
       'bg-[linear-gradient(180deg,rgba(0,0,0,0.02),transparent)]',
       className,

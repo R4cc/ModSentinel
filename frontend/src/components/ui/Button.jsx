@@ -25,7 +25,7 @@ const Button = React.forwardRef(
         disabled={as === 'button' ? disabled : undefined}
         aria-disabled={as !== 'button' && disabled ? true : undefined}
         className={cn(
-          'inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none h-10 px-md py-sm',
+          'inline-flex items-center justify-center rounded-md text-sm font-medium shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none h-10 px-md py-sm',
           variants[variant],
           className,
           disabled && as !== 'button' && 'opacity-50 pointer-events-none',

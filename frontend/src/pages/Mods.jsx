@@ -19,6 +19,13 @@ import {
   Key,
   AlertTriangle,
   HelpCircle,
+  CheckCircle,
+  XCircle,
+  Hammer,
+  Feather,
+  Scissors,
+  Server,
+  MoreVertical,
 } from "lucide-react";
 import { Input } from "@/components/ui/Input.jsx";
 import { Select } from "@/components/ui/Select.jsx";
@@ -53,7 +60,6 @@ import {
   getInstanceLogs,
 } from "@/lib/api.ts";
 import { cn, summarizeMods } from "@/lib/utils.js";
-import InstanceStatusOverview from "@/components/InstanceStatusOverview.tsx";
 import { toast } from "@/lib/toast.ts";
 import { useConfirm } from "@/hooks/useConfirm.jsx";
 import { useOpenAddMod } from "@/hooks/useOpenAddMod.js";
@@ -99,6 +105,7 @@ export default function Mods() {
   const [logsOpen, setLogsOpen] = useState(false);
   const [logs, setLogs] = useState([]);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [actionsOpenId, setActionsOpenId] = useState(null);
 
   // helper for colored loader badge
   function loaderBadgeClass(loader) {
@@ -116,6 +123,16 @@ export default function Mods() {
       default:
         return "bg-muted text-foreground";
     }
+  }
+
+  // Small icon for loader representation
+  function LoaderIcon({ loader, className = "h-4 w-4" }) {
+    const key = (loader || "").toLowerCase();
+    if (key === "forge") return <Hammer className={cn(className, "text-forge")} aria-hidden title="Forge" />;
+    if (key === "fabric") return <Feather className={cn(className, "text-fabric")} aria-hidden title="Fabric" />;
+    if (key === "quilt") return <Scissors className={className + " text-purple-600"} aria-hidden title="Quilt" />;
+    if (["paper", "spigot", "bukkit"].includes(key)) return <Server className={className + " text-sky-600"} aria-hidden title="Server" />;
+    return <Server className={className + " text-muted-foreground"} aria-hidden title={loader || "unknown"} />;
   }
 
   useEffect(() => {
@@ -375,11 +392,16 @@ export default function Mods() {
     if (status === "outdated") return m.current_version !== m.available_version;
     return true;
   });
-  const sorted = [...statusFiltered].sort((a, b) =>
-    sort === "name-desc"
-      ? b.name.localeCompare(a.name)
-      : a.name.localeCompare(b.name),
-  );
+  const sorted = [...statusFiltered].sort((a, b) => {
+    const aOut = (a.available_version || "") !== "" && a.available_version !== a.current_version && !a.virtual;
+    const bOut = (b.available_version || "") !== "" && b.available_version !== b.current_version && !b.virtual;
+    if (sort === "updates-first") {
+      if (aOut !== bOut) return aOut ? -1 : 1; // outdated first
+      return a.name.localeCompare(b.name);
+    }
+    if (sort === "name-desc") return b.name.localeCompare(a.name);
+    return a.name.localeCompare(b.name);
+  });
   const totalPages = Math.ceil(sorted.length / perPage) || 1;
   const current = sorted.slice((page - 1) * perPage, page * perPage);
 
@@ -610,7 +632,7 @@ export default function Mods() {
   }
 
   return (
-    <div className="space-y-md">
+    <div className="grid gap-xl">
       {ConfirmModal}
       <Modal open={checkOpen} onClose={() => setCheckOpen(false)}>
         <h2 className="mb-sm text-lg font-medium">Check for Updates</h2>
@@ -653,92 +675,147 @@ export default function Mods() {
           Rate limit hit. Some requests are temporarily blocked.
         </div>
       )}
-      <Link
-        to="/instances"
-        className="inline-flex items-center gap-xs text-sm text-muted-foreground hover:underline"
-      >
-        <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-        Back to Instances
-      </Link>
-      {!hasToken && (
-        <div
-          className="mt-sm flex max-w-xl items-center gap-sm rounded-md border border-yellow-200 bg-yellow-50 p-sm text-yellow-800"
-          role="status"
-        >
-          <Key className="h-4 w-4" aria-hidden />
-          <span className="text-sm">
-            Set a Modrinth token in Settings to enable update checks.
-          </span>
-        </div>
-      )}
-      {instance && (
-        <div className="space-y-sm">
-          <div className="flex items-center gap-sm">
-            <h1 className="text-2xl font-bold truncate">{instance.name}{nameSuffix ? ` (${nameSuffix})` : ""}</h1>
-            <div className="flex items-stretch gap-sm">
-              <Badge
-                variant="secondary"
-                className={`capitalize border ${loaderBadgeClass(instance.loader)}`}
-              >
-                {instance.loader || "unknown"}
-              </Badge>
-              {/* Server info card */}
-              <div className="rounded-md border p-sm shadow-sm">
-                <div className="text-xs font-medium text-muted-foreground mb-1">Server info</div>
-                <div className="flex items-center gap-md">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-muted-foreground">Loader:</span>
-                    <Badge
-                      variant="secondary"
-                      className={`capitalize border ${loaderBadgeClass(instance.loader)}`}
-                    >
-                      {instance.loader || "unknown"}
-                    </Badge>
-                  </div>
-                  <div className="flex items-center gap-xs">
-                    <span className="text-sm text-muted-foreground">Game version:</span>
-                    <span className="text-sm font-medium">
-                      {instance.gameVersion?.trim() || "Unknown"}
-                    </span>
-                    {instance.gameVersionKey ? (
-                      <Tooltip text={`PufferPanel variable: ${instance.gameVersionKey}`}>
-                        <button type="button" className="text-muted-foreground" aria-label="Show version key">
-                          <HelpCircle className="h-4 w-4" aria-hidden />
-                        </button>
-                      </Tooltip>
-                    ) : null}
-                  </div>
-                  {!instance.gameVersion && (
-                    <Button size="sm" variant="outline" onClick={handleResync} disabled={resyncing}>
-                      {resyncing ? "Detecting..." : "Detect again"}
-                    </Button>
-                  )}
+      {/* Top: Instance header + server info card */}
+      <section className="rounded-lg border bg-muted/40 p-md">
+        <div className="grid gap-lg lg:grid-cols-3 items-start">
+          <div className="lg:col-span-2 space-y-sm min-w-0">
+            <Link
+              to="/instances"
+              className="inline-flex items-center gap-xs text-sm text-muted-foreground hover:underline"
+            >
+              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+              Back to Instances
+            </Link>
+            {instance && (
+              <h1 className="text-3xl md:text-4xl font-bold tracking-tight truncate">
+                {instance.name}
+                {nameSuffix ? ` (${nameSuffix})` : ""}
+              </h1>
+            )}
+          </div>
+          {instance && (
+            <div className="rounded-md border bg-background p-md shadow-sm">
+              <div className="text-xs font-medium text-muted-foreground mb-1">Server info</div>
+              <div className="flex flex-col gap-sm">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Loader:</span>
+                  <Badge
+                    variant="secondary"
+                    className={`capitalize border ${loaderBadgeClass(instance.loader)}`}
+                  >
+                    {instance.loader || "unknown"}
+                  </Badge>
                 </div>
+                <div className="flex items-center gap-xs">
+                  <span className="text-sm text-muted-foreground">Game version:</span>
+                  <span className="text-sm font-medium">
+                    {instance.gameVersion?.trim() || "Unknown"}
+                  </span>
+                  {instance.gameVersionKey ? (
+                    <Tooltip text={`PufferPanel variable: ${instance.gameVersionKey}`}>
+                      <button type="button" className="text-muted-foreground" aria-label="Show version key">
+                        <HelpCircle className="h-4 w-4" aria-hidden />
+                      </button>
+                    </Tooltip>
+                  ) : null}
+                </div>
+                {!instance.gameVersion && (
+                  <Button size="sm" variant="outline" onClick={handleResync} disabled={resyncing}>
+                    {resyncing ? "Detecting..." : "Detect again"}
+                  </Button>
+                )}
               </div>
             </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-sm">
+          )}
+        </div>
+      </section>
+
+      {/* Middle: Status overview + actions */}
+      <section className="grid gap-lg lg:grid-cols-3 items-start">
+        <div className="lg:col-span-2">
+          {instance && (
+            <>
+              {loading ? (
+                <div className="grid grid-cols-1 gap-sm sm:grid-cols-3 max-w-3xl sm:max-w-4xl">
+                  <Skeleton className="h-24 rounded-md shadow-sm" />
+                  <Skeleton className="h-24 rounded-md shadow-sm" />
+                  <Skeleton className="h-24 rounded-md shadow-sm" />
+                </div>
+              ) : (
+                (() => {
+                  const s = summarizeMods(withVirtuals);
+                  return (
+                    <div className="grid grid-cols-1 gap-sm sm:grid-cols-3 max-w-3xl sm:max-w-4xl" role="region" aria-label="Instance status overview">
+                      <div className="rounded-lg border p-lg shadow-sm border-l-4 border-l-emerald-400 bg-background">
+                        <div className="flex items-center gap-sm">
+                          <CheckCircle className="h-6 w-6 text-emerald-600" aria-hidden />
+                          <div className="flex items-baseline gap-xs">
+                            <span className="text-3xl font-extrabold leading-none text-emerald-700">{s.mods_up_to_date}</span>
+                            <span className="text-sm text-muted-foreground">Up to date</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="rounded-lg border p-lg shadow-sm border-l-4 border-l-amber-400 bg-background">
+                        <div className="flex items-center gap-sm">
+                          <RefreshCw className="h-6 w-6 text-amber-600" aria-hidden />
+                          <div className="flex items-baseline gap-xs">
+                            <span className="text-3xl font-extrabold leading-none text-amber-700">{s.mods_update_available}</span>
+                            <span className="text-sm text-muted-foreground">Updates available</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="rounded-lg border p-lg shadow-sm border-l-4 border-l-red-400 bg-background">
+                        <div className="flex items-center gap-sm">
+                          <XCircle className="h-6 w-6 text-red-600" aria-hidden />
+                          <div className="flex items-baseline gap-xs">
+                            <span className="text-3xl font-extrabold leading-none text-red-700">{s.mods_failed}</span>
+                            <span className="text-sm text-muted-foreground">Failed</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()
+              )}
+              {(checkingAll || resyncing) && (
+                <div className="mt-sm" aria-live="polite">
+                  <div className="mb-xs flex items-center justify-between text-sm text-muted-foreground">
+                    <span>{checkingAll ? "Checking updates" : "Syncing instance"}</span>
+                    {checkingAll && (
+                      <span>
+                        {checkProgress} / {mods.length}
+                      </span>
+                    )}
+                  </div>
+                  <div className="h-2 w-full rounded bg-muted overflow-hidden">
+                    {checkingAll ? (
+                      <div
+                        className="h-full bg-emerald-500 transition-all"
+                        style={{ width: `${Math.max(0, Math.min(100, Math.round(((checkProgress || 0) / Math.max(1, mods.length)) * 100)))}%` }}
+                      />
+                    ) : (
+                      <div className="h-full w-1/3 bg-emerald-500 animate-pulse" />
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <div className="rounded-lg border bg-muted/20 p-md shadow-sm" aria-label="Actions">
+          <div className="flex items-center gap-sm overflow-x-auto">
             <Button
+              size="sm"
               variant="outline"
               onClick={handleCheckAll}
               disabled={checkingAll || !hasToken || mods.length === 0}
-              className="gap-xs"
+              className="gap-xs disabled:opacity-50 disabled:pointer-events-none"
             >
               <RefreshCw className="h-4 w-4" aria-hidden />
               Check Updates
             </Button>
-            {instance.pufferpanel_server_id && (
-              <Button
-                variant="outline"
-                onClick={handleResync}
-                disabled={resyncing}
-                className="gap-xs"
-              >
-                <RotateCw className="h-4 w-4" aria-hidden />
-                {resyncing ? "Resyncing" : "Resync"}
-              </Button>
-            )}
             <Button
+              size="sm"
               variant="outline"
               onClick={openLogs}
               className="gap-xs"
@@ -746,40 +823,314 @@ export default function Mods() {
               <FileText className="h-4 w-4" aria-hidden />
               Logs
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setName(instance.name);
-                setEnforce(instance.enforce_same_loader);
-                setEditOpen(true);
-              }}
-              className="gap-xs"
-            >
-              <Pencil className="h-4 w-4" aria-hidden />
-              Edit
-            </Button>
+            {instance && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setName(instance.name);
+                  setEnforce(instance.enforce_same_loader);
+                  setEditOpen(true);
+                }}
+                className="gap-xs"
+              >
+                <Pencil className="h-4 w-4" aria-hidden />
+                Edit
+              </Button>
+            )}
+            {instance?.pufferpanel_server_id && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleResync}
+                disabled={resyncing}
+                className="gap-xs disabled:opacity-50 disabled:pointer-events-none"
+              >
+                <RotateCw className="h-4 w-4" aria-hidden />
+                {resyncing ? "Resyncing" : "Resync"}
+              </Button>
+            )}
           </div>
-          {/* Instance status overview */}
-          {loading ? (
-            <div className="grid grid-cols-1 gap-sm sm:grid-cols-3 max-w-3xl sm:max-w-4xl">
-              <Skeleton className="h-20 rounded-md shadow-sm" />
-              <Skeleton className="h-20 rounded-md shadow-sm" />
-              <Skeleton className="h-20 rounded-md shadow-sm" />
+          {!hasToken && (
+            <div
+              className="mt-sm flex items-center gap-sm rounded-md border border-yellow-200 bg-yellow-50 p-sm text-yellow-800"
+              role="status"
+            >
+              <Key className="h-4 w-4" aria-hidden />
+              <span className="text-sm">
+                Set a Modrinth token in Settings to enable update checks.
+              </span>
             </div>
-          ) : (
-            (() => {
-              const s = summarizeMods(withVirtuals);
-              return (
-                <InstanceStatusOverview
-                  upToDate={s.mods_up_to_date}
-                  updatesAvailable={s.mods_update_available}
-                  failed={s.mods_failed}
-                />
-              );
-            })()
           )}
         </div>
-      )}
+        {unmatched.length > 0 && (
+          <div className="md:col-span-3">
+            <h2 className="text-lg font-medium">Unmatched files</h2>
+            <ul className="space-y-xs" data-testid="unmatched-files">
+              {unmatched.map((f) => (
+                <li
+                  key={f}
+                  className="flex items-center justify-between rounded border border-yellow-200 bg-yellow-50 px-sm py-xs text-sm text-yellow-800"
+                >
+                  <span className="truncate" title={f}>
+                    {f}
+                  </span>
+                  <Button size="sm" variant="outline" onClick={() => openAddMod(f)}>
+                    Resolve
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
+
+      {/* Divider between actions and mods list */}
+      <div className="h-px bg-border/60 rounded" />
+
+      {/* Bottom: Mods table */}
+      <section className="grid gap-lg">
+        <div className="rounded-lg border bg-muted/20 p-md shadow-sm">
+          <div className="flex flex-wrap items-center gap-sm">
+            <div className="flex flex-col min-w-[220px] sm:w-64">
+              <label htmlFor="filter" className="sr-only">
+                Filter mods
+              </label>
+              <Input
+                id="filter"
+                placeholder="Filter mods..."
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                className="sm:max-w-xs"
+              />
+            </div>
+            <div className="flex flex-col min-w-[160px] sm:w-40">
+              <label htmlFor="sort" className="sr-only">
+                Sort mods
+              </label>
+          <Select
+            id="sort"
+            value={sort}
+            onChange={(e) => setSort(e.target.value)}
+            className="sm:w-40"
+          >
+            <option value="name-asc">Name A-Z</option>
+            <option value="name-desc">Name Z-A</option>
+            <option value="updates-first">Updates first</option>
+          </Select>
+            </div>
+            <div className="ml-auto">
+              <Button
+                onClick={openAddMod}
+                className={cn(
+                  "gap-xs",
+                  !hasToken && "pointer-events-none opacity-50",
+                )}
+                disabled={!hasToken}
+                title="Add Mod"
+              >
+                <Plus className="h-4 w-4" aria-hidden="true" />
+                Add Mod
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {loading && (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Game Version</TableHead>
+                <TableHead>Loader</TableHead>
+                <TableHead>Current</TableHead>
+                <TableHead>Available</TableHead>
+                <TableHead>Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {Array.from({ length: 5 }).map((_, i) => (
+                <TableRow key={i}>
+                  <TableCell>
+                    <Skeleton className="h-4 w-32" />
+                  </TableCell>
+                  <TableCell>
+                    <Skeleton className="h-4 w-20" />
+                  </TableCell>
+                  <TableCell>
+                    <Skeleton className="h-4 w-16" />
+                  </TableCell>
+                  <TableCell>
+                    <Skeleton className="h-4 w-20" />
+                  </TableCell>
+                  <TableCell>
+                    <Skeleton className="h-4 w-20" />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+
+        {!loading && error && (
+          <div className="flex flex-col items-center gap-sm">
+            <p className="text-sm text-muted-foreground">{error}</p>
+            <Button onClick={fetchMods}>Retry</Button>
+          </div>
+        )}
+
+        {!loading && !error && current.length === 0 && (
+          <EmptyState
+            icon={Package}
+            title="No mods"
+            message="You haven't added any mods yet."
+          />
+        )}
+
+        {!loading && !error && current.length > 0 && (
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Game</TableHead>
+                  <TableHead>Loader</TableHead>
+                  <TableHead>Current</TableHead>
+                  <TableHead>Available</TableHead>
+                  <TableHead>Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {current.map((m) => {
+                  const projectUrl = getProjectUrl(m);
+                  const isModrinth = !!projectUrl;
+                  const outdated =
+                    (m.available_version || "") !== "" && m.available_version !== m.current_version;
+                  return (
+                    <TableRow key={m.id} className={cn(outdated && "bg-emerald-50/60")}> 
+                      <TableCell className="flex items-center gap-sm font-medium">
+                        <ModIcon
+                          url={m.icon_url}
+                          cacheKey={
+                            m.available_version ||
+                            m.current_version ||
+                            String(m.id)
+                          }
+                        />
+                        <span className="flex items-center gap-xs">
+                          {m.name || m.url}
+                          {m.virtual && (
+                            <span className="inline-flex items-center gap-1 text-xs text-red-600" role="status">
+                              <AlertTriangle className="h-4 w-4" aria-hidden />
+                              Could not be matched
+                            </span>
+                          )}
+                        </span>
+                      </TableCell>
+                      <TableCell>{m.game_version}</TableCell>
+                      <TableCell>{m.loader}</TableCell>
+                      <TableCell>{m.current_version}</TableCell>
+                      <TableCell>{m.available_version}</TableCell>
+                      <TableCell className="flex gap-xs">
+                        {m.virtual ? (
+                          <Button
+                            variant="outline"
+                            onClick={() => openAddMod(m.file || m.name)}
+                            aria-label="Match mod"
+                            className="h-8 px-sm"
+                          >
+                            Match mod
+                          </Button>
+                        ) : (
+                          <>
+                            {outdated && (
+                              <Tooltip text="Apply update">
+                                <Button
+                                  variant="outline"
+                                  onClick={() => handleApplyUpdate(m)}
+                                  aria-label="Apply update"
+                                  className="h-8 px-sm border-emerald-300 text-emerald-700 hover:bg-emerald-100"
+                                  disabled={updatingId === m.id || !!updateStatus[m.id]}
+                                >
+                                  <Download
+                                    className={cn(
+                                      "h-4 w-4",
+                                      (updatingId === m.id || updateStatus[m.id]) && "animate-bounce"
+                                    )}
+                                    aria-hidden="true"
+                                  />
+                                </Button>
+                              </Tooltip>
+                            )}
+                            {!!updateStatus[m.id] && (
+                              <div className="ml-2">
+                                <UpdateStepper modId={m.id} />
+                              </div>
+                            )}
+                            <Tooltip
+                              text={
+                                isModrinth
+                                  ? "Open project page"
+                                  : "Project page available only for Modrinth mods"
+                              }
+                            >
+                              <Button
+                                variant="outline"
+                                as={projectUrl ? "a" : "button"}
+                                href={projectUrl || undefined}
+                                target={projectUrl ? "_blank" : undefined}
+                                rel={projectUrl ? "noopener" : undefined}
+                                aria-label="Open project page"
+                                className="h-8 px-sm"
+                                disabled={!isModrinth}
+                              >
+                                <ExternalLink
+                                  className="h-4 w-4"
+                                  aria-hidden="true"
+                                />
+                              </Button>
+                            </Tooltip>
+                            <Tooltip text="Delete mod">
+                              <Button
+                                variant="outline"
+                                onClick={() => handleDelete(m.id)}
+                                aria-label="Delete mod"
+                                className="h-8 px-sm"
+                              >
+                                <Trash2 className="h-4 w-4" aria-hidden="true" />
+                              </Button>
+                            </Tooltip>
+                          </>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+
+            <div className="flex items-center justify-between pt-sm">
+              <Button
+                variant="outline"
+                onClick={() => setPage((p) => p - 1)}
+                disabled={page === 1}
+              >
+                Previous
+              </Button>
+              <span className="text-sm text-muted-foreground">
+                Page {page} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                onClick={() => setPage((p) => p + 1)}
+                disabled={page >= totalPages}
+              >
+                Next
+              </Button>
+            </div>
+          </>
+        )}
+      </section>
       {unmatched.length > 0 && (
         <div>
           <h2 className="text-lg font-medium">Unmatched files</h2>
@@ -896,28 +1247,19 @@ export default function Mods() {
         />
       )}
 
-      {!loading && !error && current.length > 0 && (
-        <>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Game</TableHead>
-                <TableHead>Loader</TableHead>
-                <TableHead>Current</TableHead>
-                <TableHead>Available</TableHead>
-                <TableHead>Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
+        {!loading && !error && current.length > 0 && (
+          <>
+            {/* Small screens: card list */}
+            <div className="grid gap-sm sm:hidden">
               {current.map((m) => {
                 const projectUrl = getProjectUrl(m);
                 const isModrinth = !!projectUrl;
                 const outdated =
                   (m.available_version || "") !== "" && m.available_version !== m.current_version;
+                const open = actionsOpenId === m.id;
                 return (
-                  <TableRow key={m.id} className={cn(outdated && "bg-emerald-50/60")}> 
-                    <TableCell className="flex items-center gap-sm font-medium">
+                  <div key={m.id} className={cn("relative rounded-lg border p-md shadow-sm", outdated && "bg-emerald-50/60")}> 
+                    <div className="flex items-start gap-sm">
                       <ModIcon
                         url={m.icon_url}
                         cacheKey={
@@ -926,119 +1268,254 @@ export default function Mods() {
                           String(m.id)
                         }
                       />
-                      <span className="flex items-center gap-xs">
-                        {m.name || m.url}
-                        {m.virtual && (
-                          <span className="inline-flex items-center gap-1 text-xs text-red-600" role="status">
-                            <AlertTriangle className="h-4 w-4" aria-hidden />
-                            Could not be matched
-                          </span>
-                        )}
-                      </span>
-                    </TableCell>
-                    <TableCell>{m.game_version}</TableCell>
-                    <TableCell>{m.loader}</TableCell>
-                    <TableCell>{m.current_version}</TableCell>
-                    <TableCell>{m.available_version}</TableCell>
-                    <TableCell className="flex gap-xs">
-                      {m.virtual ? (
-                        <Button
-                          variant="outline"
-                          onClick={() => openAddMod(m.file || m.name)}
-                          aria-label="Match mod"
-                          className="h-8 px-sm"
-                        >
-                          Match mod
-                        </Button>
-                      ) : (
-                        <>
-                          {outdated && (
-                            <Tooltip text="Apply update">
-                              <Button
-                                variant="outline"
-                                onClick={() => handleApplyUpdate(m)}
-                                aria-label="Apply update"
-                                className="h-8 px-sm border-emerald-300 text-emerald-700 hover:bg-emerald-100"
-                                disabled={updatingId === m.id || !!updateStatus[m.id]}
-                              >
-                                <Download
-                                  className={cn(
-                                    "h-4 w-4",
-                                    (updatingId === m.id || updateStatus[m.id]) && "animate-bounce"
-                                  )}
-                                  aria-hidden="true"
-                                />
-                              </Button>
-                            </Tooltip>
-                          )}
-                          {!!updateStatus[m.id] && (
-                            <div className="ml-2">
-                              <UpdateStepper modId={m.id} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start gap-sm">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-xs">
+                              <span className="font-semibold truncate">{m.name || m.url}</span>
+                              {!m.virtual && outdated && (
+                                <Badge variant="secondary" className="border border-amber-200 bg-amber-100 text-amber-800">Update available</Badge>
+                              )}
+                              {m.virtual && (
+                                <span className="inline-flex items-center gap-1 text-xs text-red-600" role="status">
+                                  <AlertTriangle className="h-4 w-4" aria-hidden />
+                                  Could not be matched
+                                </span>
+                              )}
                             </div>
-                          )}
-                          <Tooltip
-                            text={
-                              isModrinth
-                                ? "Open project page"
-                                : "Project page available only for Modrinth mods"
-                            }
-                          >
+                            <div className="mt-1 flex flex-wrap items-center gap-sm text-sm text-muted-foreground">
+                              <span className="inline-flex items-center gap-1"><LoaderIcon loader={m.loader} /><span className="sr-only">{m.loader}</span></span>
+                              {m.game_version && <span>Game {m.game_version}</span>}
+                              {m.current_version && (
+                                <span>
+                                  Current {m.current_version}
+                                  {m.available_version && ` • Available ${m.available_version}`}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="shrink-0 relative">
                             <Button
                               variant="outline"
-                              as={projectUrl ? "a" : "button"}
-                              href={projectUrl || undefined}
-                              target={projectUrl ? "_blank" : undefined}
-                              rel={projectUrl ? "noopener" : undefined}
-                              aria-label="Open project page"
                               className="h-8 px-sm"
-                              disabled={!isModrinth}
+                              onClick={() => setActionsOpenId(open ? null : m.id)}
+                              aria-haspopup="menu"
+                              aria-expanded={open}
+                              aria-label="Actions"
                             >
-                              <ExternalLink
-                                className="h-4 w-4"
-                                aria-hidden="true"
-                              />
+                              <MoreVertical className="h-4 w-4" aria-hidden />
                             </Button>
-                          </Tooltip>
-                          <Tooltip text="Delete mod">
-                            <Button
-                              variant="outline"
-                              onClick={() => handleDelete(m.id)}
-                              aria-label="Delete mod"
-                              className="h-8 px-sm"
-                            >
-                              <Trash2 className="h-4 w-4" aria-hidden="true" />
-                            </Button>
-                          </Tooltip>
-                        </>
-                      )}
-                    </TableCell>
-                  </TableRow>
+                            {open && (
+                              <div className="absolute right-0 z-10 mt-1 w-44 rounded-md border bg-background p-xs shadow-md" role="menu">
+                                {m.virtual ? (
+                                  <Button
+                                    variant="outline"
+                                    className="w-full justify-start h-8 px-sm"
+                                    onClick={() => { setActionsOpenId(null); openAddMod(m.file || m.name); }}
+                                  >
+                                    Match mod
+                                  </Button>
+                                ) : (
+                                  <div className="grid gap-xs">
+                                    {outdated && (
+                                      <Button
+                                        variant="outline"
+                                        className="w-full justify-start h-8 px-sm"
+                                        onClick={() => { setActionsOpenId(null); handleApplyUpdate(m); }}
+                                        disabled={updatingId === m.id || !!updateStatus[m.id]}
+                                      >
+                                        <Download className="h-4 w-4 mr-1" /> Apply update
+                                      </Button>
+                                    )}
+                                    <Button
+                                      variant="outline"
+                                      as={isModrinth ? "a" : "button"}
+                                      href={projectUrl || undefined}
+                                      target={projectUrl ? "_blank" : undefined}
+                                      rel={projectUrl ? "noopener" : undefined}
+                                      className="w-full justify-start h-8 px-sm"
+                                      onClick={() => setActionsOpenId(null)}
+                                      disabled={!isModrinth}
+                                    >
+                                      <ExternalLink className="h-4 w-4 mr-1" /> Open project
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      className="w-full justify-start h-8 px-sm"
+                                      onClick={() => { setActionsOpenId(null); handleDelete(m.id); }}
+                                    >
+                                      <Trash2 className="h-4 w-4 mr-1" /> Delete
+                                    </Button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 );
               })}
-            </TableBody>
-          </Table>
+            </div>
 
-          <div className="flex items-center justify-between pt-sm">
-            <Button
-              variant="outline"
-              onClick={() => setPage((p) => p - 1)}
-              disabled={page === 1}
-            >
-              Previous
-            </Button>
-            <span className="text-sm text-muted-foreground">
-              Page {page} of {totalPages}
-            </span>
-            <Button
-              variant="outline"
-              onClick={() => setPage((p) => p + 1)}
-              disabled={page >= totalPages}
-            >
-              Next
-            </Button>
-          </div>
-        </>
-      )}
+            {/* Desktop/tablet: table view */}
+            <div className="hidden sm:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Game</TableHead>
+                    <TableHead>Loader</TableHead>
+                    <TableHead>Current</TableHead>
+                    <TableHead>Available</TableHead>
+                    <TableHead>Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {current.map((m) => {
+                    const projectUrl = getProjectUrl(m);
+                    const isModrinth = !!projectUrl;
+                    const outdated =
+                      (m.available_version || "") !== "" && m.available_version !== m.current_version;
+                    return (
+                      <TableRow key={m.id} className={cn("group", outdated && "bg-emerald-50/60")}> 
+                        <TableCell className="flex items-center gap-sm font-medium text-base">
+                          <ModIcon
+                            url={m.icon_url}
+                            cacheKey={
+                              m.available_version ||
+                              m.current_version ||
+                              String(m.id)
+                            }
+                          />
+                          <span className="flex items-center gap-xs">
+                            {m.name || m.url}
+                            {!m.virtual && outdated && (
+                              <Badge
+                                variant="secondary"
+                                className="ml-1 border border-amber-200 bg-amber-100 text-amber-800"
+                              >
+                                Update available
+                              </Badge>
+                            )}
+                            {m.virtual && (
+                              <span className="inline-flex items-center gap-1 text-xs text-red-600" role="status">
+                                <AlertTriangle className="h-4 w-4" aria-hidden />
+                                Could not be matched
+                              </span>
+                            )}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">{m.game_version}</TableCell>
+                        <TableCell>
+                          <span className="inline-flex items-center gap-1">
+                            <LoaderIcon loader={m.loader} />
+                            <span className="sr-only">{m.loader}</span>
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-sm">{m.current_version}</TableCell>
+                        <TableCell className="text-sm">{m.available_version}</TableCell>
+                        <TableCell className="flex gap-xs">
+                          {m.virtual ? (
+                            <Button
+                              variant="outline"
+                              onClick={() => openAddMod(m.file || m.name)}
+                              aria-label="Match mod"
+                              className="h-8 px-sm transition-colors group-hover:bg-muted group-hover:border-foreground/20"
+                            >
+                              Match mod
+                            </Button>
+                          ) : (
+                            <>
+                              {outdated && (
+                                <Tooltip text="Apply update">
+                                  <Button
+                                    variant="outline"
+                                    onClick={() => handleApplyUpdate(m)}
+                                    aria-label="Apply update"
+                                    className="h-8 px-sm border-emerald-300 text-emerald-700 hover:bg-emerald-100 transition-colors group-hover:bg-emerald-50 group-hover:border-emerald-300"
+                                    disabled={updatingId === m.id || !!updateStatus[m.id]}
+                                  >
+                                    <Download
+                                      className={cn(
+                                        "h-4 w-4",
+                                        (updatingId === m.id || updateStatus[m.id]) && "animate-bounce"
+                                      )}
+                                      aria-hidden="true"
+                                    />
+                                  </Button>
+                                </Tooltip>
+                              )}
+                              {!!updateStatus[m.id] && (
+                                <div className="ml-2">
+                                  <UpdateStepper modId={m.id} />
+                                </div>
+                              )}
+                              <Tooltip
+                                text={
+                                  isModrinth
+                                    ? "Open project page"
+                                    : "Project page available only for Modrinth mods"
+                                }
+                              >
+                                <Button
+                                  variant="outline"
+                                  as={projectUrl ? "a" : "button"}
+                                  href={projectUrl || undefined}
+                                  target={projectUrl ? "_blank" : undefined}
+                                  rel={projectUrl ? "noopener" : undefined}
+                                  aria-label="Open project page"
+                                  className="h-8 px-sm transition-colors group-hover:bg-muted group-hover:border-foreground/20"
+                                  disabled={!isModrinth}
+                                >
+                                  <ExternalLink
+                                    className="h-4 w-4"
+                                    aria-hidden="true"
+                                  />
+                                </Button>
+                              </Tooltip>
+                              <Tooltip text="Delete mod">
+                                <Button
+                                  variant="outline"
+                                  onClick={() => handleDelete(m.id)}
+                                  aria-label="Delete mod"
+                                  className="h-8 px-sm transition-colors group-hover:bg-muted group-hover:border-foreground/20"
+                                >
+                                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                                </Button>
+                              </Tooltip>
+                            </>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="flex items-center justify-between pt-sm">
+              <Button
+                variant="outline"
+                onClick={() => setPage((p) => p - 1)}
+                disabled={page === 1}
+              >
+                Previous
+              </Button>
+              <span className="text-sm text-muted-foreground">
+                Page {page} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                onClick={() => setPage((p) => p + 1)}
+                disabled={page >= totalPages}
+              >
+                Next
+              </Button>
+            </div>
+          </>
+        )}
       <Modal open={editOpen} onClose={() => setEditOpen(false)}>
         <form className="space-y-md" onSubmit={saveSettings}>
           <div className="space-y-xs">
