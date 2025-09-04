@@ -28,6 +28,7 @@ import { toast } from "@/lib/toast.ts";
 import { jobs } from "@/lib/api.ts";
 
 import { useMetaStore } from "@/stores/metaStore.js";
+import LoaderSelect from "@/components/LoaderSelect.jsx";
 
 export default function Instances() {
   const { loaders, loaded: loadersLoaded, error: loadersError, load: loadLoaders } = useMetaStore();
@@ -701,21 +702,8 @@ export default function Instances() {
               {!editing && (
                 <>
                   <div className="space-y-xs">
-                    <label htmlFor="loader" className="text-sm font-medium">Loader</label>
-                    <Input
-                      id="loader"
-                      list="loader-list"
-                      placeholder={loadersLoaded ? "Search loaders..." : "Loading..."}
-                      value={loader}
-                      onChange={(e) => setLoader(e.target.value)}
-                      required
-                      disabled={!loadersLoaded || loaders.length === 0}
-                    />
-                    <datalist id="loader-list">
-                      {loadersLoaded && loaders.map((l) => (
-                        <option key={l.id} value={l.id} label={l.name || l.id} />
-                      ))}
-                    </datalist>
+                    <label className="text-sm font-medium">Loader</label>
+                    <LoaderSelect loaders={loaders} value={loader} onChange={setLoader} disabled={!loadersLoaded || loaders.length === 0} />
                   </div>
                   
                 </>

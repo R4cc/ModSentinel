@@ -585,6 +585,7 @@ func isValidLoader(ctx context.Context, id string) bool {
 type metaLoaderOut struct {
     ID   string `json:"id"`
     Name string `json:"name"`
+    Icon string `json:"icon,omitempty"`
 }
 
 // fetchModrinthLoaders fetches loader tags from Modrinth and projects them.
@@ -608,7 +609,7 @@ func fetchModrinthLoaders(ctx context.Context) ([]metaLoaderOut, error) {
     out := make([]metaLoaderOut, 0, len(tags))
     for _, t := range tags {
         if strings.TrimSpace(t.Name) == "" { continue }
-        out = append(out, metaLoaderOut{ID: strings.ToLower(t.Name), Name: t.Name})
+        out = append(out, metaLoaderOut{ID: strings.ToLower(t.Name), Name: t.Name, Icon: t.Icon})
     }
     return out, nil
 }

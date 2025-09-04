@@ -21,6 +21,7 @@ import { ArrowLeft, X } from "lucide-react";
 import ModIcon from "@/components/ModIcon.jsx";
 import { useAddModStore, initialState } from "@/stores/addModStore.js";
 import { useMetaStore } from "@/stores/metaStore.js";
+import LoaderSelect from "@/components/LoaderSelect.jsx";
 import { parseJarFilename } from "@/lib/jar.ts";
 
 const steps = ["Select Mod", "Loader", "Minecraft Version", "Mod Version"];
@@ -388,21 +389,8 @@ export default function AddMod() {
                 className="space-y-sm"
               >
                 <div className="space-y-xs">
-                  <label htmlFor="loader" className="text-sm font-medium">Loader</label>
-                  <Input
-                    id="loader"
-                    ref={refs[1]}
-                    list="loader-list"
-                    placeholder={metaLoaded ? "Search loaders..." : "Loading..."}
-                    value={loader}
-                    onChange={(e) => setLoader(e.target.value)}
-                    required
-                  />
-                  <datalist id="loader-list">
-                    {metaLoaders.map((l) => (
-                      <option key={l.id} value={l.id} label={l.name || l.id} />
-                    ))}
-                  </datalist>
+                  <label className="text-sm font-medium">Loader</label>
+                  <LoaderSelect loaders={metaLoaders} value={loader} onChange={setLoader} disabled={!metaLoaded || metaLoaders.length === 0} />
                 </div>
               </motion.div>
             )}

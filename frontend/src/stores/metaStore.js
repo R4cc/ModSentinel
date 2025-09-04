@@ -12,7 +12,7 @@ export const useMetaStore = create((set, get) => ({
       const res = await fetch('/api/meta/modrinth/loaders', { cache: 'no-store' });
       if (!res.ok) throw new Error('Failed to load loaders');
       const data = await res.json();
-      const items = Array.isArray(data) ? data : [];
+      const items = (Array.isArray(data) ? data : []).map((x) => ({ id: x.id, name: x.name, icon: x.icon }));
       set({ loaders: items, loaded: true, loading: false, error: '' });
       return true;
     } catch (e) {
@@ -21,4 +21,3 @@ export const useMetaStore = create((set, get) => ({
     }
   },
 }));
-

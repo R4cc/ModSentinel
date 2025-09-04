@@ -45,6 +45,7 @@ import { EmptyState } from "@/components/ui/EmptyState.jsx";
 import ModIcon from "@/components/ModIcon.jsx";
 import { Tooltip } from "@/components/ui/Tooltip.jsx";
 import { Badge } from "@/components/ui/Badge.jsx";
+import LoaderSelect from "@/components/LoaderSelect.jsx";
 import {
   getMods,
   refreshMod,
@@ -1317,20 +1318,8 @@ export default function Mods() {
             </p>
           </div>
           <div className="space-y-xs">
-            <label htmlFor="inst_loader" className="text-sm font-medium">Loader</label>
-            <Input
-              id="inst_loader"
-              list="loader-list"
-              placeholder={instance?.loader || "e.g. fabric"}
-              value={editLoader}
-              onChange={(e) => setEditLoader(e.target.value)}
-            />
-            <datalist id="loader-list">
-              {metaLoaders.map((l) => (
-                <option key={l.id} value={l.id} label={l.name || l.id} />
-              ))}
-            </datalist>
-            <p className="text-xs text-muted-foreground">Shows display name; saves loader id.</p>
+            <label className="text-sm font-medium">Loader</label>
+            <LoaderSelect loaders={metaLoaders} value={editLoader} onChange={setEditLoader} disabled={!metaLoaded || metaLoaders.length === 0} />
           </div>
           
           <div className="flex justify-end gap-sm">
