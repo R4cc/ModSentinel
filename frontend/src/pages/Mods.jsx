@@ -703,7 +703,7 @@ export default function Mods() {
                     setEditOpen(true);
                   }}
                 >
-                  <Pencil className="h-4 w-4 text-foreground" aria-hidden />
+                  <Pencil className="h-5 w-5 md:h-6 md:w-6 text-foreground" aria-hidden />
                 </Button>
               </div>
               <div className="mt-xs flex flex-wrap items-center gap-md">
