@@ -598,7 +598,7 @@ func fetchModrinthLoaders(ctx context.Context) ([]metaLoaderOut, error) {
         return nil, fmt.Errorf("modrinth loaders: %s", resp.Status)
     }
     var tags []struct {
-        Value string   `json:"value"`
+        Icon  string   `json:"icon"`
         Name  string   `json:"name"`
         Types []string `json:"supported_project_types"`
     }
@@ -607,14 +607,14 @@ func fetchModrinthLoaders(ctx context.Context) ([]metaLoaderOut, error) {
     }
     out := make([]metaLoaderOut, 0, len(tags))
     for _, t := range tags {
-        if strings.TrimSpace(t.Value) == "" { continue }
-        out = append(out, metaLoaderOut{ID: t.Value, Name: t.Name})
+        if strings.TrimSpace(t.Name) == "" { continue }
+        out = append(out, metaLoaderOut{ID: strings.ToLower(t.Name), Name: t.Name})
     }
     return out, nil
 }
 
 // modrinthLoadersHandler returns cached Modrinth loader tags, fetching on cold start or expiry.
-func modrinthLoadersHandler() http.HandlerFunc {
+func modrinthLoadersHandler(db *sql.DB) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         now := time.Now()
         modrinthLoadersMu.RLock()
@@ -646,6 +646,30 @@ func modrinthLoadersHandler() http.HandlerFunc {
         modrinthLoadersCache = tags
         modrinthLoadersExpiry = time.Now().Add(modrinthLoadersTTL)
         modrinthLoadersMu.Unlock()
+        // Persist full loader records into DB
+        if db != nil {
+            req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.modrinth.com/v2/tag/loader", nil)
+            if req2 != nil {
+                if resp2, err2 := http.DefaultClient.Do(req2); err2 == nil {
+                    defer resp2.Body.Close()
+                    if resp2.StatusCode >= 200 && resp2.StatusCode < 300 {
+                        var raw []struct {
+                            Icon  string   `json:"icon"`
+                            Name  string   `json:"name"`
+                            Types []string `json:"supported_project_types"`
+                        }
+                        if json.NewDecoder(resp2.Body).Decode(&raw) == nil {
+                            entries := make([]dbpkg.LoaderTag, 0, len(raw))
+                            for _, t := range raw {
+                                if strings.TrimSpace(t.Name) == "" { continue }
+                                entries = append(entries, dbpkg.LoaderTag{ID: strings.ToLower(t.Name), Name: t.Name, Icon: t.Icon, Types: t.Types})
+                            }
+                            _ = dbpkg.UpsertModrinthLoaders(db, entries)
+                        }
+                    }
+                }
+            }
+        }
         // Telemetry + log: record refresh
         telemetry.Event("metric", map[string]string{
             "name":  "modrinth_loaders_last_fetch_epoch",
