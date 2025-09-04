@@ -687,10 +687,25 @@ export default function Mods() {
           </Link>
           {instance && (
             <>
-              <h1 className="text-3xl md:text-4xl font-bold tracking-tight truncate">
-                {instance.name}
-                {nameSuffix ? ` (${nameSuffix})` : ""}
-              </h1>
+              <div className="flex items-center gap-sm">
+                <h1 className="text-3xl md:text-4xl font-bold tracking-tight truncate flex-1">
+                  {instance.name}
+                  {nameSuffix ? ` (${nameSuffix})` : ""}
+                </h1>
+                <Button
+                  variant="outline"
+                  className="h-9 w-9 p-0"
+                  aria-label="Edit instance"
+                  title="Edit instance"
+                  onClick={() => {
+                    setName(instance.name);
+                    setEnforce(instance.enforce_same_loader);
+                    setEditOpen(true);
+                  }}
+                >
+                  <Pencil className="h-4 w-4" aria-hidden />
+                </Button>
+              </div>
               <div className="mt-xs flex flex-wrap items-center gap-md">
                 <div className="inline-flex items-center gap-2">
                   <span className="text-sm text-muted-foreground">Loader:</span>
@@ -792,7 +807,7 @@ export default function Mods() {
             </>
           )}
         </div>
-        <div className="rounded-lg border bg-muted/20 p-md shadow-sm" aria-label="Actions">
+        <div className="rounded-lg border bg-muted/20 p-md shadow-sm w-full lg:w-fit lg:justify-self-start" aria-label="Actions">
           <div className="flex flex-wrap items-center gap-sm">
             <Button
               size="sm"
@@ -813,21 +828,7 @@ export default function Mods() {
               <FileText className="h-4 w-4" aria-hidden />
               Logs
             </Button>
-            {instance && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  setName(instance.name);
-                  setEnforce(instance.enforce_same_loader);
-                  setEditOpen(true);
-                }}
-                className="gap-xs"
-              >
-                <Pencil className="h-4 w-4" aria-hidden />
-                Edit
-              </Button>
-            )}
+            {/* Edit action removed from this card; moved next to header */}
             {instance?.pufferpanel_server_id && (
               <Button
                 size="sm"
