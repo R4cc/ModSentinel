@@ -2145,8 +2145,16 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
     topDisplay := ""
     // Load definition (raw) and structured (for variables)
     var def *pppkg.ServerDefinition
-    def, _ = ppGetServerDefinition(ctx, serverID)
-    defRaw, _ := ppGetServerDefinitionRaw(ctx, serverID)
+    defFetched := 0
+    if d, err := ppGetServerDefinition(ctx, serverID); err == nil {
+        def = d
+        defFetched++
+    }
+    defRaw := map[string]any{}
+    if raw, err := ppGetServerDefinitionRaw(ctx, serverID); err == nil {
+        defRaw = raw
+        defFetched++
+    }
     // 1) Primary: display fields
     // - top-level display (if present)
     if disp, ok := defRaw["display"].(string); ok {
@@ -2256,6 +2264,11 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
         telemetry.Event("loader_unmatched", map[string]string{
             "instance_id": strconv.Itoa(inst.ID),
         })
+    }
+    // Sanity metric: definition fetches per sync
+    telemetry.Event("definitions_fetched_per_sync", map[string]string{"count": strconv.Itoa(defFetched)})
+    if defFetched == 0 {
+        log.Ctx(ctx).Warn().Int("instance_id", inst.ID).Str("server_id", serverID).Msg("no definitions fetched during sync")
     }
     // 4) Decide final loader flags
     if detected == "" {

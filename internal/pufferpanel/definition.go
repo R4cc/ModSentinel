@@ -5,7 +5,11 @@ import (
     "encoding/json"
     "net/http"
     "net/url"
+    "strconv"
     "strings"
+    "time"
+
+    "modsentinel/internal/telemetry"
 )
 
 // Variable describes a template variable in a server definition.
@@ -30,7 +34,13 @@ func GetServerDefinition(ctx context.Context, id string) (*ServerDefinition, err
     req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
     if err != nil { return nil, err }
     client := newClient(u)
+    start := time.Now()
     status, body, err := doAuthRequest(ctx, client, req)
+    telemetry.Event("pufferpanel_request", map[string]string{
+        "resource":    "pufferpanel.definition",
+        "status":      map[bool]string{true: "ok", false: "error"}[err == nil && status >= 200 && status < 300],
+        "duration_ms": strconv.FormatInt(time.Since(start).Milliseconds(), 10),
+    })
     if err != nil { return nil, err }
     if status < 200 || status >= 300 {
         return nil, parseError(status, body)
@@ -51,7 +61,13 @@ func GetServerDefinitionRaw(ctx context.Context, id string) (map[string]any, err
     req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
     if err != nil { return nil, err }
     client := newClient(u)
+    start := time.Now()
     status, body, err := doAuthRequest(ctx, client, req)
+    telemetry.Event("pufferpanel_request", map[string]string{
+        "resource":    "pufferpanel.definition",
+        "status":      map[bool]string{true: "ok", false: "error"}[err == nil && status >= 200 && status < 300],
+        "duration_ms": strconv.FormatInt(time.Since(start).Milliseconds(), 10),
+    })
     if err != nil { return nil, err }
     if status < 200 || status >= 300 {
         return nil, parseError(status, body)
