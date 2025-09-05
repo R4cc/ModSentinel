@@ -30,7 +30,7 @@ vi.mock("@/lib/toast.ts", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
-import Instances from "./Instances.jsx";
+import Instances from "./InstancesList.jsx";
 import { getInstances, getSecretStatus } from "@/lib/api.ts";
 
 describe("Instances PufferPanel fetch", () => {

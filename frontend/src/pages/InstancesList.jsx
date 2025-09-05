@@ -32,7 +32,7 @@ import { toast } from "@/lib/toast.ts";
 import { useMetaStore } from "@/stores/metaStore.js";
 import LoaderSelect from "@/components/LoaderSelect.jsx";
 
-export default function Instances() {
+export default function InstancesList() {
   const { loaders, loaded: loadersLoaded, error: loadersError, load: loadLoaders } = useMetaStore();
   const [instances, setInstances] = useState([]);
   const [suffixMap, setSuffixMap] = useState({}); // id -> index

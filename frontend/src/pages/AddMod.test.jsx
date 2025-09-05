@@ -44,7 +44,7 @@ import AddMod from "./AddMod.jsx";
 import { useAddModStore, initialState } from "@/stores/addModStore.js";
 import { useOpenAddMod } from "@/hooks/useOpenAddMod.js";
 import { addMod, getInstance, getMods } from "@/lib/api.ts";
-import Mods from "./Mods.jsx";
+import Mods from "./InstanceMods.jsx";
 import { toast } from "@/lib/toast.ts";
 
 describe("AddMod page", () => {

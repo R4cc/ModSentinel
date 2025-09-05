@@ -31,7 +31,7 @@ vi.mock("focus-trap-react", () => ({
 }));
 
 import { MemoryRouter } from "react-router-dom";
-import Instances from "./Instances.jsx";
+import Instances from "./InstancesList.jsx";
 import {
   getInstances,
   addInstance,

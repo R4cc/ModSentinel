@@ -36,7 +36,7 @@ const confirmMock = vi.fn();
 vi.mock("@/hooks/useConfirm.jsx", () => ({
   useConfirm: () => ({ confirm: confirmMock, ConfirmModal: null }),
 }));
-import Mods from "./Mods.jsx";
+import Mods from "./InstanceMods.jsx";
 
 afterEach(() => {
   cleanup();

@@ -1,6 +1,6 @@
 import { Skeleton } from '@/components/ui/Skeleton.jsx';
 
-export default function ModsSkeleton() {
+export default function InstanceModsSkeleton() {
   return (
     <div className="space-y-md">
       <Skeleton className="h-4 w-32" />
@@ -13,3 +13,4 @@ export default function ModsSkeleton() {
     </div>
   );
 }
+

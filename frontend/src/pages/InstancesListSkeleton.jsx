@@ -1,6 +1,6 @@
 import { Skeleton } from '@/components/ui/Skeleton.jsx';
 
-export default function InstancesSkeleton() {
+export default function InstancesListSkeleton() {
   return (
     <div className="space-y-md">
       <div className="flex justify-end">
@@ -14,3 +14,4 @@ export default function InstancesSkeleton() {
     </div>
   );
 }
+

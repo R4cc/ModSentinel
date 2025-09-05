@@ -67,7 +67,7 @@ import { useConfirm } from "@/hooks/useConfirm.jsx";
 import { useOpenAddMod } from "@/hooks/useOpenAddMod.js";
 import { useMetaStore } from "@/stores/metaStore.js";
 
-export default function Mods() {
+export default function InstanceMods() {
   const { id } = useParams();
   const instanceId = Number(id);
   const location = useLocation();
@@ -93,7 +93,7 @@ export default function Mods() {
   const [unmatched, setUnmatched] = useState([]);
   const [resyncing, setResyncing] = useState(false);
   const [progress, setProgress] = useState(null);
-  const [source, setSource] = useState(null);
+  const [eventStream, setEventStream] = useState(null);
   const [checkOpen, setCheckOpen] = useState(false);
   const [checkingAll, setCheckingAll] = useState(false);
   const [checkProgress, setCheckProgress] = useState(0);
@@ -218,9 +218,9 @@ export default function Mods() {
 
   useEffect(() => {
     return () => {
-      if (source) source.close();
+      if (eventStream) eventStream.close();
     };
-  }, [source]);
+  }, [eventStream]);
 
   // Ensure loaders metadata is available when edit modal opens
   useEffect(() => {
@@ -297,7 +297,7 @@ export default function Mods() {
 
   function trackJob(id) {
     const es = new EventSource(`/api/jobs/${id}/events`);
-    setSource(es);
+    setEventStream(es);
     es.onmessage = (e) => {
       const data = JSON.parse(e.data);
       setProgress(data);
@@ -307,7 +307,7 @@ export default function Mods() {
         data.status === "canceled"
       ) {
         es.close();
-        setSource(null);
+        setEventStream(null);
         setResyncing(false);
         fetchInstance();
         fetchMods();
@@ -505,7 +505,7 @@ export default function Mods() {
 
   function trackUpdateJob(jobId, modId) {
     const es = new EventSource(`/api/jobs/${jobId}/events`);
-    setSource(es);
+    setEventStream(es);
     const onState = (e) => {
       try {
         const payload = JSON.parse(e.data);
@@ -513,7 +513,7 @@ export default function Mods() {
         setUpdateStatus((prev) => ({ ...prev, [modId]: { jobId, state: st, details: payload?.details || {} } }));
         if (["succeeded", "failed", "partialsuccess"].includes(st)) {
           es.close();
-          setSource(null);
+          setEventStream(null);
           setUpdatingId(null);
           setUpdateStatus((prev) => { const next = { ...prev }; delete next[modId]; return next; });
           fetchMods();

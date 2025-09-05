@@ -25,8 +25,8 @@ vi.mock("@/hooks/useConfirm.jsx", () => ({
   useConfirm: () => ({ confirm: confirmMock, ConfirmModal: null }),
 }));
 
-import Instances from "./Instances.jsx";
-import Mods from "./Mods.jsx";
+import Instances from "./InstancesList.jsx";
+import Mods from "./InstanceMods.jsx";
 import {
   getInstances,
   getSecretStatus,

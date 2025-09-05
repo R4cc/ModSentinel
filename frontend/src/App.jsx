@@ -2,16 +2,16 @@ import { Suspense, lazy } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Layout from '@/components/Layout.jsx';
 import DashboardSkeleton from '@/pages/DashboardSkeleton.jsx';
-import ModsSkeleton from '@/pages/ModsSkeleton.jsx';
+import InstanceModsSkeleton from '@/pages/InstanceModsSkeleton.jsx';
 import AddModSkeleton from '@/pages/AddModSkeleton.jsx';
 import SettingsSkeleton from '@/pages/SettingsSkeleton.jsx';
-import InstancesSkeleton from '@/pages/InstancesSkeleton.jsx';
+import InstancesListSkeleton from '@/pages/InstancesListSkeleton.jsx';
 
 const Dashboard = lazy(() => import('@/pages/Dashboard.jsx'));
-const Mods = lazy(() => import('@/pages/Mods.jsx'));
+const InstanceMods = lazy(() => import('@/pages/InstanceMods.jsx'));
 const AddMod = lazy(() => import('@/pages/AddMod.jsx'));
 const Settings = lazy(() => import('@/pages/Settings.jsx'));
-const Instances = lazy(() => import('@/pages/Instances.jsx'));
+const InstancesList = lazy(() => import('@/pages/InstancesList.jsx'));
 
 export default function App() {
   return (
@@ -28,16 +28,16 @@ export default function App() {
         <Route
           path="/instances"
           element={
-            <Suspense fallback={<InstancesSkeleton />}>
-              <Instances />
+            <Suspense fallback={<InstancesListSkeleton />}>
+              <InstancesList />
             </Suspense>
           }
         />
         <Route
           path="/instances/:id"
           element={
-            <Suspense fallback={<ModsSkeleton />}>
-              <Mods />
+            <Suspense fallback={<InstanceModsSkeleton />}>
+              <InstanceMods />
             </Suspense>
           }
         />
