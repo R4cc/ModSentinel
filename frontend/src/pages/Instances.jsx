@@ -23,9 +23,11 @@ import {
   deleteInstance,
   getSecretStatus,
   getPufferServers,
+  syncInstances,
+  instances as instancesAPI,
+  jobs,
 } from "@/lib/api.ts";
 import { toast } from "@/lib/toast.ts";
-import { jobs } from "@/lib/api.ts";
 
 import { useMetaStore } from "@/stores/metaStore.js";
 import LoaderSelect from "@/components/LoaderSelect.jsx";
@@ -286,15 +288,33 @@ function openEdit(inst) {
     setInstances((prev) => [...prev, optimistic]);
     setOpen(false);
     try {
-      const created = await addInstance({
-        name,
-        loader,
-      });
-      setInstances((prev) =>
-        prev.map((i) => (i.id === tempId ? { ...created, mod_count: 0 } : i)),
-      );
+      const created = await addInstance({ name, loader });
+      // Refresh instances list to reflect creation immediately
+      await fetchInstances();
       toast.success("Instance added");
+      // Navigate to the instance page and start syncing
       navigate(`/instances/${created.id}`);
+      try {
+        // Kick off a sync for the newly created instance if PufferPanel servers are available
+        // We pass empty server id; the instance page lets user bind a server if needed
+        const job = await syncInstances("", created.id);
+        // Track job events locally to show progress bar
+        if (job?.id) {
+          const es = new EventSource(`/api/jobs/${job.id}/events`);
+          setJobSource(es);
+          es.onmessage = (e) => {
+            const data = JSON.parse(e.data);
+            setJobProgress(data);
+            if (["succeeded", "failed", "canceled"].includes(data.status)) {
+              es.close();
+              setJobSource(null);
+              fetchInstances();
+            }
+          };
+        }
+      } catch (e) {
+        // Best-effort; do not block flow if sync cannot start here
+      }
     } catch (err) {
       setInstances((prev) => prev.filter((i) => i.id !== tempId));
       toast.error(
