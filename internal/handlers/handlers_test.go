@@ -1723,6 +1723,46 @@ func TestJobEventsHandlerStreamsUpdates(t *testing.T) {
 	}
 }
 
+func TestUpdateInstance_LoaderValidator(t *testing.T) {
+    db := openTestDB(t)
+    defer db.Close()
+
+    // Seed cache with fabric only
+    modrinthLoadersMu.Lock()
+    modrinthLoadersCache = []metaLoaderOut{{ID: "fabric", Name: "Fabric"}}
+    modrinthLoadersExpiry = time.Now().Add(time.Hour)
+    modrinthLoadersMu.Unlock()
+
+    // Insert instance
+    inst := dbpkg.Instance{Name: "ok", Loader: "", EnforceSameLoader: true}
+    if err := dbpkg.InsertInstance(db, &inst); err != nil { t.Fatalf("insert: %v", err) }
+
+    // Reject vanilla
+    h := updateInstanceHandler(db)
+    req := httptest.NewRequest(http.MethodPut, "/api/instances/"+strconv.Itoa(inst.ID), strings.NewReader(`{"loader":"vanilla"}`))
+    rctx := chi.NewRouteContext(); rctx.URLParams.Add("id", strconv.Itoa(inst.ID))
+    req = req.WithContext(context.WithValue(context.Background(), chi.RouteCtxKey, rctx))
+    w := httptest.NewRecorder()
+    h(w, req)
+    if w.Code != http.StatusBadRequest {
+        t.Fatalf("expected 400 for vanilla, got %d", w.Code)
+    }
+
+    // Accept cached id
+    req2 := httptest.NewRequest(http.MethodPut, "/api/instances/"+strconv.Itoa(inst.ID), strings.NewReader(`{"loader":"fabric"}`))
+    req2 = req2.WithContext(context.WithValue(context.Background(), chi.RouteCtxKey, rctx))
+    w2 := httptest.NewRecorder()
+    h(w2, req2)
+    if w2.Code != http.StatusOK {
+        t.Fatalf("expected 200 for fabric, got %d", w2.Code)
+    }
+    var updated dbpkg.Instance
+    if err := json.NewDecoder(w2.Body).Decode(&updated); err != nil { t.Fatalf("decode: %v", err) }
+    if updated.Loader != "fabric" || updated.RequiresLoader {
+        t.Fatalf("unexpected instance: %+v", updated)
+    }
+}
+
 // Ensure per-file state is fresh: two different mods with the same numeric version
 // should not reuse slug/version across iterations.
 func TestPerformSync_StateIsolationSameVersion(t *testing.T) {

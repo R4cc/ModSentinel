@@ -922,8 +922,8 @@ export default function Mods() {
                   <span className="truncate" title={f}>
                     {f}
                   </span>
-                  <Button size="sm" variant="outline" onClick={() => openAddMod(f)}>
-                    Resolve
+                  <Button size="sm" variant="outline" onClick={() => openAddMod(f)} disabled={!!instance?.requires_loader} title={instance?.requires_loader ? "Set loader first" : undefined}>
+                    {instance?.requires_loader ? "Set loader" : "Resolve"}
                   </Button>
                 </li>
               ))}
@@ -971,10 +971,10 @@ export default function Mods() {
                 onClick={openAddMod}
                 className={cn(
                   "gap-xs",
-                  !hasToken && "pointer-events-none opacity-50",
+                  (!hasToken || instance?.requires_loader) && "pointer-events-none opacity-50",
                 )}
-                disabled={!hasToken}
-                title="Add Mod"
+                disabled={!hasToken || !!instance?.requires_loader}
+                title={instance?.requires_loader ? "Set loader first" : "Add Mod"}
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
                 Add Mod

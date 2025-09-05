@@ -580,9 +580,14 @@ func ensureModrinthLoaders(ctx context.Context) error {
 func isValidLoader(ctx context.Context, id string) bool {
     id = strings.ToLower(strings.TrimSpace(id))
     if id == "" {
+        // Empty means not setting/changing; allow at validation time
         return true
     }
-    // Try ensure cache; if it fails, fall back to current cache (may be empty)
+    if id == "vanilla" {
+        // Explicitly reject vanilla as a loader selection
+        return false
+    }
+    // Ensure cache; then check IDs only against cache contents
     _ = ensureModrinthLoaders(ctx)
     modrinthLoadersMu.RLock()
     defer modrinthLoadersMu.RUnlock()
@@ -621,8 +626,10 @@ func fetchModrinthLoaders(ctx context.Context) ([]metaLoaderOut, error) {
     }
     out := make([]metaLoaderOut, 0, len(tags))
     for _, t := range tags {
-        if strings.TrimSpace(t.Name) == "" { continue }
-        out = append(out, metaLoaderOut{ID: strings.ToLower(t.Name), Name: t.Name, Icon: t.Icon})
+        lower := strings.ToLower(strings.TrimSpace(t.Name))
+        if lower == "" { continue }
+        if lower == "vanilla" { continue }
+        out = append(out, metaLoaderOut{ID: lower, Name: t.Name, Icon: t.Icon})
     }
     return out, nil
 }
@@ -675,8 +682,10 @@ func modrinthLoadersHandler(db *sql.DB) http.HandlerFunc {
                         if json.NewDecoder(resp2.Body).Decode(&raw) == nil {
                             entries := make([]dbpkg.LoaderTag, 0, len(raw))
                             for _, t := range raw {
-                                if strings.TrimSpace(t.Name) == "" { continue }
-                                entries = append(entries, dbpkg.LoaderTag{ID: strings.ToLower(t.Name), Name: t.Name, Icon: t.Icon, Types: t.Types})
+                                lower := strings.ToLower(strings.TrimSpace(t.Name))
+                                if lower == "" { continue }
+                                if lower == "vanilla" { continue }
+                                entries = append(entries, dbpkg.LoaderTag{ID: lower, Name: t.Name, Icon: t.Icon, Types: t.Types})
                             }
                             _ = dbpkg.UpsertModrinthLoaders(db, entries)
                         }
@@ -692,6 +701,10 @@ func modrinthLoadersHandler(db *sql.DB) http.HandlerFunc {
         telemetry.Event("metric", map[string]string{
             "name":  "modrinth_loaders_count",
             "value": strconv.Itoa(len(tags)),
+        })
+        // Custom telemetry: count after filtering (vanilla excluded)
+        telemetry.Event("modrinth_loaders_refresh", map[string]string{
+            "count": strconv.Itoa(len(tags)),
         })
         log.Info().
             Str("event", "modrinth_loaders_refresh").
@@ -2101,9 +2114,18 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
     for _, t := range modrinthLoadersCache {
         if strings.TrimSpace(t.ID) == "" { continue }
         id := strings.ToLower(t.ID)
+        // base tokens: id and lowercased name
         tokens[normalize(id)] = id
         if strings.TrimSpace(t.Name) != "" {
             tokens[normalize(t.Name)] = id
+        }
+        // minimal aliases when obvious, only if the canonical id exists in cache
+        switch id {
+        case "fabric":
+            tokens[normalize("fabricdl")] = id
+        case "neoforge":
+            // support dashed alias often seen in displays/installers
+            tokens[normalize("neo-forge")] = id
         }
     }
     modrinthLoadersMu.RUnlock()
@@ -2141,55 +2163,79 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
             if detected != "" { break }
         }
     }
-    // 2) Secondary: install[] hints (Fabric)
-    if detected == "" {
-        if instArr, ok := defRaw["install"].([]any); ok {
-            for _, it := range instArr {
-                step, _ := it.(map[string]any)
-                if step == nil { continue }
-                if typ, _ := step["type"].(string); strings.EqualFold(strings.TrimSpace(typ), "fabricdl") {
-                    if id, ok := tokens[normalize("fabric")]; ok { detected = id; source = "install.type"; break }
-                }
-                // commands can be string or array
-                if detected == "" {
-                    if cmdStr, ok2 := step["commands"].(string); ok2 {
-                        s := strings.ToLower(cmdStr)
-                        if strings.Contains(s, "fabric-installer.jar") || strings.Contains(s, "-noprofile") {
-                            if id, ok := tokens[normalize("fabric")]; ok { detected = id; source = "install.command"; break }
-                        }
-                    } else if cmdArr, ok2 := step["commands"].([]any); ok2 {
-                        for _, c := range cmdArr {
-                            cs, _ := c.(string)
-                            s := strings.ToLower(cs)
-                            if strings.Contains(s, "fabric-installer.jar") || strings.Contains(s, "-noprofile") { if id, ok := tokens[normalize("fabric")]; ok { detected = id; source = "install.command"; break } }
-                        }
-                        if detected != "" { break }
-                    }
-                }
-                // moves array with target/to fields
-                if detected == "" {
-                    if mvArr, ok2 := step["moves"].([]any); ok2 {
-                        for _, m := range mvArr {
-                            mm, _ := m.(map[string]any)
-                            if mm == nil { continue }
-                            tgt := ""
-                            if v, ok3 := mm["target"].(string); ok3 { tgt = v }
-                            if tgt == "" { if v, ok3 := mm["to"].(string); ok3 { tgt = v } }
-                            s := strings.ToLower(tgt)
-                            if strings.Contains(s, "fabric-server.jar") || strings.Contains(s, "fabric-server-launch.jar") { if id, ok := tokens[normalize("fabric")]; ok { detected = id; source = "install.move"; break } }
-                        }
-                        if detected != "" { break }
+    // Build a lowercase haystack from display, type, environment.type, install[], run.command
+    var dispParts []string
+    if envDisplay != "" { dispParts = append(dispParts, strings.ToLower(envDisplay)) }
+    // include variable displays
+    if def != nil && def.Data != nil {
+        for _, v := range def.Data { if strings.TrimSpace(v.Display) != "" { dispParts = append(dispParts, strings.ToLower(v.Display)) } }
+    }
+    // types
+    var typeParts []string
+    if t, ok := defRaw["type"].(string); ok { typeParts = append(typeParts, strings.ToLower(t)) }
+    if envRaw, ok := defRaw["environment"].(map[string]any); ok {
+        if t, ok2 := envRaw["type"].(string); ok2 { typeParts = append(typeParts, strings.ToLower(t)) }
+    }
+    // install[]
+    var instTypeParts, instCmdParts, instMoveParts []string
+    if instArr, ok := defRaw["install"].([]any); ok {
+        for _, it := range instArr {
+            step, _ := it.(map[string]any)
+            if step == nil { continue }
+            if typ, _ := step["type"].(string); typ != "" { instTypeParts = append(instTypeParts, strings.ToLower(typ)) }
+            if cmdStr, ok2 := step["commands"].(string); ok2 && strings.TrimSpace(cmdStr) != "" {
+                instCmdParts = append(instCmdParts, strings.ToLower(cmdStr))
+            } else if cmdArr, ok2 := step["commands"].([]any); ok2 {
+                for _, c := range cmdArr { if s, ok3 := c.(string); ok3 && strings.TrimSpace(s) != "" { instCmdParts = append(instCmdParts, strings.ToLower(s)) } }
+            }
+            if mvArr, ok2 := step["moves"].([]any); ok2 {
+                for _, m := range mvArr {
+                    if mm, ok3 := m.(map[string]any); ok3 {
+                        if v, ok4 := mm["target"].(string); ok4 && strings.TrimSpace(v) != "" { instMoveParts = append(instMoveParts, strings.ToLower(v)) }
+                        if v, ok4 := mm["to"].(string); ok4 && strings.TrimSpace(v) != "" { instMoveParts = append(instMoveParts, strings.ToLower(v)) }
                     }
                 }
             }
         }
     }
-    // 3) Tertiary: scan run.command content
-    if detected == "" {
-        if data, errRC := ppFetchFile(ctx, serverID, "run.command"); errRC == nil {
-            s := strings.ToLower(string(data))
-            if strings.Contains(s, "fabric") || strings.Contains(s, "fabric-server") {
-                if id, ok := tokens[normalize("fabric")]; ok { detected = id; source = "run.command" }
+    // run.command
+    runCmdLower := ""
+    if dataRC, errRC := ppFetchFile(ctx, serverID, "run.command"); errRC == nil {
+        runCmdLower = strings.ToLower(string(dataRC))
+    }
+    // Combine haystack
+    hayLower := strings.Join(append(append(append(dispParts, typeParts...), instTypeParts...), append(instCmdParts, append(instMoveParts, runCmdLower)...)...), "\n")
+    hayFlat := normalize(hayLower)
+    // Scan tokens in descending length, first hit wins
+    if detected == "" && len(tokens) > 0 {
+        keys := make([]string, 0, len(tokens))
+        for k := range tokens { keys = append(keys, k) }
+        sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
+        for _, k := range keys {
+            if k == "" { continue }
+            if strings.Contains(hayFlat, k) || strings.Contains(hayLower, k) {
+                detected = tokens[k]
+                // best-effort source attribution
+                dispFlat := normalize(strings.Join(dispParts, "\n"))
+                typeFlat := normalize(strings.Join(typeParts, "\n"))
+                iTypeFlat := normalize(strings.Join(instTypeParts, "\n"))
+                iCmdFlat := normalize(strings.Join(instCmdParts, "\n"))
+                iMoveFlat := normalize(strings.Join(instMoveParts, "\n"))
+                switch {
+                case strings.Contains(dispFlat, k):
+                    source = "display"
+                case strings.Contains(iTypeFlat, k):
+                    source = "install.type"
+                case strings.Contains(iCmdFlat, k):
+                    source = "install.command"
+                case strings.Contains(iMoveFlat, k):
+                    source = "install.move"
+                case strings.Contains(normalize(runCmdLower), k):
+                    source = "run.command"
+                default:
+                    source = "display"
+                }
+                break
             }
         }
     }
@@ -2197,17 +2243,12 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
     if detected != "" {
         telemetry.Event("loader_autoset", map[string]string{
             "instance_id": strconv.Itoa(inst.ID),
-            "server_id":   serverID,
+            "id":          detected,
             "source":      source,
-            "loader":      detected,
         })
     } else {
-        disp := strings.TrimSpace(envDisplay)
-        if len(disp) > 120 { disp = disp[:120] }
         telemetry.Event("loader_unmatched", map[string]string{
             "instance_id": strconv.Itoa(inst.ID),
-            "server_id":   serverID,
-            "display":     disp,
         })
     }
     // 4) Decide final loader flags

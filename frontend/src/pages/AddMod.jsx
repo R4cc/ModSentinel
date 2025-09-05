@@ -264,6 +264,30 @@ export default function AddMod() {
     );
   }
 
+  if (instance?.requires_loader) {
+    return (
+      <div className="p-md">
+        <Link
+          to={`/instances/${instanceId}`}
+          className="mb-md inline-flex items-center gap-xs text-sm text-muted-foreground hover:underline"
+        >
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+          Back to Instance
+        </Link>
+        <Card className="mx-auto w-full max-w-md">
+          <CardHeader>
+            <CardTitle>Add Mod</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              This instance requires a loader. Set loader manually before adding mods.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="p-md" key={nonce}>
       <Link

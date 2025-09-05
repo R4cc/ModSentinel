@@ -2,7 +2,10 @@ package handlers
 
 import (
     "context"
+    "io"
+    "net/http"
     "net/http/httptest"
+    "strings"
     "testing"
     "time"
 
@@ -157,3 +160,60 @@ func TestLoaderDetect_Unmatched_ReturnsLoaderRequired(t *testing.T) {
     }
 }
 
+// --- Additional unit tests ---
+
+// Test that fetchModrinthLoaders filters out the vanilla tag.
+func TestFetchModrinthLoaders_FiltersVanilla(t *testing.T) {
+    prev := http.DefaultClient
+    t.Cleanup(func(){ http.DefaultClient = prev })
+    http.DefaultClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) *http.Response {
+        if req.URL.Host != "api.modrinth.com" || req.URL.Path != "/v2/tag/loader" {
+            return &http.Response{StatusCode: 404, Body: io.NopCloser(strings.NewReader("not found"))}
+        }
+        body := `[{"name":"Fabric","icon":"<svg>","supported_project_types":["mod"]},{"name":"Vanilla","icon":"","supported_project_types":[]}]`
+        return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
+    })}
+    tags, err := fetchModrinthLoaders(context.Background())
+    if err != nil { t.Fatalf("fetch: %v", err) }
+    if len(tags) != 1 || tags[0].ID != "fabric" {
+        t.Fatalf("unexpected tags: %+v", tags)
+    }
+}
+
+type roundTripFunc func(*http.Request) *http.Response
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r), nil }
+
+// Vanilla should not match when dropped from cache; requires_loader=true
+func TestLoaderDetect_Dropped_NoVanillaToken(t *testing.T) {
+    db := setupDB(t)
+    defer db.Close()
+    // seed only fabric; vanilla absent
+    modrinthLoadersMu.Lock()
+    modrinthLoadersCache = []metaLoaderOut{{ID: "fabric", Name: "Fabric"}}
+    modrinthLoadersExpiry = time.Now().Add(1 * time.Hour)
+    modrinthLoadersMu.Unlock()
+
+    inst := createInstance(t, db, "Inst D")
+    inst.Loader = ""
+    if _, err := db.Exec(`UPDATE instances SET loader='', requires_loader=0 WHERE id=?`, inst.ID); err != nil { t.Fatalf("prep: %v", err) }
+
+    // Stubs
+    origGet := ppGetServer
+    origList := ppListPath
+    origDef := ppGetServerDefinition
+    origDefRaw := ppGetServerDefinitionRaw
+    origData := ppGetServerData
+    defer func(){ ppGetServer = origGet; ppListPath = origList; ppGetServerDefinition = origDef; ppGetServerDefinitionRaw = origDefRaw; ppGetServerData = origData }()
+    ppGetServer = func(_ context.Context, id string) (*pppkg.ServerDetail, error) { var d pppkg.ServerDetail; d.ID = id; d.Environment.Type = "java"; return &d, nil }
+    ppListPath = func(_ context.Context, _ string, _ string) ([]pppkg.FileEntry, error) { return nil, nil }
+    ppGetServerDefinition = func(_ context.Context, _ string) (*pppkg.ServerDefinition, error) { return &pppkg.ServerDefinition{Data: map[string]pppkg.Variable{}}, nil }
+    ppGetServerDefinitionRaw = func(_ context.Context, _ string) (map[string]any, error) {
+        return map[string]any{ "environment": map[string]any{"display": "Vanilla Server", "type": "vanilla"} }, nil
+    }
+    ppGetServerData = func(_ context.Context, _ string) (*pppkg.ServerData, error) { return &pppkg.ServerData{Data: map[string]pppkg.ValueWrapper{}}, nil }
+
+    rr := httptest.NewRecorder()
+    req := httptest.NewRequest("POST", "/api/instances/1/sync", nil)
+    performSync(context.Background(), rr, req, db, inst, "1", &jobProgress{}, nil)
+    if rr.Code != 409 { t.Fatalf("expected 409, got %d", rr.Code) }
+}
