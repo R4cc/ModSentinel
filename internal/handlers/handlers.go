@@ -2146,6 +2146,11 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
     // Load definition (raw) and structured (for variables)
     var def *pppkg.ServerDefinition
     defFetched := 0
+    // Log: start fetching definition
+    log.Ctx(ctx).Info().
+        Int("instance_id", inst.ID).
+        Str("server_id", serverID).
+        Msg("definition_fetch_start")
     if d, err := ppGetServerDefinition(ctx, serverID); err == nil {
         def = d
         defFetched++
@@ -2154,6 +2159,25 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
     if raw, err := ppGetServerDefinitionRaw(ctx, serverID); err == nil {
         defRaw = raw
         defFetched++
+    }
+    // Log: fetched definition summary
+    {
+        disp := ""
+        if v, ok := defRaw["display"].(string); ok { disp = v }
+        typ := ""
+        if v, ok := defRaw["type"].(string); ok { typ = v }
+        envType := ""
+        if env, ok := defRaw["environment"].(map[string]any); ok {
+            if v, ok2 := env["type"].(string); ok2 { envType = v }
+        }
+        log.Ctx(ctx).Info().
+            Int("instance_id", inst.ID).
+            Str("server_id", serverID).
+            Str("display", disp).
+            Str("type", typ).
+            Str("env_type", envType).
+            Int("definitions_fetched", defFetched).
+            Msg("definition_fetch_ok")
     }
     // 1) Primary: display fields
     // - top-level display (if present)
@@ -2260,10 +2284,20 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
             "id":          detected,
             "source":      source,
         })
+        log.Ctx(ctx).Info().
+            Int("instance_id", inst.ID).
+            Str("server_id", serverID).
+            Str("loader", detected).
+            Str("source", source).
+            Msg("loader_autoset")
     } else {
         telemetry.Event("loader_unmatched", map[string]string{
             "instance_id": strconv.Itoa(inst.ID),
         })
+        log.Ctx(ctx).Warn().
+            Int("instance_id", inst.ID).
+            Str("server_id", serverID).
+            Msg("loader_unmatched")
     }
     // Sanity metric: definition fetches per sync
     telemetry.Event("definitions_fetched_per_sync", map[string]string{"count": strconv.Itoa(defFetched)})
