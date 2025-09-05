@@ -2142,11 +2142,17 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
     detected := ""
     source := ""
     envDisplay := ""
+    topDisplay := ""
     // Load definition (raw) and structured (for variables)
     var def *pppkg.ServerDefinition
     def, _ = ppGetServerDefinition(ctx, serverID)
     defRaw, _ := ppGetServerDefinitionRaw(ctx, serverID)
     // 1) Primary: display fields
+    // - top-level display (if present)
+    if disp, ok := defRaw["display"].(string); ok {
+        topDisplay = disp
+        if id := findInText(disp); id != "" { detected = id; source = "display" }
+    }
     // - environment.display (if present)
     if envRaw, ok := defRaw["environment"].(map[string]any); ok {
         if disp, ok2 := envRaw["display"].(string); ok2 {
@@ -2165,6 +2171,7 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
     }
     // Build a lowercase haystack from display, type, environment.type, install[], run.command
     var dispParts []string
+    if topDisplay != "" { dispParts = append(dispParts, strings.ToLower(topDisplay)) }
     if envDisplay != "" { dispParts = append(dispParts, strings.ToLower(envDisplay)) }
     // include variable displays
     if def != nil && def.Data != nil {
@@ -2283,6 +2290,30 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                             detectedKey, detectedVal = "game-version", vStr
                         } else if inst.PufferVersionKey == "" && strings.TrimSpace(inst.GameVersion) == "" {
                             detectedKey, detectedVal = "game-version", vStr
+                        }
+                    }
+                }
+            }
+        } else {
+            // Fallback: some templates include current values inside definition.data[].value
+            // Try to read game-version directly from raw definition when /data endpoint is unavailable
+            if rawData, ok := defRaw["data"].(map[string]any); ok {
+                if meta, ok2 := rawData["game-version"].(map[string]any); ok2 {
+                    if vv, ok3 := meta["value"]; ok3 && vv != nil {
+                        var vStr string
+                        switch x := vv.(type) {
+                        case string:
+                            vStr = strings.TrimSpace(x)
+                        default:
+                            b, _ := json.Marshal(x)
+                            vStr = strings.Trim(string(b), `"`)
+                        }
+                        if vStr != "" {
+                            if inst.PufferVersionKey == "game-version" {
+                                detectedKey, detectedVal = "game-version", vStr
+                            } else if inst.PufferVersionKey == "" && strings.TrimSpace(inst.GameVersion) == "" {
+                                detectedKey, detectedVal = "game-version", vStr
+                            }
                         }
                     }
                 }
