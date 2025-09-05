@@ -2217,7 +2217,6 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                 detected = tokens[k]
                 // best-effort source attribution
                 dispFlat := normalize(strings.Join(dispParts, "\n"))
-                typeFlat := normalize(strings.Join(typeParts, "\n"))
                 iTypeFlat := normalize(strings.Join(instTypeParts, "\n"))
                 iCmdFlat := normalize(strings.Join(instCmdParts, "\n"))
                 iMoveFlat := normalize(strings.Join(instMoveParts, "\n"))
