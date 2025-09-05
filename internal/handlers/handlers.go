@@ -1260,7 +1260,7 @@ func updateModHandler(db *sql.DB) http.HandlerFunc {
                                 if data, err := io.ReadAll(resp.Body); err == nil && len(data) > 0 {
                                     if err := pppkg.PutFile(r.Context(), inst.PufferpanelServerID, folder+newName, data); err == nil {
                                         if files, err := pppkg.ListPath(r.Context(), inst.PufferpanelServerID, folder); err == nil {
-                                            for _, f := range files {
+        for _, f := range files {
                                                 if !f.IsDir && strings.EqualFold(f.Name, newName) { uploaded = true; break }
                                             }
                                         }
@@ -2611,12 +2611,35 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
                                             var best mr.Version
                                             var bestTime time.Time
                                             nameTokens := tokenizeFilename(f)
-                                            for _, vv := range vers3 {
-                                                if detectedLoader != "" && len(vv.Loaders) > 0 {
+                                            // Build candidates prioritizing instance loader, then filename loader, then detected loader
+                                            preferred := mapLoader(inst.Loader)
+                                            fileHint := mapLoader(meta.Loader)
+                                            candidates := vers3
+                                            // Helper to filter by a specific loader id
+                                            filterBy := func(list []mr.Version, want string) []mr.Version {
+                                                if strings.TrimSpace(want) == "" { return nil }
+                                                out := make([]mr.Version, 0, len(list))
+                                                for _, x := range list {
+                                                    if len(x.Loaders) == 0 { out = append(out, x); continue }
                                                     okL := false
-                                                    for _, ld := range vv.Loaders { if mapLoader(ld) == detectedLoader { okL = true; break } }
-                                                    if !okL && len(vv.Loaders) == 1 { continue }
+                                                    for _, ld := range x.Loaders { if mapLoader(ld) == want { okL = true; break } }
+                                                    if okL { out = append(out, x) }
                                                 }
+                                                return out
+                                            }
+                                            if pl := strings.TrimSpace(preferred); pl != "" {
+                                                if flt := filterBy(candidates, pl); len(flt) > 0 { candidates = flt }
+                                            }
+                                            if candidates == nil || len(candidates) == 0 {
+                                                if fl := strings.TrimSpace(fileHint); fl != "" {
+                                                    if flt := filterBy(vers3, fl); len(flt) > 0 { candidates = flt }
+                                                }
+                                            }
+                                            if (candidates == nil || len(candidates) == 0) && strings.TrimSpace(detectedLoader) != "" {
+                                                if flt := filterBy(vers3, detectedLoader); len(flt) > 0 { candidates = flt }
+                                            }
+                                            if candidates == nil || len(candidates) == 0 { candidates = vers3 }
+                                            for _, vv := range candidates {
                                                 sim := 0.0
                                                 if len(vv.Files) > 0 {
                                                     b := basenameFromURL(vv.Files[0].URL)
@@ -2666,16 +2689,16 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
 			m.GameVersion = v.GameVersions[0]
 		}
         // Choose loader for the mod record
-        // Prefer detected loader from jar metadata when present
-        if detectedLoader != "" {
+        // Always prioritize the instance-selected loader when set; otherwise fall back
+        if pl := mapLoader(inst.Loader); pl != "" {
+            m.Loader = pl
+        } else if detectedLoader != "" {
             m.Loader = detectedLoader
         } else if len(v.Loaders) > 0 {
             // Map the first supported loader from version metadata, ignoring "minecraft"
             chosen := ""
             for _, ld := range v.Loaders { if ml := mapLoader(ld); ml != "" { chosen = ml; break } }
-            if chosen != "" { m.Loader = chosen } else { m.Loader = mapLoader(inst.Loader) }
-        } else {
-            m.Loader = mapLoader(inst.Loader)
+            m.Loader = chosen
         }
         if len(v.Files) > 0 {
             m.DownloadURL = v.Files[0].URL

@@ -292,29 +292,8 @@ function openEdit(inst) {
       // Refresh instances list to reflect creation immediately
       await fetchInstances();
       toast.success("Instance added");
-      // Navigate to the instance page and start syncing
+      // Navigate to the instance page. For local instances, wait for user to bind a PufferPanel server before sync.
       navigate(`/instances/${created.id}`);
-      try {
-        // Kick off a sync for the newly created instance if PufferPanel servers are available
-        // We pass empty server id; the instance page lets user bind a server if needed
-        const job = await syncInstances("", created.id);
-        // Track job events locally to show progress bar
-        if (job?.id) {
-          const es = new EventSource(`/api/jobs/${job.id}/events`);
-          setJobSource(es);
-          es.onmessage = (e) => {
-            const data = JSON.parse(e.data);
-            setJobProgress(data);
-            if (["succeeded", "failed", "canceled"].includes(data.status)) {
-              es.close();
-              setJobSource(null);
-              fetchInstances();
-            }
-          };
-        }
-      } catch (e) {
-        // Best-effort; do not block flow if sync cannot start here
-      }
     } catch (err) {
       setInstances((prev) => prev.filter((i) => i.id !== tempId));
       toast.error(
