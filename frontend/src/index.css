@@ -62,3 +62,20 @@
     transition: none !important;
   }
 }
+
+/* Indeterminate progress bar used during sync */
+.indeterminate-container { position: relative; overflow: hidden; }
+.indeterminate-bar {
+  position: absolute;
+  top: 0; bottom: 0;
+  left: -30%;
+  width: 30%;
+  background-color: hsl(var(--fabric));
+  animation: indeterminate-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes indeterminate-slide {
+  0% { left: -30%; }
+  50% { left: 45%; }
+  100% { left: 100%; }
+}

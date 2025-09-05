@@ -311,6 +311,8 @@ export default function Mods() {
         setResyncing(false);
         fetchInstance();
         fetchMods();
+        // Ensure UI reflects backend commits even if slightly delayed
+        setTimeout(() => { fetchInstance(); fetchMods(); }, 800);
         // Surface unresolved files as virtual entries
         if (Array.isArray(data.failures) && data.failures.length > 0) {
           setUnmatched(Array.from(new Set(data.failures.map((f) => f.name).filter(Boolean))));
@@ -846,14 +848,14 @@ export default function Mods() {
                       </span>
                     )}
                   </div>
-                  <div className="h-2 w-full rounded bg-muted overflow-hidden">
+                  <div className="h-2 w-full rounded bg-muted indeterminate-container">
                     {checkingAll ? (
                       <div
                         className="h-full bg-emerald-500 transition-all"
                         style={{ width: `${Math.max(0, Math.min(100, Math.round(((checkProgress || 0) / Math.max(1, mods.length)) * 100)))}%` }}
                       />
                     ) : (
-                      <div className="h-full w-1/3 bg-emerald-500 animate-pulse" />
+                      <div className="indeterminate-bar" />
                     )}
                   </div>
                 </div>
