@@ -87,11 +87,13 @@ async function parseJSON(res: Response): Promise<any> {
   }
 }
 
-class APIError extends Error {
+export class APIError extends Error {
   requestId?: string;
-  constructor(message: string, requestId?: string) {
+  code?: string;
+  constructor(message: string, requestId?: string, code?: string) {
     super(message);
     this.requestId = requestId;
+    this.code = code;
   }
 }
 
@@ -120,7 +122,7 @@ async function parseError(res: Response): Promise<APIError> {
   try {
     const err = JSON.parse(text);
     if (err?.message) {
-      return new APIError(err.message, err.requestId);
+      return new APIError(err.message, err.requestId, err.code);
     }
   } catch {
     // ignore JSON parse errors
@@ -206,6 +208,9 @@ export interface UpdateInstance {
   loader?: string;
   // Optional manual override for Minecraft version
   gameVersion?: string;
+  // Mark how loader was set and whether a loader is still required
+  loader_status?: string;
+  requires_loader?: boolean;
 }
 
 export interface AddModResponse {

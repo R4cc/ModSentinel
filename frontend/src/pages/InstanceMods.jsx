@@ -60,6 +60,7 @@ import {
   startModUpdate,
   getInstanceLogs,
   getJob,
+  APIError,
 } from "@/lib/api.ts";
 import { cn, summarizeMods } from "@/lib/utils.js";
 import { toast } from "@/lib/toast.ts";
@@ -87,6 +88,8 @@ export default function InstanceMods() {
   const [instance, setInstance] = useState(null);
   const [nameSuffix, setNameSuffix] = useState(0);
   const [editOpen, setEditOpen] = useState(false);
+  const [focusLoader, setFocusLoader] = useState(false);
+  const [whyOpen, setWhyOpen] = useState(false);
   const [name, setName] = useState("");
   const [editLoader, setEditLoader] = useState("");
   const [mcVersion, setMcVersion] = useState("");
@@ -113,6 +116,17 @@ export default function InstanceMods() {
   const metaLoaded = useMetaStore((s) => s.loaded);
   const loadMeta = useMetaStore((s) => s.load);
   const [actionsOpenId, setActionsOpenId] = useState(null);
+
+  function handleLoaderRequiredError(err) {
+    const isLoaderReq = (err && (err.code === 'LOADER_REQUIRED' || (typeof err.message === 'string' && err.message.toLowerCase().includes('loader required'))));
+    if (isLoaderReq) {
+      setInstance((prev) => prev ? { ...prev, requires_loader: true } : prev);
+      setFocusLoader(true);
+      setEditOpen(true);
+      return true;
+    }
+    return false;
+  }
   // Close mobile actions when clicking outside or pressing Escape
   useEffect(() => {
     function onDocClick(e) {
@@ -229,6 +243,18 @@ export default function InstanceMods() {
     }
   }, [editOpen, metaLoaded, loadMeta]);
 
+  useEffect(() => {
+    function onDoc(e) {
+      const wrap = document.querySelector('[data-loader-why-wrap]');
+      if (!wrap) return;
+      if (!wrap.contains(e.target)) setWhyOpen(false);
+    }
+    if (whyOpen) {
+      document.addEventListener('mousedown', onDoc);
+      return () => document.removeEventListener('mousedown', onDoc);
+    }
+  }, [whyOpen]);
+
   async function fetchMods() {
     setLoading(true);
     setError("");
@@ -271,6 +297,10 @@ export default function InstanceMods() {
       const { id } = await instances.sync(instance.id);
       trackJob(id);
     } catch (err) {
+      if (handleLoaderRequiredError(err)) {
+        setResyncing(false);
+        return;
+      }
       if (err instanceof Error && err.message === "rate limited") {
         setRateLimited(true);
       }
@@ -363,6 +393,10 @@ export default function InstanceMods() {
             outdated: s.outdated + (up ? 0 : 1),
           }));
         } catch (err) {
+          if (handleLoaderRequiredError(err)) {
+            setCheckingAll(false);
+            return;
+          }
           const msg = err instanceof Error ? err.message : "Failed to check";
           if (msg === "rate limited") {
             setRateLimited(true);
@@ -462,6 +496,7 @@ export default function InstanceMods() {
         });
       }
     } catch (err) {
+      if (handleLoaderRequiredError(err)) return;
       if (err instanceof Error && err.message === "token required") {
         toast.error("Modrinth token required");
       } else if (err instanceof Error && err.message === "rate limited") {
@@ -498,6 +533,10 @@ export default function InstanceMods() {
       const ack = await startModUpdate(m.id, key);
       trackUpdateJob(ack.job_id, m.id);
     } catch (err) {
+      if (handleLoaderRequiredError(err)) {
+        setUpdatingId(null);
+        return;
+      }
       setUpdatingId(null);
       toast.error(err instanceof Error ? err.message : "Failed to start update");
     }
@@ -619,7 +658,7 @@ export default function InstanceMods() {
       const v = mcVersion.trim();
       if (v !== "") Object.assign(payload, { gameVersion: v });
       const ld = editLoader.trim();
-      if (ld !== "") Object.assign(payload, { loader: ld });
+      if (ld !== "") Object.assign(payload, { loader: ld, loader_status: "user_set", requires_loader: false });
       const updated = await updateInstance(instance.id, payload);
       setInstance(updated);
       toast.success("Instance updated");
@@ -677,11 +716,42 @@ export default function InstanceMods() {
     <div className="grid gap-xl">
       {ConfirmModal}
       {instance?.requires_loader && (
-        <div className="rounded-md border border-red-300 bg-red-50 p-sm text-red-800 flex items-center justify-between">
-          <div className="text-sm">This instance requires a loader to be set before actions are available.</div>
-          <Button size="sm" variant="outline" onClick={() => { setName(instance.name); setEditLoader(instance.loader || ''); setEditOpen(true); }}>
-            Set loader
-          </Button>
+        <div className="rounded-md border border-red-300 bg-red-50 p-sm text-red-800">
+          <div className="flex items-center justify-between relative" data-loader-why-wrap>
+            <div className="text-sm flex items-center gap-sm">
+              <span>Loader could not be matched.</span>
+              <button
+                type="button"
+                className="underline underline-offset-2 text-red-800/90 hover:text-red-900"
+                onClick={() => setWhyOpen((v) => !v)}
+                aria-expanded={whyOpen}
+                aria-controls="loader-why-pop"
+              >
+                Why?
+              </button>
+              {whyOpen && (
+                <div
+                  id="loader-why-pop"
+                  role="dialog"
+                  className="absolute z-10 mt-10 max-w-sm rounded-md border border-red-200 bg-white p-sm text-sm text-foreground shadow-md"
+                >
+                  We couldn’t infer a loader from your server template and installed files. Pick Fabric/Forge/NeoForge/Quilt/etc. to continue.
+                </div>
+              )}
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setName(instance.name);
+                setEditLoader(instance.loader || '');
+                setFocusLoader(true);
+                setEditOpen(true);
+              }}
+            >
+              Set loader
+            </Button>
+          </div>
         </div>
       )}
       <Modal open={checkOpen} onClose={() => setCheckOpen(false)}>
@@ -751,6 +821,7 @@ export default function InstanceMods() {
                     setName(instance.name);
                     setMcVersion(instance.gameVersionSource === 'manual' ? (instance.gameVersion || '') : '');
                     setEditLoader(instance.loader || '');
+                    setFocusLoader(false);
                     setEditOpen(true);
                   }}
                 >
@@ -1095,6 +1166,8 @@ export default function InstanceMods() {
                               aria-expanded={open}
                               aria-label="Actions"
                               data-actions-trigger
+                              disabled={!!instance?.requires_loader}
+                              title={instance?.requires_loader ? "Set loader to enable" : undefined}
                             >
                               <MoreVertical className="h-4 w-4" aria-hidden />
                             </Button>
@@ -1211,24 +1284,29 @@ export default function InstanceMods() {
                         <TableCell className="text-sm">{m.available_version}</TableCell>
                         <TableCell className="flex gap-xs">
                           {m.virtual ? (
-                            <Button
-                              variant="outline"
-                              onClick={() => openAddMod(m.file || m.name)}
-                              aria-label="Match mod"
-                              className="h-8 px-sm transition-colors group-hover:bg-muted group-hover:border-foreground/20"
-                            >
-                              Match mod
-                            </Button>
+                            <Tooltip text={instance?.requires_loader ? "Set loader to enable" : "Match mod"}>
+                              <Button
+                                variant="outline"
+                                onClick={() => openAddMod(m.file || m.name)}
+                                aria-label="Match mod"
+                                className="h-8 px-sm transition-colors group-hover:bg-muted group-hover:border-foreground/20"
+                                disabled={!!instance?.requires_loader}
+                                title={instance?.requires_loader ? "Set loader to enable" : undefined}
+                              >
+                                Match mod
+                              </Button>
+                            </Tooltip>
                           ) : (
                             <>
                               {outdated && (
-                                <Tooltip text="Apply update">
+                                <Tooltip text={instance?.requires_loader ? "Set loader to enable" : "Apply update"}>
                                   <Button
                                     variant="outline"
                                     onClick={() => handleApplyUpdate(m)}
                                     aria-label="Apply update"
                                     className="h-8 px-sm border-emerald-300 text-emerald-700 hover:bg-emerald-100 transition-colors group-hover:bg-emerald-50 group-hover:border-emerald-300"
-                                    disabled={updatingId === m.id || !!updateStatus[m.id]}
+                                    disabled={!!instance?.requires_loader || updatingId === m.id || !!updateStatus[m.id]}
+                                    title={instance?.requires_loader ? "Set loader to enable" : undefined}
                                   >
                                     <Download
                                       className={cn(
@@ -1246,11 +1324,9 @@ export default function InstanceMods() {
                                 </div>
                               )}
                               <Tooltip
-                                text={
-                                  isModrinth
-                                    ? "Open project page"
-                                    : "Project page available only for Modrinth mods"
-                                }
+                                text={instance?.requires_loader ? "Set loader to enable" : (isModrinth
+                                  ? "Open project page"
+                                  : "Project page available only for Modrinth mods")}
                               >
                                 <Button
                                   variant="outline"
@@ -1260,7 +1336,8 @@ export default function InstanceMods() {
                                   rel={projectUrl ? "noopener" : undefined}
                                   aria-label="Open project page"
                                   className="h-8 px-sm transition-colors group-hover:bg-muted group-hover:border-foreground/20"
-                                  disabled={!isModrinth}
+                                  disabled={!!instance?.requires_loader || !isModrinth}
+                                  title={instance?.requires_loader ? "Set loader to enable" : undefined}
                                 >
                                   <ExternalLink
                                     className="h-4 w-4"
@@ -1268,12 +1345,14 @@ export default function InstanceMods() {
                                   />
                                 </Button>
                               </Tooltip>
-                              <Tooltip text="Delete mod">
+                              <Tooltip text={instance?.requires_loader ? "Set loader to enable" : "Delete mod"}>
                                 <Button
                                   variant="outline"
                                   onClick={() => handleDelete(m.id)}
                                   aria-label="Delete mod"
                                   className="h-8 px-sm transition-colors group-hover:bg-muted group-hover:border-foreground/20"
+                                  disabled={!!instance?.requires_loader}
+                                  title={instance?.requires_loader ? "Set loader to enable" : undefined}
                                 >
                                   <Trash2 className="h-4 w-4" aria-hidden="true" />
                                 </Button>
@@ -1335,7 +1414,7 @@ export default function InstanceMods() {
           </div>
           <div className="space-y-xs">
             <label className="text-sm font-medium">Loader</label>
-            <LoaderSelect loaders={metaLoaders} value={editLoader} onChange={setEditLoader} disabled={!metaLoaded || metaLoaders.length === 0} />
+            <LoaderSelect loaders={metaLoaders} value={editLoader} onChange={setEditLoader} disabled={!metaLoaded || metaLoaders.length === 0} autoFocus={focusLoader} />
           </div>
           
           <div className="flex justify-end gap-sm">

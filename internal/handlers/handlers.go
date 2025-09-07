@@ -33,7 +33,7 @@ import (
 	rate "golang.org/x/time/rate"
 	dbpkg "modsentinel/internal/db"
 	"modsentinel/internal/httpx"
-	mr "modsentinel/internal/modrinth"
+    mr "modsentinel/internal/modrinth"
 	pppkg "modsentinel/internal/pufferpanel"
 	"modsentinel/internal/secrets"
 	"modsentinel/internal/telemetry"
@@ -59,6 +59,18 @@ var (
     ppGetServerDefinitionRaw = pppkg.GetServerDefinitionRaw
     ppGetServerData       = pppkg.GetServerData
 )
+
+// guardedVersions wraps modrinth Versions to avoid sending misleading constraints.
+// - If the provided loader is not a valid Modrinth loader (per cached tags), we drop
+//   both loader and gameVersion filters to prevent mixed signals.
+// - If the loader is valid, we pass through both loader and gameVersion.
+// This keeps the Modrinth loader cache as the source of truth for valid IDs.
+func guardedVersions(ctx context.Context, slug, gameVersion, loader string) ([]mr.Version, error) {
+    if !isValidLoader(ctx, loader) {
+        return modClient.Versions(ctx, slug, "", "")
+    }
+    return modClient.Versions(ctx, slug, gameVersion, loader)
+}
 
 var lastSync atomic.Int64
 var latencyP50 atomic.Int64
@@ -742,6 +754,9 @@ type instanceOut struct {
     GameVersion       string `json:"gameVersion,omitempty"`
     GameVersionKey    string `json:"gameVersionKey,omitempty"`
     GameVersionSource string `json:"gameVersionSource,omitempty"`
+    // Computed flags to represent loader state without schema changes
+    LoaderStatus   string `json:"loader_status,omitempty"`
+    LoaderRequired bool   `json:"loader_required,omitempty"`
 }
 
 func projectInstance(in dbpkg.Instance) instanceOut {
@@ -755,6 +770,17 @@ func projectInstance(in dbpkg.Instance) instanceOut {
         } else {
             out.GameVersionSource = "manual"
         }
+    }
+    // Compute loader state
+    isUnknown := strings.TrimSpace(in.Loader) == "" || in.RequiresLoader
+    out.LoaderRequired = isUnknown
+    if isUnknown {
+        out.LoaderStatus = "unknown"
+    } else if strings.TrimSpace(in.PufferpanelServerID) == "" {
+        // Heuristic: if not linked to a PufferPanel server, assume user_set
+        out.LoaderStatus = "user_set"
+    } else {
+        out.LoaderStatus = "known"
     }
     return out
 }
@@ -839,7 +865,7 @@ func createInstanceHandler(db *sql.DB) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(inst)
+        json.NewEncoder(w).Encode(projectInstance(inst))
 	}
 }
 
@@ -886,6 +912,11 @@ func updateInstanceHandler(db *sql.DB) http.HandlerFunc {
     if req.Loader != nil && strings.TrimSpace(*req.Loader) != "" {
         inst.Loader = strings.ToLower(strings.TrimSpace(*req.Loader))
         inst.RequiresLoader = false
+        telemetry.Event("loader_set", map[string]string{
+            "source":      "user",
+            "loader":      inst.Loader,
+            "instance_id": strconv.Itoa(inst.ID),
+        })
     }
     if req.GameVersion != nil {
         gv := strings.TrimSpace(*req.GameVersion)
@@ -903,7 +934,7 @@ func updateInstanceHandler(db *sql.DB) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		json.NewEncoder(w).Encode(inst)
+        json.NewEncoder(w).Encode(projectInstance(*inst))
 	}
 }
 
@@ -997,6 +1028,7 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
             return
         }
         if inst.RequiresLoader {
+            telemetry.Event("action_blocked", map[string]string{"action": "add", "reason": "loader_required", "instance_id": strconv.Itoa(inst.ID)})
             httpx.Write(w, r, httpx.LoaderRequired())
             return
         }
@@ -1019,7 +1051,7 @@ func createModHandler(db *sql.DB) http.HandlerFunc {
         selectedURL := ""
         selectedVersion := ""
         if vid := strings.TrimSpace(req.VersionID); vid != "" {
-            versions, err := modClient.Versions(r.Context(), slug, m.GameVersion, m.Loader)
+            versions, err := guardedVersions(r.Context(), slug, m.GameVersion, m.Loader)
             if err != nil {
                 writeModrinthError(w, r, err)
                 return
@@ -1155,6 +1187,13 @@ func checkModHandler(db *sql.DB) http.HandlerFunc {
 			httpx.Write(w, r, httpx.Internal(err))
 			return
 		}
+        if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil {
+            if inst.RequiresLoader {
+                telemetry.Event("action_blocked", map[string]string{"action": "update", "reason": "loader_required", "instance_id": strconv.Itoa(inst.ID)})
+                httpx.Write(w, r, httpx.LoaderRequired())
+                return
+            }
+        }
 		slug, err := parseModrinthSlug(m.URL)
 		if err != nil {
 			httpx.Write(w, r, httpx.BadRequest(err.Error()))
@@ -1194,12 +1233,13 @@ func updateModHandler(db *sql.DB) http.HandlerFunc {
 			httpx.Write(w, r, err)
 			return
 		}
-		if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil {
-			if inst.RequiresLoader {
-				httpx.Write(w, r, httpx.LoaderRequired())
-				return
-			}
-		}
+        if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil {
+            if inst.RequiresLoader {
+                telemetry.Event("action_blocked", map[string]string{"action": "update", "reason": "loader_required", "instance_id": strconv.Itoa(inst.ID)})
+                httpx.Write(w, r, httpx.LoaderRequired())
+                return
+            }
+        }
 		slug, err := parseModrinthSlug(m.URL)
 		if err != nil {
 			httpx.Write(w, r, httpx.BadRequest(err.Error()))
@@ -1308,6 +1348,12 @@ func deleteModHandler(db *sql.DB) http.HandlerFunc {
         if err != nil {
             http.Error(w, "invalid instance_id", http.StatusBadRequest)
             return
+        }
+        if inst, err := dbpkg.GetInstance(db, instID); err == nil {
+            if inst.RequiresLoader {
+                httpx.Write(w, r, httpx.LoaderRequired())
+                return
+            }
         }
         // Attempt to delete the file from PufferPanel if linked
         var before *dbpkg.Mod
@@ -1536,6 +1582,7 @@ func enqueueModUpdateHandler(db *sql.DB) http.HandlerFunc {
         // Ensure instance does not require loader before enqueuing
         if mu, err0 := dbpkg.GetMod(db, id); err0 == nil {
             if inst, err1 := dbpkg.GetInstance(db, mu.InstanceID); err1 == nil && inst.RequiresLoader {
+                telemetry.Event("action_blocked", map[string]string{"action": "update", "reason": "loader_required", "instance_id": strconv.Itoa(inst.ID)})
                 httpx.Write(w, r, httpx.LoaderRequired())
                 return
             }
@@ -2245,39 +2292,54 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
     // Combine haystack
     hayLower := strings.Join(append(append(append(dispParts, typeParts...), instTypeParts...), append(instCmdParts, append(instMoveParts, runCmdLower)...)...), "\n")
     hayFlat := normalize(hayLower)
-    // Scan tokens in descending length, first hit wins
-    if detected == "" && len(tokens) > 0 {
+    // Scan tokens in descending length and collect all distinct loader hits.
+    conflict := false
+    if len(tokens) > 0 {
         keys := make([]string, 0, len(tokens))
         for k := range tokens { keys = append(keys, k) }
         sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
+        seen := map[string]struct{}{}
+        srcFor := map[string]string{}
         for _, k := range keys {
             if k == "" { continue }
             if strings.Contains(hayFlat, k) || strings.Contains(hayLower, k) {
-                detected = tokens[k]
-                // best-effort source attribution
-                dispFlat := normalize(strings.Join(dispParts, "\n"))
-                iTypeFlat := normalize(strings.Join(instTypeParts, "\n"))
-                iCmdFlat := normalize(strings.Join(instCmdParts, "\n"))
-                iMoveFlat := normalize(strings.Join(instMoveParts, "\n"))
-                switch {
-                case strings.Contains(dispFlat, k):
-                    source = "display"
-                case strings.Contains(iTypeFlat, k):
-                    source = "install.type"
-                case strings.Contains(iCmdFlat, k):
-                    source = "install.command"
-                case strings.Contains(iMoveFlat, k):
-                    source = "install.move"
-                case strings.Contains(normalize(runCmdLower), k):
-                    source = "run.command"
-                default:
-                    source = "display"
+                id := tokens[k]
+                if _, ok := seen[id]; !ok {
+                    // best-effort source attribution for the first time we see this id
+                    dispFlat := normalize(strings.Join(dispParts, "\n"))
+                    iTypeFlat := normalize(strings.Join(instTypeParts, "\n"))
+                    iCmdFlat := normalize(strings.Join(instCmdParts, "\n"))
+                    iMoveFlat := normalize(strings.Join(instMoveParts, "\n"))
+                    switch {
+                    case strings.Contains(dispFlat, k):
+                        srcFor[id] = "display"
+                    case strings.Contains(iTypeFlat, k):
+                        srcFor[id] = "install.type"
+                    case strings.Contains(iCmdFlat, k):
+                        srcFor[id] = "install.command"
+                    case strings.Contains(iMoveFlat, k):
+                        srcFor[id] = "install.move"
+                    case strings.Contains(normalize(runCmdLower), k):
+                        srcFor[id] = "run.command"
+                    default:
+                        srcFor[id] = "display"
+                    }
                 }
-                break
+                seen[id] = struct{}{}
             }
         }
+        switch len(seen) {
+        case 0:
+            // keep detected empty
+        case 1:
+            for id := range seen { detected = id; source = srcFor[id] }
+        default:
+            // conflicting evidence, treat as unknown
+            conflict = true
+            detected = ""
+        }
     }
-    // Telemetry: record autoset or unmatched
+    // Telemetry: record autoset or unknown with reasons
     if detected != "" {
         telemetry.Event("loader_autoset", map[string]string{
             "instance_id": strconv.Itoa(inst.ID),
@@ -2291,13 +2353,37 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
             Str("source", source).
             Msg("loader_autoset")
     } else {
-        telemetry.Event("loader_unmatched", map[string]string{
+        // Build reasons for unknown result
+        reasons := make([]string, 0, 4)
+        if strings.TrimSpace(topDisplay) == "" && strings.TrimSpace(envDisplay) == "" {
+            reasons = append(reasons, "no_display")
+        } else {
+            reasons = append(reasons, "no_display_token")
+        }
+        if conflict { reasons = append(reasons, "conflict") }
+        hasInstallHint := len(instTypeParts) > 0 || len(instCmdParts) > 0 || len(instMoveParts) > 0
+        if !hasInstallHint {
+            reasons = append(reasons, "no_install_hint")
+        }
+        if strings.TrimSpace(runCmdLower) == "" {
+            reasons = append(reasons, "no_run_command")
+        } else {
+            reasons = append(reasons, "no_run_command_hint")
+        }
+        if defFetched == 0 {
+            reasons = append(reasons, "no_definition")
+        }
+        telemetry.Event("loader_autoset", map[string]string{
             "instance_id": strconv.Itoa(inst.ID),
+            "result":      "unknown",
+            "reasons":     strings.Join(reasons, ","),
         })
         log.Ctx(ctx).Warn().
             Int("instance_id", inst.ID).
             Str("server_id", serverID).
-            Msg("loader_unmatched")
+            Str("result", "unknown").
+            Str("reasons", strings.Join(reasons, ",")).
+            Msg("loader_autoset")
     }
     // Sanity metric: definition fetches per sync
     telemetry.Event("definitions_fetched_per_sync", map[string]string{"count": strconv.Itoa(defFetched)})
@@ -2305,11 +2391,15 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
         log.Ctx(ctx).Warn().Int("instance_id", inst.ID).Str("server_id", serverID).Msg("no definitions fetched during sync")
     }
     // 4) Decide final loader flags
+    // If unknown, mark requires_loader but do NOT mutate stored loader.
+    // If detected, update loader in-memory for this sync and persist later.
+    var loaderParam any = nil
     if detected == "" {
         requiresLoader = true
-        inst.Loader = ""
+        // leave inst.Loader unchanged
     } else {
         inst.Loader = detected
+        loaderParam = detected
         requiresLoader = false
     }
     // Try to detect game version from PufferPanel server definition/data; best-effort.
@@ -2383,12 +2473,30 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
             valParam = detectedVal
         }
     }
-    if _, err := db.Exec(`UPDATE instances SET loader=?, requires_loader=?, pufferpanel_server_id=?, puffer_version_key=COALESCE(?, puffer_version_key), game_version=COALESCE(?, game_version) WHERE id=?`, inst.Loader, requiresLoader, inst.PufferpanelServerID, keyParam, valParam, inst.ID); err != nil {
+    if _, err := db.Exec(`UPDATE instances SET loader=COALESCE(?, loader), requires_loader=?, pufferpanel_server_id=?, puffer_version_key=COALESCE(?, puffer_version_key), game_version=COALESCE(?, game_version) WHERE id=?`, loaderParam, requiresLoader, inst.PufferpanelServerID, keyParam, valParam, inst.ID); err != nil {
         httpx.Write(w, r, httpx.Internal(err))
         return
     }
+    if !requiresLoader && loaderParam != nil {
+        telemetry.Event("loader_set", map[string]string{
+            "source":      "autoset",
+            "loader":      inst.Loader,
+            "instance_id": strconv.Itoa(inst.ID),
+        })
+    }
     // Gate further actions if loader could not be determined
     if requiresLoader {
+        // In queued/periodic sync path (jobWriter), skip mod resolution but
+        // allow non-mod metadata refresh to persist; log telemetry.
+        if _, isJob := w.(*jobWriter); isJob {
+            telemetry.Event("sync_skip", map[string]string{
+                "reason":      "loader_required",
+                "instance_id": strconv.Itoa(inst.ID),
+            })
+            return
+        }
+        // For interactive/manual HTTP path, surface 409 so the UI can prompt to set loader.
+        telemetry.Event("action_blocked", map[string]string{"action": "sync", "reason": "loader_required", "instance_id": strconv.Itoa(inst.ID)})
         httpx.Write(w, r, httpx.LoaderRequired())
         return
     }
@@ -3078,7 +3186,7 @@ func populateProjectInfo(ctx context.Context, m *dbpkg.Mod, slug string) error {
 }
 
 func populateVersions(ctx context.Context, m *dbpkg.Mod, slug string) error {
-	versions, err := modClient.Versions(ctx, slug, m.GameVersion, m.Loader)
+	versions, err := guardedVersions(ctx, slug, m.GameVersion, m.Loader)
 	if err != nil {
 		return err
 	}
@@ -3105,7 +3213,7 @@ func populateVersions(ctx context.Context, m *dbpkg.Mod, slug string) error {
 }
 
 func populateAvailableVersion(ctx context.Context, m *dbpkg.Mod, slug string) error {
-	versions, err := modClient.Versions(ctx, slug, m.GameVersion, m.Loader)
+	versions, err := guardedVersions(ctx, slug, m.GameVersion, m.Loader)
 	if err != nil {
 		return err
 	}
