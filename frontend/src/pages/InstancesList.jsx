@@ -214,6 +214,17 @@ function openEdit(inst) {
           });
           targetId = created.id;
         }
+        // If a loader was chosen manually, persist it first so the
+        // backend clears requires_loader before we trigger a resync.
+        try {
+          const chosen = (loader || "").trim();
+          if (chosen) {
+            await updateInstance(targetId, { loader: chosen });
+          }
+        } catch (e) {
+          // Non-fatal for resync; surface as a toast but continue.
+          toast.error(e instanceof Error ? e.message : "Failed to set loader");
+        }
         const job = await syncInstances(selectedServer, targetId);
         // Track progress via SSE and show inline in the modal
         const es = new EventSource(`/api/jobs/${job.id}/events`);
@@ -264,6 +275,10 @@ function openEdit(inst) {
         const payload = { name };
         const v = mcVersion.trim();
         if (v !== "") Object.assign(payload, { gameVersion: v });
+        // Persist loader when provided in the edit modal. This clears
+        // requires_loader on the backend and resolves the banner.
+        const chosen = (loader || "").trim();
+        if (chosen) Object.assign(payload, { loader: chosen });
         const updated = await updateInstance(editing.id, payload);
         setInstances((prev) =>
           prev.map((i) => (i.id === updated.id ? { ...i, ...updated } : i)),

@@ -1,0 +1,300 @@
+			n := sanitizeName(*req.Name)
+			if n == "" {
+				httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(map[string]string{"name": "required"}))
+				return
+			}
+			if len([]rune(n)) > dbpkg.InstanceNameMaxLen {
+				httpx.Write(w, r, httpx.BadRequest("validation failed").WithDetails(map[string]string{"name": "max"}))
+				return
+			}
+			inst.Name = n
+		}
+    if req.Loader != nil && strings.TrimSpace(*req.Loader) != "" {
+        inst.Loader = strings.ToLower(strings.TrimSpace(*req.Loader))
+        inst.RequiresLoader = false
+        telemetry.Event("loader_set", map[string]string{
+            "source":      "user",
+            "loader":      inst.Loader,
+            "instance_id": strconv.Itoa(inst.ID),
+        })
+    }
+    if req.GameVersion != nil {
+        gv := strings.TrimSpace(*req.GameVersion)
+        inst.GameVersion = gv
+        // Clear puffer key to mark the value as manual
+        inst.PufferVersionKey = ""
+    }
+		if err := validatePayload(inst); err != nil {
+			httpx.Write(w, r, err)
+			return
+		}
+		if err := dbpkg.UpdateInstance(db, inst); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+        json.NewEncoder(w).Encode(projectInstance(*inst))
+	}
+}
+
+func deleteInstanceHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid id"))
+			return
+		}
+
+		var targetID *int
+		if tStr := r.URL.Query().Get("target_instance_id"); tStr != "" {
+			t, err := strconv.Atoi(tStr)
+			if err != nil {
+				httpx.Write(w, r, httpx.BadRequest("invalid target_instance_id"))
+				return
+			}
+			targetID = &t
+		}
+
+		if err := dbpkg.DeleteInstance(db, id, targetID); err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func listModsHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := r.URL.Query().Get("instance_id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid instance_id"))
+			return
+		}
+		mods, err := dbpkg.ListMods(db, id)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "max-age=60")
+		json.NewEncoder(w).Encode(mods)
+	}
+}
+
+func metadataHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req metadataRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid json"))
+			return
+		}
+		if err := validatePayload(&req); err != nil {
+			httpx.Write(w, r, err)
+			return
+		}
+		meta, err := fetchModMetadata(r.Context(), req.URL)
+		if err != nil {
+			writeModrinthError(w, r, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(meta)
+	}
+}
+
+func createModHandler(db *sql.DB) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        // Accept core mod fields plus an optional explicit version id chosen in the wizard
+        var req struct {
+            dbpkg.Mod
+            VersionID string `json:"version_id"`
+        }
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+            httpx.Write(w, r, httpx.BadRequest("invalid json"))
+            return
+        }
+        m := req.Mod
+        if err := validatePayload(&m); err != nil {
+            httpx.Write(w, r, err)
+            return
+        }
+        inst, err := dbpkg.GetInstance(db, m.InstanceID)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        if inst.RequiresLoader {
+            telemetry.Event("action_blocked", map[string]string{"action": "add", "reason": "loader_required", "instance_id": strconv.Itoa(inst.ID)})
+            httpx.Write(w, r, httpx.LoaderRequired())
+            return
+        }
+        warning := ""
+        if !strings.EqualFold(inst.Loader, m.Loader) {
+            // No enforcement; surface as a warning for clients that care
+            warning = "loader mismatch"
+        }
+        slug, err := parseModrinthSlug(m.URL)
+        if err != nil {
+            httpx.Write(w, r, httpx.BadRequest(err.Error()))
+            return
+        }
+        if err := populateProjectInfo(r.Context(), &m, slug); err != nil {
+            writeModrinthError(w, r, err)
+            return
+        }
+        // If client provided an explicit Modrinth version ID, honor it.
+        // Keep the selected file URL separate so later enrichment does not overwrite it.
+        selectedURL := ""
+        selectedVersion := ""
+        if vid := strings.TrimSpace(req.VersionID); vid != "" {
+            versions, err := guardedVersions(r.Context(), slug, m.GameVersion, m.Loader)
+            if err != nil {
+                writeModrinthError(w, r, err)
+                return
+            }
+            found := false
+            for _, v := range versions {
+                if v.ID == vid {
+                    m.CurrentVersion = v.VersionNumber
+                    m.Channel = strings.ToLower(v.VersionType)
+                    if len(v.Files) > 0 {
+                        m.DownloadURL = v.Files[0].URL
+                        selectedURL = m.DownloadURL
+                    }
+                    selectedVersion = m.CurrentVersion
+                    found = true
+                    break
+                }
+            }
+            if !found {
+                httpx.Write(w, r, httpx.BadRequest("selected version not found"))
+                return
+            }
+            if err := populateAvailableVersion(r.Context(), &m, slug); err != nil {
+                writeModrinthError(w, r, err)
+                return
+            }
+        } else {
+            if err := populateVersions(r.Context(), &m, slug); err != nil {
+                writeModrinthError(w, r, err)
+                return
+            }
+        }
+        if err := dbpkg.InsertMod(db, &m); err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        // Log event: mod added (best-effort)
+        _ = dbpkg.InsertEvent(db, &dbpkg.ModEvent{InstanceID: m.InstanceID, ModID: &m.ID, Action: "added", ModName: m.Name, To: m.CurrentVersion})
+        // If this instance is linked to PufferPanel, attempt to download the selected file
+        // and upload it to the appropriate folder on the server (mods/ or plugins/).
+        // Use the explicitly selected version file if provided, otherwise fall back to current m.DownloadURL.
+        dlURL := m.DownloadURL
+        verForName := m.CurrentVersion
+        if selectedURL != "" {
+            dlURL = selectedURL
+            if selectedVersion != "" {
+                verForName = selectedVersion
+            }
+        }
+        if inst.PufferpanelServerID != "" && dlURL != "" {
+            folder := "mods/"
+            switch strings.ToLower(inst.Loader) {
+            case "paper", "spigot", "bukkit":
+                folder = "plugins/"
+            }
+            // Derive filename from URL path; fallback to slug-version.jar
+            filename := func(raw string) string {
+                if u, err := urlpkg.Parse(raw); err == nil {
+                    p := u.Path
+                    if i := strings.LastIndex(p, "/"); i != -1 && i+1 < len(p) {
+                        name := p[i+1:]
+                        if name != "" {
+                            return name
+                        }
+                    }
+                }
+                base := slug
+                if base == "" {
+                    base = m.Name
+                }
+                base = strings.TrimSpace(base)
+                if base == "" {
+                    base = "mod"
+                }
+                ver := strings.TrimSpace(verForName)
+                if ver == "" {
+                    ver = "latest"
+                }
+                return base + "-" + ver + ".jar"
+            }(dlURL)
+            // Fetch file bytes
+            reqDL, err := http.NewRequestWithContext(r.Context(), http.MethodGet, dlURL, nil)
+            if err == nil {
+                resp, err := http.DefaultClient.Do(reqDL)
+                if err == nil {
+                    defer resp.Body.Close()
+                    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+                        data, _ := io.ReadAll(resp.Body)
+                        if len(data) > 0 {
+                            if err := pppkg.PutFile(r.Context(), inst.PufferpanelServerID, folder+filename, data); err != nil {
+                                // Surface as a non-fatal warning
+                                if warning == "" {
+                                    warning = "failed to upload file to PufferPanel"
+                                }
+                            }
+                        } else if warning == "" {
+                            warning = "failed to download selected file"
+                        }
+                    } else if warning == "" {
+                        warning = "failed to download selected file"
+                    }
+                } else if warning == "" {
+                    warning = "failed to download selected file"
+                }
+            } else if warning == "" {
+                warning = "failed to download selected file"
+            }
+        }
+        mods, err := dbpkg.ListMods(db, m.InstanceID)
+        if err != nil {
+            httpx.Write(w, r, httpx.Internal(err))
+            return
+        }
+        w.Header().Set("Content-Type", "application/json")
+        w.Header().Set("Cache-Control", "no-store")
+        json.NewEncoder(w).Encode(struct {
+            Mods    []dbpkg.Mod `json:"mods"`
+            Warning string      `json:"warning,omitempty"`
+        }{mods, warning})
+    }
+}
+
+func checkModHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			httpx.Write(w, r, httpx.BadRequest("invalid id"))
+			return
+		}
+		m, err := dbpkg.GetMod(db, id)
+		if err != nil {
+			httpx.Write(w, r, httpx.Internal(err))
+			return
+		}
+        if inst, err2 := dbpkg.GetInstance(db, m.InstanceID); err2 == nil {
+            if inst.RequiresLoader {
+                telemetry.Event("action_blocked", map[string]string{"action": "update", "reason": "loader_required", "instance_id": strconv.Itoa(inst.ID)})
+                httpx.Write(w, r, httpx.LoaderRequired())
+                return
+            }
+        }
+		slug, err := parseModrinthSlug(m.URL)
+		if err != nil {
+			httpx.Write(w, r, httpx.BadRequest(err.Error()))
+			return
