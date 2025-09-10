@@ -2391,11 +2391,18 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
         log.Ctx(ctx).Warn().Int("instance_id", inst.ID).Str("server_id", serverID).Msg("no definitions fetched during sync")
     }
     // 4) Decide final loader flags
-    // If unknown, mark requires_loader but do NOT mutate stored loader.
+    // If unknown and no loader is currently set, mark requires_loader.
+    // If a loader is already set (either user-set or previously known),
+    // do not flip requires_loader back to true on detection failure.
     // If detected, update loader in-memory for this sync and persist later.
     var loaderParam any = nil
     if detected == "" {
-        requiresLoader = true
+        if strings.TrimSpace(inst.Loader) == "" {
+            requiresLoader = true
+        } else {
+            // Keep existing loader and ensure UI remains unblocked
+            requiresLoader = false
+        }
         // leave inst.Loader unchanged
     } else {
         inst.Loader = detected
