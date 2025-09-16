@@ -814,7 +814,7 @@ export default function InstanceMods() {
                 </h1>
                 <Button
                   variant="outline"
-                  className="h-9 w-9 p-0"
+                  size="icon"
                   aria-label="Edit instance"
                   title="Edit instance"
                   onClick={() => {
