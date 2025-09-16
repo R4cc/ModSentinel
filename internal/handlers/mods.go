@@ -1124,7 +1124,8 @@ func enqueueModUpdateHandler(db *sql.DB) http.HandlerFunc {
         json.NewEncoder(w).Encode(struct{ JobID int `json:"job_id"` }{jobID})
     }
 }
-\n\nfunc populateProjectInfo(ctx context.Context, m *dbpkg.Mod, slug string) error {
+
+func populateProjectInfo(ctx context.Context, m *dbpkg.Mod, slug string) error {
 	info, err := modClient.Project(ctx, slug)
 	if err != nil {
 		return err
@@ -1469,6 +1470,9 @@ func parseJarMetadata(data []byte) (slug, version, loader string) {
     }
     return slug, version, loader
 }
+
+
+
 
 
 
