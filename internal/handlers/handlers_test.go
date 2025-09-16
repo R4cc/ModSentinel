@@ -285,6 +285,28 @@ func TestInstanceHandlers_CRUD(t *testing.T) {
 	}
 }
 
+func TestDeleteInstance_AllowsMissingLoader(t *testing.T) {
+	db := setupDB(t)
+	defer db.Close()
+
+	inst := createInstance(t, db, "ToDelete")
+	if _, err := db.Exec(`UPDATE instances SET loader='', requires_loader=1 WHERE id=?`, inst.ID); err != nil {
+		t.Fatalf("prep: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/instances/"+strconv.Itoa(inst.ID), nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", strconv.Itoa(inst.ID))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+	deleteInstanceHandler(db).ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("delete status %d", rr.Code)
+	}
+	if _, err := dbpkg.GetInstance(db, inst.ID); err == nil || !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected instance removed, got err=%v", err)
+	}
+}
 func TestValidateAndCreateInstance(t *testing.T) {
 	db := openTestDB(t)
 	defer db.Close()

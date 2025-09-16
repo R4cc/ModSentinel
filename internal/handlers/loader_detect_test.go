@@ -160,6 +160,75 @@ func TestLoaderDetect_Unmatched_ReturnsLoaderRequired(t *testing.T) {
     }
 }
 
+func TestLoaderDetect_UnsupportedTag_DefaultsToRequiresLoader(t *testing.T) {
+    db := setupDB(t)
+    defer db.Close()
+
+    modrinthLoadersMu.Lock()
+    modrinthLoadersCache = []metaLoaderOut{
+        {ID: "fabric", Name: "Fabric"},
+        {ID: "babric", Name: "Babric"},
+    }
+    modrinthLoadersExpiry = time.Now().Add(1 * time.Hour)
+    modrinthLoadersMu.Unlock()
+    t.Cleanup(func() {
+        modrinthLoadersMu.Lock()
+        modrinthLoadersCache = nil
+        modrinthLoadersExpiry = time.Time{}
+        modrinthLoadersMu.Unlock()
+    })
+
+    inst := createInstance(t, db, "Inst Unsupported")
+    inst.Loader = ""
+    if _, err := db.Exec(`UPDATE instances SET loader='', requires_loader=0 WHERE id=?`, inst.ID); err != nil {
+        t.Fatalf("prep inst: %v", err)
+    }
+
+    origGet := ppGetServer
+    origList := ppListPath
+    origDef := ppGetServerDefinition
+    origDefRaw := ppGetServerDefinitionRaw
+    origData := ppGetServerData
+    defer func() {
+        ppGetServer = origGet
+        ppListPath = origList
+        ppGetServerDefinition = origDef
+        ppGetServerDefinitionRaw = origDefRaw
+        ppGetServerData = origData
+    }()
+    ppGetServer = func(_ context.Context, id string) (*pppkg.ServerDetail, error) {
+        var d pppkg.ServerDetail
+        d.ID = id
+        d.Environment.Type = "java"
+        return &d, nil
+    }
+    ppListPath = func(_ context.Context, _ string, _ string) ([]pppkg.FileEntry, error) { return nil, nil }
+    ppGetServerDefinition = func(_ context.Context, _ string) (*pppkg.ServerDefinition, error) {
+        return &pppkg.ServerDefinition{Data: map[string]pppkg.Variable{}}, nil
+    }
+    ppGetServerDefinitionRaw = func(_ context.Context, _ string) (map[string]any, error) {
+        return map[string]any{"environment": map[string]any{"display": "Babric Server"}}
+    }
+    ppGetServerData = func(_ context.Context, _ string) (*pppkg.ServerData, error) {
+        return &pppkg.ServerData{Data: map[string]pppkg.ValueWrapper{}}
+    }
+
+    rr := httptest.NewRecorder()
+    req := httptest.NewRequest("POST", "/api/instances/1/sync", nil)
+    performSync(context.Background(), rr, req, db, inst, "1", &jobProgress{}, nil)
+
+    if rr.Code != 409 {
+        t.Fatalf("expected 409, got %d", rr.Code)
+    }
+    got, err := dbpkg.GetInstance(db, inst.ID)
+    if err != nil {
+        t.Fatalf("GetInstance: %v", err)
+    }
+    if !got.RequiresLoader || got.Loader != "" {
+        t.Fatalf("expected requires_loader=true and empty loader, got loader=%q requires=%v", got.Loader, got.RequiresLoader)
+    }
+}
+
 // --- Additional unit tests ---
 
 // Test that fetchModrinthLoaders filters out the vanilla tag.

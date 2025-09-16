@@ -104,6 +104,19 @@ var (
     modrinthLoadersExpiry time.Time
 )
 
+// autoDetectableLoaders enumerates loader ids considered safe for automatic matching.
+var autoDetectableLoaders = map[string]struct{}{
+	"bukkit":       {},
+	"datapack":     {},
+	"fabric":       {},
+	"forge":        {},
+	"neoforge":     {},
+	"paper":        {},
+	"resourcepack": {},
+	"spigot":       {},
+	"quilt":        {},
+}
+
 type listServersEntry struct {
 	servers []pppkg.Server
 	exp     time.Time
@@ -2161,6 +2174,9 @@ func performSync(ctx context.Context, w http.ResponseWriter, r *http.Request, db
     for _, t := range modrinthLoadersCache {
         if strings.TrimSpace(t.ID) == "" { continue }
         id := strings.ToLower(t.ID)
+        if _, ok := autoDetectableLoaders[id]; !ok {
+            continue
+        }
         // base tokens: id and lowercased name
         tokens[normalize(id)] = id
         if strings.TrimSpace(t.Name) != "" {
