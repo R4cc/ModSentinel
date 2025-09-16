@@ -2053,44 +2053,6 @@ func jaccard(a, b map[string]struct{}) float64 {
 }
 
 
-        // Forge / NeoForge
-        if strings.EqualFold(f.Name, "META-INF/mods.toml") || strings.EqualFold(f.Name, "META-INF/neoforge.mods.toml") {
-            rc, err := f.Open()
-            if err != nil {
-                continue
-            }
-            b, _ := io.ReadAll(rc)
-            rc.Close()
-            s := string(b)
-            // very light parsing without a TOML dependency
-            // look for first modId and version assignments
-            reID := regexp.MustCompile(`(?m)^\s*modId\s*=\s*"([^"]+)"`)
-            reVer := regexp.MustCompile(`(?m)^\s*version\s*=\s*"([^"]+)"`)
-            if m := reID.FindStringSubmatch(s); len(m) == 2 {
-                slug = m[1]
-            }
-            if m := reVer.FindStringSubmatch(s); len(m) == 2 {
-                version = m[1]
-            }
-            if strings.Contains(strings.ToLower(f.Name), "neoforge") {
-                loader = "neoforge"
-            } else {
-                loader = "forge"
-            }
-            if slug != "" || version != "" {
-                return slug, version, loader
-            }
-        }
-        // Resource packs
-        if strings.EqualFold(f.Name, "pack.mcmeta") {
-            // We cannot extract id/version reliably, but can mark loader
-            loader = "resourcepack"
-        }
-    }
-    return slug, version, loader
-}
-
-
 func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
     r := chi.NewRouter()
 
@@ -2159,5 +2121,3 @@ func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
 
     return r
 }
-
-
