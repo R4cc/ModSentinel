@@ -2052,3 +2052,112 @@ func jaccard(a, b map[string]struct{}) float64 {
     return float64(inter) / float64(union)
 }
 
+
+        // Forge / NeoForge
+        if strings.EqualFold(f.Name, "META-INF/mods.toml") || strings.EqualFold(f.Name, "META-INF/neoforge.mods.toml") {
+            rc, err := f.Open()
+            if err != nil {
+                continue
+            }
+            b, _ := io.ReadAll(rc)
+            rc.Close()
+            s := string(b)
+            // very light parsing without a TOML dependency
+            // look for first modId and version assignments
+            reID := regexp.MustCompile(`(?m)^\s*modId\s*=\s*"([^"]+)"`)
+            reVer := regexp.MustCompile(`(?m)^\s*version\s*=\s*"([^"]+)"`)
+            if m := reID.FindStringSubmatch(s); len(m) == 2 {
+                slug = m[1]
+            }
+            if m := reVer.FindStringSubmatch(s); len(m) == 2 {
+                version = m[1]
+            }
+            if strings.Contains(strings.ToLower(f.Name), "neoforge") {
+                loader = "neoforge"
+            } else {
+                loader = "forge"
+            }
+            if slug != "" || version != "" {
+                return slug, version, loader
+            }
+        }
+        // Resource packs
+        if strings.EqualFold(f.Name, "pack.mcmeta") {
+            // We cannot extract id/version reliably, but can mark loader
+            loader = "resourcepack"
+        }
+    }
+    return slug, version, loader
+}
+
+
+func New(db *sql.DB, dist fs.FS, svc *secrets.Service) http.Handler {
+    r := chi.NewRouter()
+
+	r.Use(securityHeaders)
+	r.Use(recordLatency)
+	r.Use(telemetry.HTTP)
+	r.Use(requestIDMiddleware)
+
+	r.Get("/favicon.ico", serveFavicon(dist))
+	r.Get("/api/meta/modrinth/loaders", modrinthLoadersHandler(db))
+	r.Get("/api/instances", listInstancesHandler(db))
+	r.Get("/api/instances/{id}", getInstanceHandler(db))
+    r.With(requireAuth()).Get("/api/instances/{id:\\d+}/logs", listInstanceLogsHandler(db))
+	r.Post("/api/instances/validate", validateInstanceHandler())
+	r.Post("/api/instances", createInstanceHandler(db))
+	r.Put("/api/instances/{id}", updateInstanceHandler(db))
+	r.Delete("/api/instances/{id}", deleteInstanceHandler(db))
+	r.With(requireAuth()).Post("/api/instances/sync", listServersHandler(db))
+	r.With(requireAuth()).Post("/api/instances/{id:\\d+}/sync", syncHandler(db))
+	r.With(requireAuth()).Get("/api/instances/{id:\\d+}/sync", methodNotAllowed)
+	r.With(requireAuth()).Get("/api/jobs/{id:\\d+}", jobProgressHandler(db))
+	r.With(requireAuth()).Get("/api/jobs/{id:\\d+}/events", jobEventsHandler(db))
+	r.With(requireAuth()).Post("/api/jobs/{id:\\d+}/retry", retryFailedHandler(db))
+	r.With(requireAuth()).Delete("/api/jobs/{id:\\d+}", cancelJobHandler(db))
+	if allowResyncAlias {
+		// Temporary alias; TODO: remove after 2025-01-01.
+		r.With(requireAuth()).Post("/api/instances/{id:\\d+}/resync", syncHandler(db))
+		r.With(requireAuth()).Get("/api/instances/{id:\\d+}/resync", methodNotAllowed)
+	} else {
+		r.With(requireAuth()).Post("/api/instances/{id:\\d+}/resync", goneHandler)
+		r.With(requireAuth()).Get("/api/instances/{id:\\d+}/resync", goneHandler)
+	}
+    r.Get("/api/mods", listModsHandler(db))
+    r.Post("/api/mods/metadata", metadataHandler())
+    r.Get("/api/mods/search", searchModsHandler())
+    r.Post("/api/mods", createModHandler(db))
+	r.Get("/api/mods/{id}/check", checkModHandler(db))
+	r.Put("/api/mods/{id}", updateModHandler(db))
+	r.Delete("/api/mods/{id}", deleteModHandler(db))
+	r.Post("/api/mods/{id}/update", enqueueModUpdateHandler(db))
+
+	r.With(requireAdmin()).Post("/api/pufferpanel/test", testPufferHandler())
+
+	r.Group(func(g chi.Router) {
+		g.Use(requireAdmin())
+		g.Use(csrfMiddleware)
+		g.Post("/api/settings/secret/{type}", setSecretHandler())
+		g.Delete("/api/settings/secret/{type}", deleteSecretHandler())
+		g.Get("/api/settings/secret/{type}/status", secretStatusHandler(svc))
+	})
+	r.Get("/api/dashboard", dashboardHandler(db))
+
+    // In development, serve static assets from disk so changes appear without rebuilding Go.
+    // Set APP_ENV=development and run `npm run build:watch` in frontend.
+    if strings.ToLower(os.Getenv("APP_ENV")) != "production" {
+        if disk, err := fs.Sub(os.DirFS("."), "frontend/dist"); err == nil {
+            r.Get("/*", serveStatic(disk))
+        } else {
+            static, _ := fs.Sub(dist, "frontend/dist")
+            r.Get("/*", serveStatic(static))
+        }
+    } else {
+        static, _ := fs.Sub(dist, "frontend/dist")
+        r.Get("/*", serveStatic(static))
+    }
+
+    return r
+}
+
+
